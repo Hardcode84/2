@@ -101,6 +101,39 @@ The approval hash is derived from command + args. For headless use,
 `--approve-mcps` bypasses approval entirely (only during agent runs, not
 with `mcp list`).
 
+### Substrat MCP server registration
+
+The daemon generates `.cursor/mcp.json` pointing at the Substrat MCP server:
+
+```json
+{
+  "mcpServers": {
+    "substrat": {
+      "command": "/path/to/substrat-mcp-server",
+      "args": ["--agent-id", "<uuid>"],
+      "env": {
+        "SUBSTRAT_SOCKET": "/path/to/daemon.sock"
+      }
+    }
+  }
+}
+```
+
+For bwrap workspaces, this config is a read-only bind mount from a
+daemon-managed location:
+
+```
+~/.substrat/agents/<uuid>/mcp.json  →  <workspace>/.cursor/mcp.json (RO)
+```
+
+This avoids writing into the sandbox and lets the daemon regenerate the config
+without touching the workspace filesystem. The MCP server binary must be
+accessible inside the sandbox (bind-mounted or on a shared read-only path).
+
+The MCP server process runs inside the sandbox (spawned by cursor-agent as a
+child) but connects back to the daemon socket, which is bind-mounted into the
+sandbox. This is the only network-like hole in the sandbox wall.
+
 ### Limits
 
 cursor-agent caps tools at 40 across all MCP servers combined.

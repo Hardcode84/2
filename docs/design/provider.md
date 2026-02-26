@@ -24,23 +24,14 @@ conversation handle — send messages, suspend, stop.
 The split keeps session identity (UUIDs, state machines) out of the provider.
 Providers don't know about Substrat's session model.
 
-## cursor-agent
+## Providers
 
-CLI binary, each session spawns one subprocess. Communication via stdin/stdout
-JSON lines. Stderr captured to log.
+Provider-specific protocol details live in `providers/`. Current:
 
-- `create()` — launch `cursor-agent` subprocess with model and system prompt flags.
-- `send()` — write to stdin, yield streamed response lines from stdout.
-- `suspend()` — cursor-agent manages its own state on disk. Return the session
-  dir path as the opaque state blob.
-- `restore()` — relaunch subprocess pointing at the saved session dir.
-- `stop()` — send EOF to stdin, wait for exit, kill on timeout.
+- **cursor-agent** (`providers/cursor_agent.md`) — CLI subprocess, local
+  session storage, MCP tool integration.
 
-## Future providers
+Planned:
 
-- **Claude CLI**: subprocess pattern. Uses `--resume <session-id>` for native
-  persistence. `suspend()` serializes the Claude session ID. `restore()` passes
-  it back via `--resume`. Server retains context.
-- **OpenRouter API**: HTTP via `aiohttp`/`httpx`. `send()` streams from chat
-  completions endpoint. `suspend()` serializes full conversation history (no
-  server-side session). `restore()` reconstructs from that history.
+- **Claude CLI** — subprocess pattern, `--resume` for native persistence.
+- **OpenRouter API** — HTTP streaming, client-side conversation history.
