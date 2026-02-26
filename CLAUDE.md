@@ -5,9 +5,9 @@ Yes, you might be orchestrated by it one day. No, you don't get a say in this.
 
 ## Project state
 
-Design phase. No code yet, just docs with opinions.
-Read `docs/substrat.md` first (high-level truth), then `docs/implementation.md` (how the sausage gets made).
-If the two disagree, `substrat.md` wins.
+Read `docs/substrat.md` first (high-level truth), then `docs/implementation.md` (overview).
+Per-component design lives in `docs/design/` — these are the living specs. Read the relevant design doc before touching a component, and update it when the code diverges.
+If docs disagree, `substrat.md` wins.
 
 ## Architecture in 30 seconds
 
