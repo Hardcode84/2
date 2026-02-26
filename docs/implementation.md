@@ -1,611 +1,218 @@
-# Substrat — Implementation Details
+# Substrat — Implementation Overview
 
-Draft implementation design for the Substrat agent orchestration framework.
-Companion to `substrat.md` (high-level design).
-
----
-
-## 1. Project Structure
-
-```
-substrat/
-├── pyproject.toml
-├── src/
-│   └── substrat/
-│       ├── __init__.py
-│       ├── __main__.py            # python -m substrat entry point.
-│       ├── cli/
-│       │   ├── __init__.py
-│       │   ├── app.py             # Typer top-level app.
-│       │   ├── daemon_cmds.py     # start/stop/status commands.
-│       │   ├── session_cmds.py    # session CRUD commands.
-│       │   ├── agent_cmds.py      # agent interaction commands.
-│       │   └── workspace_cmds.py  # workspace management commands.
-│       ├── daemon/
-│       │   ├── __init__.py
-│       │   ├── server.py          # UDS server, asyncio event loop.
-│       │   ├── registry.py        # Session and agent registries.
-│       │   ├── handler.py         # Request dispatch from CLI client.
-│       │   └── lifecycle.py       # Daemon start/stop/pidfile.
-│       ├── session/
-│       │   ├── __init__.py
-│       │   ├── model.py           # Session dataclass and state machine.
-│       │   ├── store.py           # Persistence (save/load/list).
-│       │   └── multiplexer.py     # Session slot management (LRU eviction).
-│       ├── agent/
-│       │   ├── __init__.py
-│       │   ├── tree.py            # Agent hierarchy tree.
-│       │   ├── node.py            # Single agent node (identity, state).
-│       │   └── messaging.py       # Envelope, inbox/outbox, multicast.
-│       ├── provider/
-│       │   ├── __init__.py
-│       │   ├── base.py            # Provider protocol (abstract).
-│       │   ├── cursor_agent.py    # cursor-agent CLI subprocess wrapper.
-│       │   └── registry.py        # Provider discovery and instantiation.
-│       ├── workspace/
-│       │   ├── __init__.py
-│       │   ├── model.py           # Workspace spec dataclass.
-│       │   ├── bwrap.py           # bubblewrap invocation builder.
-│       │   ├── symlinks.py        # Symlink composition (RO/RW).
-│       │   └── hierarchy.py       # Parent-child workspace nesting.
-│       ├── logging/
-│       │   ├── __init__.py
-│       │   ├── jsonl.py           # Structured JSONL writer/reader.
-│       │   └── plaintext.py       # Human-readable log writer.
-│       └── protocol/
-│           ├── __init__.py
-│           └── ipc.py             # UDS message framing (CLI ↔ daemon).
-├── tests/
-│   ├── conftest.py
-│   ├── unit/
-│   │   ├── test_session_model.py
-│   │   ├── test_agent_tree.py
-│   │   ├── test_messaging.py
-│   │   ├── test_workspace_model.py
-│   │   ├── test_bwrap.py
-│   │   └── test_provider_base.py
-│   └── integration/
-│       ├── test_daemon_lifecycle.py
-│       ├── test_cli_daemon.py
-│       └── test_session_persistence.py
-└── docs/
-    ├── substrat.md
-    └── implementation.md           # This file.
-```
-
-Entry points in `pyproject.toml`:
-
-```toml
-[project.scripts]
-substrat = "substrat.cli.app:main"
-```
-
-`__main__.py` delegates to the same CLI entry for `python -m substrat`.
+Map of the codebase. For high-level design see `substrat.md`. For component
+details see the relevant doc in `docs/design/`. Design docs are the source of
+truth for their respective components; this file is a summary that ties them
+together.
 
 ---
 
-## 2. Daemon Architecture
+## 1. Daemon Architecture
 
-### Overview
+Long-running process that owns all state. The CLI is a thin client that talks
+to the daemon over a Unix domain socket (`~/.substrat/daemon.sock`).
 
-The daemon is a long-running process that owns all agent sessions, manages the
-agent tree, and brokers messages. The CLI is a thin client that talks to the
-daemon over a Unix domain socket.
+Single `asyncio` event loop drives UDS server, provider I/O, and message
+routing. Blocking operations (bwrap, subprocess spawning) run in a
+`ThreadPoolExecutor` via `loop.run_in_executor`.
 
-### Event Loop
-
-Single `asyncio` event loop drives:
-- UDS server accepting CLI connections.
-- Agent provider I/O (stdin/stdout for subprocess providers, HTTP for API
-  providers).
-- Inter-agent message routing.
-
-Blocking operations (bwrap setup, subprocess spawning, file I/O for large logs)
-run in a `ThreadPoolExecutor` via `loop.run_in_executor`.
-
-### UDS Server
-
-```
-~/.substrat/daemon.sock
-```
-
-The server uses `asyncio.start_unix_server`. Each accepted connection gets its
-own handler coroutine.
-
-Wire format (CLI ↔ daemon): newline-delimited JSON. Each message is a single
-JSON object terminated by `\n`. See `protocol/ipc.py` in the project structure.
-
-### Daemon Lifecycle
+### Filesystem
 
 ```
 ~/.substrat/
-├── daemon.sock      # UDS endpoint.
-├── daemon.pid       # PID file for single-instance enforcement.
-├── sessions/        # Persisted session state.
+├── daemon.sock
+├── daemon.pid
+├── sessions/         # Persisted session state.
 │   └── <uuid>/
 │       └── state.json
-├── agents/          # Per-agent logs.
+├── agents/           # Per-agent data and logs.
 │   └── <uuid>/
+│       ├── mcp.json  # Generated MCP config for this agent.
 │       └── logs/
-└── workspaces/      # Workspace roots.
+│           ├── events.jsonl
+│           └── transcript.txt
+└── workspaces/
     └── <uuid>/
 ```
 
-Startup sequence:
-1. Check for stale PID file, remove if process is dead.
-2. Write PID file.
-3. Create UDS socket.
-4. Initialize session registry from `~/.substrat/sessions/`.
-5. Enter event loop.
-
-Shutdown: SIGTERM/SIGINT → graceful drain. Suspend all active sessions, flush
-logs, remove socket and PID file.
-
-### Session Registry
-
-In-memory dict: `dict[UUID, Session]`. On mutation the affected session is
-persisted to `~/.substrat/sessions/<uuid>/state.json`.
-
 ### Request Dispatch
 
-Incoming CLI requests are JSON objects with a `method` field:
+CLI ↔ daemon wire format is newline-delimited JSON:
 
 ```json
 {"id": "req-1", "method": "agent.create", "params": {...}}
-```
-
-`handler.py` maps method strings to handler coroutines. Responses carry the
-same `id`:
-
-```json
 {"id": "req-1", "result": {...}}
-{"id": "req-1", "error": {"code": 1, "message": "..."}}
 ```
 
 ---
 
-## 3. CLI Design
+## 2. CLI Design
 
-Typer-based. Most commands map 1:1 to daemon RPC methods (exception: `attach`
-uses a long-lived bidirectional stream instead of request/response).
+Typer-based. Most commands map 1:1 to daemon RPC methods.
 
 ```
-substrat daemon start       # Fork and daemonize.
-substrat daemon stop        # Send shutdown request.
-substrat daemon status      # Print daemon state.
+substrat daemon start|stop|status
 
-substrat agent create [--provider cursor-agent] [--name <name>]  # Create root agent.
-substrat agent list                           # Show agent tree (all roots + children).
-substrat agent attach <agent-id>              # Interactive REPL with an agent.
-substrat agent inspect <agent-id>             # Show agent activity.
-substrat agent send <agent-id> <message>      # One-shot message.
+substrat agent create [--provider cursor-agent] [--name <name>]
+substrat agent list
+substrat agent attach <agent-id>       # Interactive REPL.
+substrat agent inspect <agent-id>
+substrat agent send <agent-id> <message>
 
-substrat session list                         # List all sessions.
-substrat session suspend <uuid>
-substrat session resume <uuid>
-substrat session delete <uuid>
+substrat session list|suspend|resume|delete <uuid>
 
-substrat workspace create [--parent <ws-uuid>]
-substrat workspace list
-substrat workspace link <ws-uuid> <host-path> <mount-path> [--ro|--rw]
-substrat workspace delete <ws-uuid>
+substrat workspace create|list|link|delete
 ```
 
-`agent create` is the primary entry point — it creates a root agent (and its
-backing session) in one step. Sessions are an implementation detail the user
-rarely manages directly; the `session` subcommands exist for low-level control
-(suspend/resume/delete).
+`agent create` is the primary entry point — creates a root agent and its
+backing session in one step. Session commands exist for low-level control.
 
-### Connection
-
-CLI opens `~/.substrat/daemon.sock`, sends one request, reads one response,
-closes. For `agent attach`, the connection stays open as a bidirectional
-stream (daemon pushes agent output, CLI sends user input).
-
-### Interactive Attach
-
-`agent attach <agent-id>` enters a REPL with any agent (typically a root):
-- User input → message to the attached agent.
-- Agent output → streamed back to terminal.
-- Ctrl-C → detach (agent stays alive in daemon).
-- `/quit` → detach.
+`agent attach` opens a long-lived bidirectional stream (daemon pushes agent
+output, CLI sends user input). Ctrl-C detaches without killing the agent.
 
 ---
 
-## 4. Agent Provider Abstraction
+## 3. Agent Provider Abstraction
 
-See [docs/design/provider.md](design/provider.md).
+See [design/provider.md](design/provider.md).
 
----
-
-## 5. Session Model
-
-See [docs/design/session.md](design/session.md).
+Provider-specific details: [design/providers/](design/providers/).
 
 ---
 
-## 6. Agent Hierarchy
+## 4. Session Model
+
+See [design/session.md](design/session.md).
+
+---
+
+## 5. Agent Hierarchy
 
 The agent hierarchy sits above the session layer. It owns the tree structure,
 parent-child relationships, and the mapping from agents to their sessions.
 
-### Tree Structure
-
 ```python
 @dataclass
 class AgentNode:
-    id: UUID = field(default_factory=uuid4)
-    name: str = ""                          # Human-readable label.
-    session_id: UUID = ...                  # 1:1 backing session (provider wrapper).
-    parent_id: UUID | None = None           # None for root agents.
+    id: UUID
+    name: str = ""
+    session_id: UUID = ...         # 1:1 backing session.
+    parent_id: UUID | None = None  # None for root agents.
     children: list[UUID] = field(default_factory=list)
-    instructions: str = ""                  # System prompt / custom instructions.
-    role: str = "worker"                    # "manager" | "worker" | "reviewer".
-    workspace_id: UUID | None = None        # Assigned workspace.
-    state: str = "idle"                     # "idle" | "busy" | "waiting" | "terminated".
+    instructions: str = ""
+    role: str = "worker"           # "manager" | "worker" | "reviewer" (advisory).
+    workspace_id: UUID | None = None
+    state: str = "idle"            # "idle" | "busy" | "waiting" | "terminated".
 ```
 
-Every agent has exactly one `Session` (§5) backing it. The agent layer manages
-hierarchy and messaging; the session layer manages provider lifecycle. Root
-agents (`parent_id is None`) are the entry points for user interaction. There
-may be multiple root agents in the system.
+`AgentTree` provides queries: `children()`, `parent()`, `team()` (siblings
+excluding self), `roots()`, `subtree()`.
 
-The daemon maintains `AgentTree`:
+Teams are not a separate data structure — they emerge from the tree as
+children of a single parent.
 
-```python
-class AgentTree:
-    def __init__(self) -> None:
-        self._nodes: dict[UUID, AgentNode] = {}
+### Routing
 
-    def add(self, node: AgentNode) -> None: ...
-    def remove(self, agent_id: UUID) -> None: ...
-    def children(self, agent_id: UUID) -> list[AgentNode]: ...
-    def parent(self, agent_id: UUID) -> AgentNode | None: ...
-    def subtree(self, agent_id: UUID) -> list[AgentNode]: ...
-    def roots(self) -> list[AgentNode]: ...
-    def team(self, agent_id: UUID) -> list[AgentNode]:
-        """Siblings: all children of this agent's parent, excluding self."""
-        ...
-```
-
-### Spawning Subagents
-
-An agent requests subagent creation via a tool call (exposed to the LLM as a
-function). The daemon:
-1. Creates a new `AgentNode` as a child of the requesting agent.
-2. Creates or assigns a workspace (possibly a subdirectory of the parent's
-   workspace).
-3. Creates a new `Session` for the child and acquires a provider slot via the
-   multiplexer.
-4. Starts the provider with the child's instructions.
-
-### Team Semantics
-
-A "team" is the set of children of a single parent agent. The parent is the
-implicit manager. Teams are not a separate data structure — they emerge from the
-tree. Manager/worker/reviewer roles are advisory labels that the parent sets on
-spawn; they influence the parent's orchestration strategy but not the system's
-message routing.
+One-hop only: parent, children, siblings. The daemon enforces this at routing
+time. See [design/tool_integration.md](design/tool_integration.md) for the
+tool surface agents use for messaging.
 
 ---
 
-## 7. Communication Protocol
+## 6. Communication Protocol
 
 ### Message Envelope
 
 ```python
 @dataclass
 class MessageEnvelope:
-    id: UUID = field(default_factory=uuid4)
-    timestamp: str = ""               # ISO 8601.
-    sender: UUID = ...                # Agent UUID, or SYSTEM / USER sentinel.
+    id: UUID
+    timestamp: str                    # ISO 8601.
+    sender: UUID                      # Agent UUID, or SYSTEM/USER sentinel.
     recipient: UUID | None = None     # None for broadcasts.
-    reply_to: UUID | None = None      # Links to id of the message being replied to.
+    reply_to: UUID | None = None
     kind: str = "request"             # "request" | "response" | "notification" | "multicast".
-    payload: str = ""                 # Free-form text body (LLM-native).
+    payload: str = ""
     metadata: dict[str, str] = field(default_factory=dict)
-    # Known metadata keys:
-    #   "timeout": "30" — sync request timeout in seconds.
-    #   "priority": "high" | "normal" — advisory, for inbox ordering.
 ```
 
-JSON serialization example:
+### Delivery
 
-```json
-{
-  "id": "a1b2c3d4-...",
-  "timestamp": "2026-02-26T12:00:00Z",
-  "sender": "aaaa-...",
-  "recipient": "bbbb-...",
-  "reply_to": null,
-  "kind": "request",
-  "payload": "Please review the changes in src/auth.py and check for SQL injection.",
-  "metadata": {"priority": "high"}
-}
-```
+Each agent has an inbox (async queue). The daemon's message router validates
+sender/recipient exist in the tree, enforces one-hop routing, and enqueues.
 
-### Routing Patterns
-
-**Synchronous request-response.** Sender emits `kind=request`. Daemon delivers
-it to recipient's inbox. Sender is blocked (its provider is not polled for new
-output) until a `kind=response` with matching `reply_to` arrives. Timeout
-configurable per-message (default: none, waits indefinitely).
-
-**Asynchronous notification.** Sender emits `kind=notification`. Delivered to
-recipient's inbox. Sender continues immediately. Recipient processes it when it
-next checks its inbox.
-
-**Multicast.** Sender emits `kind=multicast` with `recipient=None`. The daemon
-resolves the sender's team (siblings sharing the same parent) and fans out
-individual copies to each sibling. Each recipient replies independently. The
-sender collects responses as they arrive (async aggregation).
-
-### Routing Rules
-
-Agents are restricted to **one-hop** communication:
-- **Up**: direct parent only (not grandparent).
-- **Down**: direct children only (not grandchildren).
-- **Horizontal**: siblings only (children of the same parent, i.e. the team).
-
-The daemon enforces these constraints at routing time. If agent A tries to
-message agent B, the router checks that B is A's parent, A's child, or A's
-sibling. All other routes are rejected with a routing error.
-
-### Message Delivery
-
-Each agent has an inbox (async queue). The daemon's message router:
-1. Validates sender/recipient exist in the agent tree.
-2. Validates one-hop routing rules (see above).
-3. Enqueues into recipient's inbox.
-4. If synchronous, registers a pending-reply record and pauses the sender.
-
-### Exposing Messaging to LLM Agents
-
-Messaging capabilities are surfaced as tool calls available to the LLM:
-
-- `send_message(recipient_name, text, sync=True)` — send to a specific agent.
-- `broadcast(text)` — multicast to the team.
-- `check_inbox()` — retrieve pending async messages.
-- `spawn_agent(name, instructions, role, workspace_subdir=None)` — create a
-  subagent. If `workspace_subdir` is set, that subdirectory of the parent's
-  workspace becomes the child's workspace root.
-- `inspect_agent(name)` — view a subordinate's recent activity.
-- `read_file(path)` / `write_file(path, content)` — access files in the
-  agent's workspace for long-term context (notes, todos, scratchpads).
-
-The daemon intercepts these tool calls from the provider's output stream,
-executes them, and injects the result back into the provider's input.
+All tool calls are non-blocking — see
+[design/tool_integration.md](design/tool_integration.md) for the execution
+model and full tool catalog. Synchronous messaging uses a two-turn pattern
+orchestrated by the daemon; the agent process is never blocked waiting for
+a reply.
 
 ---
 
-## 8. Workspace Model
-
-### Workspace Spec
+## 7. Workspace Model
 
 ```python
 @dataclass
 class WorkspaceSpec:
-    id: UUID = field(default_factory=uuid4)
-    parent_id: UUID | None = None          # For hierarchical nesting.
-    root_path: Path = ...                   # Absolute path on host.
+    id: UUID
+    parent_id: UUID | None = None
+    root_path: Path
     network_access: bool = False
     symlinks: list[SymlinkSpec] = field(default_factory=list)
 
 @dataclass
 class SymlinkSpec:
-    host_path: Path          # Source on the host or parent workspace.
-    mount_path: Path         # Target inside the workspace (relative).
-    mode: str = "ro"         # "ro" | "rw".
+    host_path: Path
+    mount_path: Path       # Relative, inside workspace.
+    mode: str = "ro"       # "ro" | "rw".
 ```
 
-### bwrap Invocation
-
-`bwrap.py` builds the `bwrap` command line from a `WorkspaceSpec`:
-
-```python
-def build_bwrap_argv(spec: WorkspaceSpec) -> list[str]:
-    argv = ["bwrap", "--die-with-parent"]
-    # Base filesystem (minimal /usr, /lib, /bin from host, read-only).
-    argv += ["--ro-bind", "/usr", "/usr"]
-    argv += ["--ro-bind", "/lib", "/lib"]
-    argv += ["--ro-bind", "/bin", "/bin"]
-    argv += ["--ro-bind", "/lib64", "/lib64"]
-    # Workspace root as writable.
-    argv += ["--bind", str(spec.root_path), "/workspace"]
-    # Symlinks.
-    for s in spec.symlinks:
-        flag = "--bind" if s.mode == "rw" else "--ro-bind"
-        argv += [flag, str(s.host_path), f"/workspace/{s.mount_path}"]
-    # Network.
-    if not spec.network_access:
-        argv += ["--unshare-net"]
-    # Proc/dev.
-    argv += ["--proc", "/proc", "--dev", "/dev"]
-    return argv
-```
-
-Provider subprocesses are launched inside bwrap. The provider's `start()` method
-receives the bwrap prefix and prepends it to the actual command:
-
-```
-bwrap <flags> -- cursor-agent --session-dir /workspace/.session ...
-```
-
-### Hierarchical Nesting
-
-A parent workspace at `/workspace/` can designate `/workspace/team-a/` as a
-child workspace. The child workspace gets its own `WorkspaceSpec` with
-`parent_id` set. The child's bwrap binds only the subdirectory as its root:
-
-```
-parent workspace: ~/.substrat/workspaces/<parent-uuid>/
-child workspace:  ~/.substrat/workspaces/<parent-uuid>/team-a/
-                  (bwrap mounts this as /workspace inside the child sandbox)
-```
-
-Intra-workspace symlinks (parent shares a file with child) are modeled as
-additional `SymlinkSpec` entries on the child's spec, with `host_path` pointing
-into the parent's directory.
-
-### Multi-Agent Workspace Sharing
-
-Multiple agents can reference the same `workspace_id`. Each agent may have
-different permissions (e.g., one agent gets RW to `src/`, another gets RO). This
-is implemented by giving each agent its own bwrap invocation with different bind
-flags for the same underlying directories.
+`bwrap.py` builds the `bwrap` command line from a `WorkspaceSpec`. Hierarchical
+nesting: a subdirectory of a parent workspace becomes the child's root.
+Multiple agents can share a workspace with different permissions (different
+bwrap bind flags for the same directories).
 
 ---
 
-## 9. Logging
+## 8. Logging
 
-Logging spans two layers. The session layer logs provider-level events
-(start/stop/suspend/resume). The agent layer logs hierarchy and messaging
-events. Both write to a shared per-agent log directory (since session and agent
-are 1:1).
+Per-agent, two formats:
 
-### Per-Agent Log Directory
+- `events.jsonl` — machine-readable. One JSON object per line. Event types:
+  `provider.started`, `provider.stopped`, `agent.spawned`, `message.sent`,
+  `message.delivered`, `tool_call.invoked`, etc.
+- `transcript.txt` — human-readable conversation log.
 
-```
-~/.substrat/agents/<uuid>/logs/
-├── events.jsonl       # Machine-readable structured log.
-└── transcript.txt     # Human-readable conversation transcript.
-```
+Both implement a common `LogWriter` protocol (`write`, `flush`, `close`).
+Log rotation is out of scope for v1.
 
-### JSONL Schema
+---
 
-Each line in `events.jsonl` is a self-contained JSON object:
+## 9. Crash Recovery
 
-```json
-{
-  "ts": "2026-02-26T12:00:00.123Z",
-  "event": "provider.started",
-  "agent_id": "...",
-  "data": { "provider": "cursor-agent" }
-}
-```
-
-Session-layer event types (provider lifecycle):
-- `provider.started`, `provider.stopped`, `provider.suspended`, `provider.resumed`, `provider.error`.
-
-Agent-layer event types (hierarchy and messaging):
-- `agent.spawned`, `agent.terminated`.
-- `message.sent`, `message.delivered`, `message.response`.
-- `workspace.created`, `workspace.deleted`.
-- `tool_call.invoked`, `tool_call.result`.
-
-### Plaintext Transcript
-
-`transcript.txt` is a human-friendly log of the conversation:
-
-```
-[12:00:00] USER → agent-alpha: Please review src/auth.py
-[12:00:05] agent-alpha → agent-beta: Check for SQL injection in src/auth.py
-[12:00:12] agent-beta → agent-alpha: Found one issue on line 42...
-[12:00:15] agent-alpha → USER: Review complete. One SQL injection found...
-```
-
-### Implementation
-
-Both writers share a common interface:
-
-```python
-class LogWriter(Protocol):
-    async def write(self, event: dict) -> None: ...
-    async def flush(self) -> None: ...
-    async def close(self) -> None: ...
-```
-
-`JsonlWriter` appends JSON + newline. `PlaintextWriter` formats a readable line
-from the event dict's key fields. Both are instantiated per-session and stored
-in the session's log directory.
-
-Log rotation is out of scope for v1. Sessions are expected to be finite.
+See [design/crash_recovery.md](design/crash_recovery.md).
 
 ---
 
 ## 10. Testing Strategy
 
-### Principles
-
 - **Strict mypy** (`--strict`) across the entire codebase.
-- **pytest** as the test runner. No unittest subclasses.
-- Tests live in `tests/unit/` and `tests/integration/`.
+- **pytest** as the test runner.
+- `tests/unit/` — pure logic, no I/O.
+- `tests/integration/` — real I/O, mock providers.
+- e2e tests gated behind `--run-e2e` flag.
+- Stress tests gated behind `@pytest.mark.stress`.
 
-### Unit Tests
-
-Unit tests cover pure logic with no I/O:
-- `test_session_model.py` — state machine transitions, valid/invalid.
-- `test_agent_tree.py` — add/remove nodes, parent/children/team queries.
-- `test_messaging.py` — envelope construction, routing validation,
-  serialization round-trip.
-- `test_workspace_model.py` — spec construction, symlink composition.
-- `test_bwrap.py` — bwrap argv generation from spec (no actual bwrap calls).
-- `test_provider_base.py` — ensure protocol compliance via mock providers.
-
-### Integration Tests
-
-Integration tests use real I/O but mock LLM providers:
-
-- `test_daemon_lifecycle.py` — start daemon, verify socket exists, stop
-  daemon, verify cleanup.
-- `test_cli_daemon.py` — start daemon, run CLI commands, verify responses.
-- `test_session_persistence.py` — create session, suspend, restart daemon,
-  resume, verify state.
-
-### Mocking Providers
-
-A `MockProvider` implements `AgentProvider` with canned responses:
-
-```python
-class MockProvider:
-    name = "mock"
-
-    def __init__(self, responses: list[str]) -> None:
-        self._responses = iter(responses)
-
-    async def start(self, session_id: UUID, instructions: str) -> None:
-        pass
-
-    async def send(self, message: str) -> AsyncGenerator[str, None]:
-        response = next(self._responses)
-        yield response
-
-    async def suspend(self) -> bytes:
-        return b""
-
-    async def resume(self, state: bytes) -> None:
-        pass
-
-    async def stop(self) -> None:
-        pass
-```
-
-This keeps integration tests fast and deterministic. Real provider tests
-(actually calling cursor-agent or an API) are gated behind a `--run-e2e` flag.
-
-### CI
-
-- `mypy --strict src/ tests/` must pass.
-- `pytest tests/unit/` must pass.
-- `pytest tests/integration/` must pass.
-- e2e tests are manual or triggered by explicit flag.
+Mock provider implements `AgentProvider` + `ProviderSession` protocols with
+canned responses for fast, deterministic integration tests.
 
 ---
 
 ## Open Questions
 
-Items deferred to later design iterations:
-
-- **Configuration format.** TOML? YAML? CLI flags only? TBD.
-- **Authentication/authorization.** Daemon currently trusts any local socket
-  connection. Multi-user scenarios not addressed.
-- **Agent memory/tools beyond files.** Basic file read/write is exposed as tool
-  calls (§7). The high-level design mentions "other tools TBD" for long-term
-  context. Possible extensions: structured todo lists, vector store, knowledge
-  base. The convention for workspace-local context files (naming, format) is
-  not yet defined.
-- **Hot-reload of providers.** Can we add a new provider without restarting the
-  daemon?
-- **Resource limits.** CPU/memory caps per workspace, token budgets per session.
-- **Streaming UX.** How does `agent attach` handle interleaved output from
-  multiple agents in the tree?
+- **Configuration format.** TOML? YAML? CLI flags only?
+- **Authentication.** Daemon trusts any local socket connection. Multi-user
+  not addressed.
+- **Resource limits.** CPU/memory per workspace, token budgets per session.
+- **Streaming UX.** How `agent attach` handles interleaved output from
+  multiple agents.

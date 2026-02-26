@@ -7,8 +7,8 @@ Agent orchestration framework.
 ## Architecture
 
 * Daemon + CLI split: long-running daemon owns all state, thin CLI client for user interaction.
-* Pluggable provider abstraction — each LLM/agent backend implements a common protocol (start/send/suspend/resume/stop). Providers are interchangeable.
-* Agent capabilities (spawning, messaging, file access) are exposed as tool calls that the daemon intercepts from the LLM output stream.
+* Pluggable provider abstraction — each LLM/agent backend implements a common protocol (factory creates sessions, sessions handle send/suspend/stop). Providers are interchangeable.
+* Agent capabilities (spawning, messaging, file access) are exposed as tool calls. The delivery mechanism is provider-specific.
 
 ## Layers
 
