@@ -25,5 +25,6 @@ If the two disagree, `substrat.md` wins.
 
 ## Commits
 
+- Run `pre-commit run --all-files` before committing. If it fails, fix and retry. No shortcuts.
 - Sign commits: `git commit -s`.
 - Commit messages should be descriptive, or at least funny. Not both is acceptable. Neither is not.
