@@ -18,7 +18,7 @@ class SessionState(enum.Enum):
 class Session:
     id: UUID = field(default_factory=uuid4)
     state: SessionState = SessionState.CREATED
-    provider_name: str = "cursor-agent"
+    provider_name: str = ""
     model: str = ""
     created_at: str = ""           # ISO 8601.
     suspended_at: str | None = None
