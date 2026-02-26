@@ -99,6 +99,17 @@ fsync is simple and sufficient:
 No WAL, no periodic checkpoints, no batching. If performance ever matters
 here, something has gone very wrong architecturally.
 
+### Atomic writes
+
+All persisted files use write-to-temp-then-rename:
+
+1. Write to `<path>.tmp` (same directory = same filesystem).
+2. `fsync` the file descriptor.
+3. `os.replace()` over the target (atomic per POSIX).
+
+A crash mid-write leaves a stale `.tmp` file, never a corrupted target.
+Recovery ignores `.tmp` files.
+
 ## Testing
 
 ### Fault injection
