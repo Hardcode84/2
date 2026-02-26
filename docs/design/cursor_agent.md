@@ -7,7 +7,7 @@ Based on `cursor-agent` version `2026.02.13-41ac335`.
 Headless mode with JSON streaming:
 
 ```
-cursor-agent --print --output-format stream-json --trust \
+cursor-agent --print --output-format stream-json --trust --approve-mcps \
     --model <model> --workspace <path> "<prompt>"
 ```
 
@@ -16,6 +16,7 @@ Key flags:
 - `--output-format stream-json` — newline-delimited JSON events on stdout.
 - `--stream-partial-output` — emit text deltas as they arrive (optional).
 - `--trust` — skip workspace trust prompt (required for headless).
+- `--approve-mcps` — auto-approve all MCP servers (required for headless).
 - `--model <id>` — model selection (e.g. `sonnet-4.6`, `opus-4.6`).
 - `--workspace <path>` — working directory for the agent.
 - `--resume <session-id>` — resume an existing chat session.
@@ -28,7 +29,81 @@ Key flags:
 - `cursor-agent ls` — interactive session picker.
 - `cursor-agent resume` — resume latest session.
 
-Sessions are server-side. The session ID is the only state needed to resume.
+### Local storage
+
+Sessions are stored locally as SQLite databases, not server-side:
+
+```
+~/.cursor/chats/<workspace-hash>/<session-uuid>/store.db
+```
+
+The `store.db` contains two tables:
+- `meta` — hex-encoded JSON with agent metadata (agentId, name, mode,
+  latestRootBlobId).
+- `blobs` — content-addressed blob store (Merkle-tree-like). Stores user
+  messages, assistant responses, and internal state as `{id: TEXT, data: BLOB}`.
+
+The conversation history is a chain of blobs linked by hashes, with the root
+pointer in `meta`. cursor-agent sends messages to Cursor's API for inference
+but persists all state locally.
+
+Implications:
+- `--resume` works after process death — SQLite survives crashes (WAL mode).
+- The `~/.cursor/chats/` directory must be accessible to cursor-agent at
+  runtime. Inside bwrap, this needs a bind mount.
+- The session UUID alone is sufficient to resume, but only on the same machine
+  with the same `~/.cursor/chats/` directory.
+
+## MCP Integration
+
+cursor-agent discovers MCP servers from `.cursor/mcp.json` in the workspace.
+
+### Config format
+
+```json
+{
+  "mcpServers": {
+    "server-name": {
+      "command": "/path/to/binary",
+      "args": ["--flag", "value"],
+      "env": {"KEY": "value"}
+    }
+  }
+}
+```
+
+Transport is stdio: cursor-agent spawns the command as a child process and
+speaks MCP over stdin/stdout. Also supports `"url"` for streamable-http.
+
+### Management CLI
+
+```
+agent mcp list                  # Show configured servers + status.
+agent mcp list-tools <name>     # List tools exposed by a server.
+agent mcp enable <name>         # Pre-approve a server.
+agent mcp disable <name>        # Disable a server.
+agent mcp login <name>          # OAuth auth for a server.
+```
+
+No `add`/`remove` — edit `.cursor/mcp.json` directly.
+
+### Approval
+
+MCP servers require approval before cursor-agent connects. Approval state is
+stored per-project at:
+
+```
+~/.cursor/projects/<workspace-slug>/mcp-approvals.json   # ["name-<hash>", ...]
+~/.cursor/projects/<workspace-slug>/mcp-disabled.json     # [...]
+```
+
+The approval hash is derived from command + args. For headless use,
+`--approve-mcps` bypasses approval entirely (only during agent runs, not
+with `mcp list`).
+
+### Limits
+
+cursor-agent caps tools at 40 across all MCP servers combined.
 
 ## Output Protocol
 
@@ -111,12 +186,15 @@ On error: `"is_error": true`, `"result"` contains the error message.
 
 ## Suspend / Restore
 
-cursor-agent sessions are server-side. To suspend, just store the `session_id`
-string. To restore, pass `--resume <session_id>` on the next invocation. No
-local state management needed.
+To suspend, store the session UUID and workspace path. To restore, pass
+`--resume <session_id>` on the next invocation. All conversation state is in
+the local SQLite database — no server-side state to worry about.
 
 ## Open Questions
 
-- How to inject custom tools (needed for agent messaging).
-- MCP server integration — `cursor-agent mcp` subcommand exists, investigate.
-- Behavior inside bwrap with restricted/no network.
+- Whether `--workspace` controls the chat storage path or only the agent's
+  working directory (affects bwrap bind mount strategy).
+- Behavior inside bwrap with restricted/no network (cursor-agent needs API
+  access for inference — network cannot be fully blocked).
+- MCP server process lifecycle inside bwrap — does seccomp affect the daemon
+  socket connection?
