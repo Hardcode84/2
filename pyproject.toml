@@ -34,6 +34,9 @@ mypy_path = "src"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "e2e: end-to-end tests that hit real APIs (skip by default, run with --run-e2e)",
+]
 
 [tool.ruff]
 src = ["src", "tests"]
