@@ -176,14 +176,16 @@ bwrap bind flags for the same directories).
 
 ## 8. Logging
 
-Per-agent, two formats:
+Per-agent, at `~/.substrat/agents/<uuid>/`:
 
-- `events.jsonl` — machine-readable. One JSON object per line. Event types:
-  `provider.started`, `provider.stopped`, `agent.spawned`, `message.sent`,
-  `message.delivered`, `tool_call.invoked`, etc.
-- `transcript.txt` — human-readable conversation log.
+- `events.jsonl` — append-only structured log. Source of truth for crash
+  recovery. Every send/response, state transition, and message routing event.
+  Fsynced per turn. See [design/crash_recovery.md](design/crash_recovery.md).
+- `transcript.txt` — human-readable conversation log. Observability only.
 
-Both implement a common `LogWriter` protocol (`write`, `flush`, `close`).
+All log entries are plain JSON (strings, numbers, bools, lists, dicts — no
+opaque Python objects). This is a stability contract for replayability.
+
 Log rotation is out of scope for v1.
 
 ---
