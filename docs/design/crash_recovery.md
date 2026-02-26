@@ -99,6 +99,53 @@ fsync is simple and sufficient:
 No WAL, no periodic checkpoints, no batching. If performance ever matters
 here, something has gone very wrong architecturally.
 
+## Testing
+
+### Fault injection
+
+A mock provider (`FakeSession`) that returns canned responses with
+controllable delays. The test harness wraps every persist operation with a
+hook that can kill the daemon at that exact point:
+
+- After `create()` but before writing session record.
+- After writing session record but before first `send()`.
+- After `send()` completes but before delivering the reply.
+- After enqueueing a message but before marking it delivered.
+- After writing tree link but before returning spawn success.
+- Mid-inference (provider process alive, daemon dies).
+
+For each injection point: crash, restart daemon, run recovery, assert
+invariants.
+
+### Recovery invariants (the oracle)
+
+After every crash+restart, these must hold:
+
+- No ACTIVE sessions exist (all moved to SUSPENDED).
+- Every session record on disk has a valid state and parseable provider blob.
+- Agent tree is consistent: no orphan children, no dangling parent refs.
+- Undelivered messages are either in the log or were never acknowledged to
+  the sender.
+- The JSONL event log is a prefix of the pre-crash log (no corruption, no
+  partial writes beyond the last fsynced entry).
+
+### Fuzzer
+
+Randomized stress test that exercises crash recovery at scale:
+
+- Spawn a configurable number of agents in random tree topologies.
+- Agents exchange messages at random intervals.
+- A chaos thread kills the daemon at random moments (uniform over all
+  persist operations, biased toward the interesting ones).
+- After each kill: restart, run recovery, check invariants.
+- Repeat for N iterations or until a violation is found.
+
+The fuzzer should be deterministic given a seed, so failures are reproducible.
+Log the seed, the sequence of operations, and the crash point on failure.
+
+This is not a unit test — it's a standalone harness that runs for minutes or
+hours. Gate it behind a separate pytest marker (e.g. `@pytest.mark.stress`).
+
 ## Open questions
 
 - What recovery prompt to give root agents after a crash.
