@@ -131,20 +131,32 @@ After every crash+restart, these must hold:
 
 ### Fuzzer
 
-Randomized stress test that exercises crash recovery at scale:
+Deterministic, simulation-based. No real timing, no threads, no sleeps.
 
-- Spawn a configurable number of agents in random tree topologies.
-- Agents exchange messages at random intervals.
-- A chaos thread kills the daemon at random moments (uniform over all
-  persist operations, biased toward the interesting ones).
-- After each kill: restart, run recovery, check invariants.
-- Repeat for N iterations or until a violation is found.
+1. **Generate** a random sequence of actions from a seeded RNG:
+   `create_agent`, `send_message`, `broadcast`, `spawn_agent`,
+   `deliver_message`, `suspend_agent`, etc.
 
-The fuzzer should be deterministic given a seed, so failures are reproducible.
-Log the seed, the sequence of operations, and the crash point on failure.
+2. **Execute** the sequence against the real daemon code (with a mock
+   provider). Each action advances the state machine — no actual delays,
+   all timing is simulated.
 
-This is not a unit test — it's a standalone harness that runs for minutes or
-hours. Gate it behind a separate pytest marker (e.g. `@pytest.mark.stress`).
+3. **Crash** after a random prefix of N steps (chosen from the same seed).
+   The "crash" just stops execution and discards in-memory state.
+
+4. **Recover** by running the recovery procedure against the persisted
+   state on disk.
+
+5. **Replay** the same N-step prefix against a fresh in-memory model (the
+   oracle) that tracks what *should* have been persisted by each step.
+   Compare the recovered state with the oracle's expected state.
+
+6. **Assert** that recovered state is a valid subset of the oracle state:
+   everything that was fsynced before the crash point is present, nothing
+   after it is.
+
+Repeat for many seeds. Log the seed and step index on failure for
+reproduction. Gate behind `@pytest.mark.stress`.
 
 ## Open questions
 
