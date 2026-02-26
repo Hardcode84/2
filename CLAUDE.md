@@ -21,6 +21,7 @@ If docs disagree, `substrat.md` wins.
 - Do not invent new layers. Three is already too many.
 - Sessions know nothing about trees. Trees know nothing about workspaces. Keep it that way.
 - Multicast is horizontal only. Do not add downward multicast. We tried. We removed it. Don't.
+- Simplicity over features. If it works without the new thing, don't add the new thing. Fight scope creep like it owes you money.
 - `README.md` is not documentation. Do not update it with project info. It is perfect as it is.
 
 ## Commits
