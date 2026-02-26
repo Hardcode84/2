@@ -21,9 +21,13 @@ If docs disagree, `substrat.md` wins.
 - Python. Strict mypy. pytest. No exceptions (well, the Python kind is fine).
 - Do not invent new layers. Three is already too many.
 - Sessions know nothing about trees. Trees know nothing about workspaces. Keep it that way.
-- Multicast is horizontal only. Do not add downward multicast. We tried. We removed it. Don't.
+- Multicast is horizontal only. No downward multicast.
 - Simplicity over features. If it works without the new thing, don't add the new thing. Fight scope creep like it owes you money.
 - `README.md` is not documentation. Do not update it with project info. It is perfect as it is.
+
+## Tone
+
+Code comments, docstrings, and commit messages share the same voice: terse, dry, informative. Wit is welcome, fluff is not. Say what the thing does, not what you wish it did. If a comment doesn't earn its line, delete it.
 
 ## Commits
 
