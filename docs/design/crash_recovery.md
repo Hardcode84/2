@@ -169,6 +169,24 @@ Deterministic, simulation-based. No real timing, no threads, no sleeps.
 Repeat for many seeds. Log the seed and step index on failure for
 reproduction. Gate behind `@pytest.mark.stress`.
 
+### Crash granularity
+
+The interesting crash points are I/O boundaries (write, fsync, rename), not
+arbitrary bytecode ops — memory state evaporates on crash regardless. Python
+has no clean way to hook individual bytecodes, and it wouldn't help anyway.
+
+The persistence layer (`atomic_write` and friends) is mocked with a
+crash-injecting wrapper that can fail at each sub-step:
+
+- After `write()` but before `fsync()` (data in page cache, not on disk).
+- After `fsync()` but before `os.replace()` (temp file durable, target stale).
+- After `os.replace()` (fully committed).
+
+The mock tracks a "crash counter" — decrement on each I/O op, crash when it
+hits zero. This gives deterministic, reproducible sub-step crashes without
+touching real I/O. For paranoid validation against real filesystems, LazyFS
+(FUSE-based power loss simulator) can discard unfsynced pages.
+
 ## Open questions
 
 - What recovery prompt to give root agents after a crash.
