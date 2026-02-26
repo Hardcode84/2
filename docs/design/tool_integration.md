@@ -5,16 +5,83 @@ running inside cursor-agent.
 
 ## Mechanism: MCP
 
-cursor-agent supports MCP servers (`cursor-agent mcp` subcommand). We run a
-Substrat MCP server that exposes our tools. cursor-agent discovers and calls
-them natively during execution.
+cursor-agent discovers MCP servers from `.cursor/mcp.json` in the workspace
+root. We run a Substrat MCP server (stdio transport) that exposes our tools.
+cursor-agent spawns it as a child process and communicates over stdin/stdout
+using the Model Context Protocol.
 
-Each cursor-agent subprocess connects to the MCP server on startup. The server
-is per-daemon (not per-agent) — all agents talk to the same server, identified
-by their session ID passed via tool call context.
+### Registration
 
-TODO: investigate `cursor-agent mcp` subcommand, figure out how to register a
-local MCP server for a session.
+The daemon writes `.cursor/mcp.json` into each agent's workspace before
+spawning cursor-agent:
+
+```json
+{
+  "mcpServers": {
+    "substrat": {
+      "command": "/path/to/substrat-mcp-server",
+      "args": ["--agent-id", "<uuid>"],
+      "env": {
+        "SUBSTRAT_SOCKET": "/path/to/daemon.sock"
+      }
+    }
+  }
+}
+```
+
+cursor-agent reads this on startup, spawns our server as a child process, and
+makes its tools available to the agent natively.
+
+### Headless invocation
+
+For `--print` mode (our use case), two flags are required:
+
+- `--trust` — skip interactive workspace trust prompt.
+- `--approve-mcps` — auto-approve all configured MCP servers.
+
+Without `--approve-mcps`, cursor-agent will refuse to connect to unapproved
+servers in headless mode. The flag only takes effect during agent runs (not
+with `mcp list` or other management subcommands).
+
+### Agent identity
+
+Each agent gets its own MCP server instance (spawned by cursor-agent as a
+child). The agent's identity is baked into the server's args at config
+generation time — no runtime context passing needed. The server connects back
+to the daemon over `SUBSTRAT_SOCKET` and identifies itself with the agent UUID.
+
+### MCP management CLI
+
+cursor-agent exposes `agent mcp {list,list-tools,enable,disable,login}` for
+managing servers. We don't use these — Substrat owns the config file and
+passes `--approve-mcps` to bypass the approval flow.
+
+### Limits
+
+cursor-agent caps tools at 40 across all MCP servers combined. Our tool
+catalog is small (5–6 tools), so this is not a concern unless agents also use
+third-party MCP servers.
+
+## Workspace and bwrap Integration
+
+Each agent's workspace is a bwrap sandbox. The daemon generates
+`.cursor/mcp.json` with the correct paths and places it in the workspace.
+
+For bwrap sandboxes, the MCP config can be a read-only bind mount (or
+symlink) from a daemon-managed location:
+
+```
+~/.substrat/agents/<uuid>/mcp.json  →  <workspace>/.cursor/mcp.json (RO)
+```
+
+This avoids writing into the sandbox and lets the daemon update the config
+without touching the workspace filesystem. The MCP server binary itself must
+be accessible inside the sandbox — either bind-mounted or on a shared
+read-only path.
+
+The MCP server process runs inside the sandbox (spawned by cursor-agent as a
+child), but connects back to the daemon socket which is bind-mounted into the
+sandbox. This is the only network-like hole in the sandbox wall.
 
 ## Execution Model: Non-blocking Tools Only
 
@@ -41,7 +108,7 @@ MCP tool returns immediately:
 The cursor-agent subprocess finishes its turn and exits. Slot is freed.
 
 **Turn 2**: when the recipient replies, the daemon sends a new message to the
-original agent (spawning a fresh subprocess):
+original agent (spawning a fresh subprocess via `--resume`):
 ```
 Reply from <recipient> (to message <uuid>):
 <reply text>
@@ -138,10 +205,10 @@ within the bwrap workspace naturally.
 
 ## Open Questions
 
-- How exactly to register the MCP server with cursor-agent (per-session config?
-  global config? command-line flag?).
-- How to pass agent identity context to MCP tool calls (which agent is calling?).
-- Whether cursor-agent supports MCP tool call in `--print` mode.
-- How replies are injected — as a new `send()` call, or is there a way to
-  append to the conversation without a fresh subprocess?
+- How replies are injected — as a new `send()` call via `--resume`, or is
+  there a way to append to the conversation without a fresh subprocess?
 - Rate limiting / abuse prevention for tool calls.
+- Whether the MCP server process inherits bwrap's seccomp filters or needs
+  special handling for the daemon socket connection.
+- Graceful behavior when cursor-agent hits the 40-tool limit (unlikely with
+  our catalog alone, but possible if combined with user MCP servers).
