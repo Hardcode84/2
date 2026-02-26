@@ -25,6 +25,8 @@ If the two disagree, `substrat.md` wins.
 
 ## Commits
 
+- Small, focused commits. One logical change per commit. If you're wondering whether to split — split.
 - Run `pre-commit run --all-files` before committing. If it fails, fix and retry. No shortcuts.
 - Sign commits: `git commit -s`.
+- Do not commit TODO files, scratch notes, or other ephemera.
 - Commit messages should be descriptive, or at least funny. Not both is acceptable. Neither is not.
