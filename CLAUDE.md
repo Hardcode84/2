@@ -6,7 +6,8 @@ Yes, you might be orchestrated by it one day. No, you don't get a say in this.
 ## Project state
 
 Read `docs/substrat.md` first (high-level truth), then `docs/implementation.md` (overview).
-Per-component design lives in `docs/design/` — these are the living specs. Read the relevant design doc before touching a component, and update it when the code diverges.
+Per-component design lives in `docs/design/` — these are the living specs. Provider-specific details (cursor-agent, future providers) live in `docs/design/providers/`. Keep general infra docs provider-agnostic.
+Read the relevant design doc before touching a component, and update it when the code diverges.
 If docs disagree, `substrat.md` wins.
 
 ## Architecture in 30 seconds
