@@ -75,10 +75,19 @@ slots are full, the LRU session is suspended to free one.
 
 ```python
 class SessionMultiplexer:
-    def __init__(self, max_slots: int = 4) -> None:
+    def __init__(self, store: SessionStore, max_slots: int = 4) -> None:
         self._slots: dict[UUID, ProviderSession] = {}
-        self._lru: list[UUID] = []
+        self._lru: list[UUID] = []      # Released sessions, head = next victim.
+        self._held: set[UUID] = set()   # Acquired, not evictable.
 
-    async def acquire(self, session_id: UUID) -> ProviderSession: ...
+    async def put(self, session_id: UUID, ps: ProviderSession) -> None: ...
+    async def acquire(self, session: Session, provider: AgentProvider) -> ProviderSession: ...
     async def release(self, session_id: UUID) -> None: ...
+    async def remove(self, session_id: UUID) -> None: ...
 ```
+
+`put()` slots a freshly-created provider session. `acquire()` returns a cached
+slot or restores from suspension (evicting LRU if full). Sessions mid-send are
+held (non-evictable); `release()` returns them to the LRU queue. `remove()`
+tears down a session (calls `stop()`, no state blob saved). If all slots are
+held when a new acquire arrives, `RuntimeError` — no async waiting for now.

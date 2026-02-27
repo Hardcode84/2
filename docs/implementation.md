@@ -22,15 +22,12 @@ routing. Blocking operations (bwrap, subprocess spawning) run in a
 ~/.substrat/
 ├── daemon.sock
 ├── daemon.pid
-├── sessions/         # Persisted session state.
+├── agents/
 │   └── <uuid>/
-│       └── state.json
-├── agents/           # Per-agent data and logs.
-│   └── <uuid>/
-│       ├── mcp.json  # Generated MCP config for this agent.
-│       └── logs/
-│           ├── events.jsonl
-│           └── transcript.txt
+│       ├── session.json    # Atomic snapshot of session state.
+│       ├── events.jsonl    # Append-only event log (source of truth).
+│       ├── transcript.txt  # Human-readable conversation log.
+│       └── mcp.json        # Generated MCP config for this agent.
 └── workspaces/
     └── <uuid>/
 ```
