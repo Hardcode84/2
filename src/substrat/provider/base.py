@@ -3,6 +3,8 @@
 from collections.abc import AsyncGenerator
 from typing import Protocol, runtime_checkable
 
+from substrat.logging.event_log import EventLog
+
 
 @runtime_checkable
 class ProviderSession(Protocol):
@@ -27,6 +29,7 @@ class AgentProvider(Protocol):
 
     Each provider type (cursor-agent, claude-cli, etc.) implements this once.
     Sessions are the per-agent conversation handles it produces.
+    The caller owns the EventLog and passes it in — providers never create logs.
     """
 
     @property
@@ -34,10 +37,19 @@ class AgentProvider(Protocol):
         """Provider type identifier (e.g. "cursor-agent", "claude-cli")."""
         ...
 
-    async def create(self, model: str, system_prompt: str) -> ProviderSession:
+    async def create(
+        self,
+        model: str,
+        system_prompt: str,
+        log: EventLog | None = None,
+    ) -> ProviderSession:
         """Start a new conversation with the given model and instructions."""
         ...
 
-    async def restore(self, state: bytes) -> ProviderSession:
+    async def restore(
+        self,
+        state: bytes,
+        log: EventLog | None = None,
+    ) -> ProviderSession:
         """Recreate a session from a previously suspended state blob."""
         ...

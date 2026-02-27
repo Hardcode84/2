@@ -6,6 +6,8 @@ import shutil
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
+from substrat.logging import EventLog, log_method
+
 
 def _cursor_binary() -> str:
     """Find the cursor-agent binary."""
@@ -19,18 +21,26 @@ class CursorSession:
     """A live conversation with cursor-agent.
 
     Each send() spawns a new subprocess with --resume to continue
-    the server-side session.
+    the local session.
     """
 
-    def __init__(self, session_id: str, model: str, workspace: Path) -> None:
+    def __init__(
+        self,
+        session_id: str,
+        model: str,
+        workspace: Path,
+        log: EventLog | None = None,
+    ) -> None:
         self._session_id = session_id
         self._model = model
         self._workspace = workspace
+        self._log = log
 
     @property
     def session_id(self) -> str:
         return self._session_id
 
+    @log_method(before=True, after=True)
     async def send(self, message: str) -> AsyncGenerator[str, None]:
         """Send a message, yield the final response text."""
         proc = await asyncio.create_subprocess_exec(
@@ -58,8 +68,9 @@ class CursorSession:
                 raise RuntimeError(event.get("result", "cursor-agent error"))
         await proc.wait()
 
+    @log_method(after=True)
     async def suspend(self) -> bytes:
-        """Serialize state. Session is server-side, just store the ID."""
+        """Serialize state — session ID, model, workspace path."""
         state = {
             "session_id": self._session_id,
             "model": self._model,
@@ -67,8 +78,11 @@ class CursorSession:
         }
         return json.dumps(state).encode()
 
+    @log_method(after=True)
     async def stop(self) -> None:
         """Nothing to clean up — subprocesses are per-send."""
+        if self._log is not None:
+            self._log.close()
 
     def _build_cmd(self, prompt: str) -> list[str]:
         return [
@@ -88,32 +102,68 @@ class CursorSession:
 
 
 class CursorAgentProvider:
-    """Factory for cursor-agent sessions."""
+    """Factory for cursor-agent sessions.
+
+    The caller owns the EventLog — this provider just writes events to it.
+    """
 
     @property
     def name(self) -> str:
         return "cursor-agent"
 
-    async def create(self, model: str, system_prompt: str) -> CursorSession:
+    async def create(
+        self,
+        model: str,
+        system_prompt: str,
+        log: EventLog | None = None,
+    ) -> CursorSession:
         """Create a new cursor-agent session."""
         session_id = await self._create_chat()
+        if log is not None:
+            log.log(
+                "session.created",
+                {
+                    "provider": self.name,
+                    "model": model,
+                    "session_id": session_id,
+                    "system_prompt": system_prompt,
+                    "workspace": "/tmp",
+                },
+            )
         session = CursorSession(
             session_id=session_id,
             model=model,
             workspace=Path("/tmp"),
+            log=log,
         )
         if system_prompt:
             async for _ in session.send(system_prompt):
                 pass
         return session
 
-    async def restore(self, state: bytes) -> CursorSession:
+    async def restore(
+        self,
+        state: bytes,
+        log: EventLog | None = None,
+    ) -> CursorSession:
         """Restore from a suspended state blob."""
         data = json.loads(state.decode())
+        session_id = data["session_id"]
+        if log is not None:
+            log.log(
+                "session.restored",
+                {
+                    "provider": self.name,
+                    "model": data["model"],
+                    "session_id": session_id,
+                    "workspace": data["workspace"],
+                },
+            )
         return CursorSession(
-            session_id=data["session_id"],
+            session_id=session_id,
             model=data["model"],
             workspace=Path(data["workspace"]),
+            log=log,
         )
 
     @staticmethod

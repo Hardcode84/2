@@ -16,19 +16,25 @@ requirement.
 
 ## Event log format
 
+Context fields (`agent_id`, etc.) are set by the caller when creating the
+`EventLog` and injected into every entry. Event-specific payload lives under
+`data`. Event names derive from provider method names (`send`, `suspend`) with
+a `.result` suffix for after-call entries.
+
 ```jsonl
-{"ts": "...", "event": "session.created", "agent_id": "...", "provider": "...", "model": "...", "system_prompt": "..."}
-{"ts": "...", "event": "session.send", "agent_id": "...", "prompt": "..."}
-{"ts": "...", "event": "session.response", "agent_id": "...", "text": "..."}
-{"ts": "...", "event": "session.suspended", "agent_id": "..."}
-{"ts": "...", "event": "message.enqueued", "message_id": "...", "sender": "...", "recipient": "..."}
-{"ts": "...", "event": "message.delivered", "message_id": "..."}
+{"agent_id":"...","ts":"...","event":"session.created","data":{"provider":"...","model":"...","session_id":"...","system_prompt":"...","workspace":"..."}}
+{"agent_id":"...","ts":"...","event":"send","data":{"message":"..."}}
+{"agent_id":"...","ts":"...","event":"send.result","data":{"text":"..."}}
+{"agent_id":"...","ts":"...","event":"suspend.result","data":{"result":"<base64>"}}
+{"agent_id":"...","ts":"...","event":"session.restored","data":{"provider":"...","model":"...","session_id":"...","workspace":"..."}}
+{"agent_id":"...","ts":"...","event":"message.enqueued","data":{"message_id":"...","sender":"...","recipient":"..."}}
+{"agent_id":"...","ts":"...","event":"message.delivered","data":{"message_id":"..."}}
 ```
 
 Location: `~/.substrat/agents/<uuid>/events.jsonl`.
 
-Fsynced after each complete turn (send + response pair). Cost is negligible —
-fsync takes milliseconds, inference takes seconds.
+Fsynced after every `log()` call. Cost is negligible — fsync takes
+milliseconds, inference takes seconds.
 
 ### Serialization contract
 
@@ -58,8 +64,8 @@ the daemon's messaging state.
 No server-side or local state. The full conversation must be reconstructed:
 
 1. Read the event log.
-2. Replay the chain of `session.send` / `session.response` pairs to rebuild
-   the conversation context.
+2. Replay the chain of `send` / `send.result` pairs to rebuild the
+   conversation context.
 3. Create a fresh API session with the reconstructed context.
 
 The event log is the only copy of the conversation. If the log is lost, the
@@ -73,9 +79,9 @@ session is unrecoverable.
   `send()`.
 - **Agent tree survives crashes.** Parent-child links written before spawn
   is acknowledged.
-- **Event log is durable up to the last fsync.** Append-only, fsynced after
-  each complete turn. Partial last line (crash mid-write) is truncated on
-  recovery.
+- **Event log is durable up to the last fsync.** Append-only, fsynced per
+  entry. Pending-file WAL ensures no acknowledged entry is lost. Partial
+  trailing lines from crash mid-write are truncated on recovery.
 - **Pending messages survive crashes.** Enqueue events are logged before
   delivery.
 
@@ -148,8 +154,15 @@ All persisted files (session records, tree) use write-to-temp-then-rename:
 A crash mid-write leaves a stale `.tmp` file, never a corrupted target.
 Recovery ignores `.tmp` files.
 
-The event log is append-only, not atomic-replaced. A crash mid-append leaves
-a partial last line which is truncated on recovery (valid JSONL prefix).
+The event log uses a pending-file WAL for crash safety:
+
+1. Write the entry to `events.pending` and fsync.
+2. Append the entry to `events.jsonl` and fsync.
+3. Unlink `events.pending`.
+
+On recovery, if `.pending` exists, its content is appended to the main log
+(with tail-dedup to avoid doubles). A partial trailing line from a crash
+mid-append is truncated before the pending entry is replayed.
 
 ## Testing
 
