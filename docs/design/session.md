@@ -91,3 +91,18 @@ slot or restores from suspension (evicting LRU if full). Sessions mid-send are
 held (non-evictable); `release()` returns them to the LRU queue. `remove()`
 tears down a session (calls `stop()`, no state blob saved). If all slots are
 held when a new acquire arrives, `RuntimeError` — no async waiting for now.
+
+### Slot interaction with tool calls
+
+The two-phase messaging pattern (`send_message` with `sync=true`) and deferred
+`spawn_agent` are both designed to minimize slot pressure:
+
+- **Sync messaging**: agent sends, turn ends, slot released. Reply delivered as
+  a new turn that re-acquires the slot. Between turns the session is evictable.
+- **Deferred spawn**: `spawn_agent` returns immediately during the parent's
+  turn. The daemon creates the child's provider session after the parent
+  releases its slot, avoiding concurrent held slots for parent + child.
+
+The multiplexer knows nothing about messaging or spawn queues — the daemon
+layer above orchestrates `acquire()`/`release()`/`put()` calls at the right
+times. See `tool_integration.md` for the full execution model.

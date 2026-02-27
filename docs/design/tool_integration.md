@@ -50,11 +50,26 @@ The agent continues from there.
 The agent does not need to explicitly poll or manage this — the daemon
 orchestrates the two-turn flow.
 
+### Deferred execution
+
+Some tools record intent and defer heavy work until the agent's turn ends:
+
+- **`spawn_agent`**: registers the child in the agent tree immediately (so the
+  parent can reference it by name), but defers `provider.create()` +
+  `mux.put()` until the parent's slot is released. The daemon maintains a
+  pending-spawn queue drained between turns.
+
+This keeps the parent's turn fast and avoids holding two slots simultaneously
+(parent + child). With `max_slots=4`, a parent can spawn up to 3 children in
+one turn without contention — the daemon creates them sequentially after the
+parent releases.
+
 ### System prompt guidance
 
 Agents are told in their system prompt:
 - Tool calls return immediately with a status.
 - Replies to sync messages arrive as your next message.
+- Spawned agents start working after your current turn ends.
 - Do not loop/poll waiting for replies.
 
 ## Tool Catalog
@@ -102,7 +117,14 @@ Returns:
 
 ### `spawn_agent`
 
-Create a subagent.
+Request creation of a subagent. The tool returns immediately with the child's
+UUID — actual provider session creation is **deferred** until the parent's turn
+ends and its multiplexer slot is released. This avoids slot pressure during the
+parent's turn and lets the daemon schedule child creation when capacity is
+available.
+
+Messages sent to the child before it is live are queued and delivered once the
+provider session is ready.
 
 ```
 Parameters:
@@ -112,8 +134,16 @@ Parameters:
   workspace_subdir: str | null     # Subdirectory of parent workspace.
 
 Returns:
-  {"status": "created", "agent_id": "uuid", "name": "str"}
+  {"status": "accepted", "agent_id": "uuid", "name": "str"}
 ```
+
+Typical flow with sync messaging:
+
+1. Parent calls `spawn_agent("analyst", ...)` + `send_message("analyst", "go",
+   sync=true)` in the same turn. Both return immediately.
+2. Parent's turn ends → slot released.
+3. Daemon creates the analyst's provider session, delivers the queued message.
+4. Analyst works, replies → daemon delivers reply to parent as Turn 2.
 
 ### `inspect_agent`
 
