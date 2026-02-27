@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from substrat.persistence import _full_write
+
 
 class EventLog:
     """Per-agent structured event log.
@@ -133,8 +135,4 @@ class EventLog:
             os.close(fd)
 
 
-def _full_write(fd: int, data: bytes) -> None:
-    """Write all bytes, retrying on short writes."""
-    while data:
-        n = os.write(fd, data)
-        data = data[n:]
+__all__ = ["EventLog"]
