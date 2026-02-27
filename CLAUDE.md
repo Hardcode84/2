@@ -29,6 +29,10 @@ If docs disagree, `substrat.md` wins.
 
 Code comments, docstrings, and commit messages share the same voice: terse, dry, informative. Wit is welcome, fluff is not. Say what the thing does, not what you wish it did. If a comment doesn't earn its line, delete it.
 
+## Reviews
+
+For non-trivial changes, propose a parallel multi-agent review before committing. Each agent gets a focused angle (correctness, integration, design consistency, etc.) and reviews without seeing the others' output. Synthesize findings, fix what matters, defer what doesn't. Ask the user before launching — agents cost tokens and rate limits are not free.
+
 ## Commits
 
 - Small, focused commits. One logical change per commit. If you're wondering whether to split — split.
