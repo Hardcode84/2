@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "substrat"
 version = "0.0.1"
 description = "Agent orchestration framework."
+license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
     "typer>=0.15",

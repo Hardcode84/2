@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Substrat authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Method-level logging decorator for provider sessions."""
 
 import functools

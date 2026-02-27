@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Substrat authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Agent provider protocol — the interface all LLM/agent backends implement."""
 
 from collections.abc import AsyncGenerator

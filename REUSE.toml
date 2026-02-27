@@ -1,0 +1,13 @@
+version = 1
+
+[[annotations]]
+path = [
+    "pyproject.toml",
+    ".pre-commit-config.yaml",
+    ".gitignore",
+    "REUSE.toml",
+    "docs/**",
+    "*.md",
+]
+SPDX-FileCopyrightText = "2026 Substrat authors"
+SPDX-License-Identifier = "Apache-2.0"

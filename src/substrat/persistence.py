@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Substrat authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Crash-safe file write primitives."""
 
 import os

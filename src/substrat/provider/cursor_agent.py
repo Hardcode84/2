@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Substrat authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Cursor CLI agent provider — spawns cursor-agent as a subprocess."""
 
 import asyncio

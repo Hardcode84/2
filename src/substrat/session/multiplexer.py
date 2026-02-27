@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Substrat authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Session multiplexer — fixed-slot LRU scheduler for provider sessions."""
 
 from uuid import UUID
