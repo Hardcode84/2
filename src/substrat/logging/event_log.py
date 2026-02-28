@@ -8,10 +8,20 @@ import contextlib
 import json
 import os
 from pathlib import Path
+from types import TracebackType
 from typing import Any
 
 from substrat import now_iso
 from substrat.persistence import _full_write
+
+
+def _fsync_dir(dirpath: Path) -> None:
+    """Fsync a directory to make its entries durable."""
+    fd = os.open(dirpath, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 class EventLog:
@@ -34,10 +44,24 @@ class EventLog:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._recover_pending()
         self._fd = os.open(
-            str(self._path),
+            self._path,
             os.O_WRONLY | os.O_CREAT | os.O_APPEND,
             0o644,
         )
+        # Fsync the directory so the new file's dir entry is durable.
+        _fsync_dir(self._path.parent)
+
+    def __enter__(self) -> "EventLog":
+        self.open()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        self.close()
 
     def log(self, event: str, data: dict[str, Any] | None = None) -> None:
         """Append one event. Durable on return."""
@@ -68,7 +92,7 @@ class EventLog:
 
     def _write_pending(self, line: bytes) -> None:
         fd = os.open(
-            str(self._pending_path),
+            self._pending_path,
             os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
             0o644,
         )
@@ -80,7 +104,7 @@ class EventLog:
 
     def _remove_pending(self) -> None:
         with contextlib.suppress(FileNotFoundError):
-            os.unlink(str(self._pending_path))
+            os.unlink(self._pending_path)
 
     def _recover_pending(self) -> None:
         """If a .pending file exists, a prior write was interrupted.
@@ -106,7 +130,7 @@ class EventLog:
                         return
         # Append the pending entry to the main log.
         fd = os.open(
-            str(self._path),
+            self._path,
             os.O_WRONLY | os.O_CREAT | os.O_APPEND,
             0o644,
         )
@@ -131,7 +155,7 @@ class EventLog:
         # Find the last newline — everything after it is garbage.
         last_nl = content.rfind(b"\n")
         truncate_to = last_nl + 1 if last_nl >= 0 else 0
-        fd = os.open(str(self._path), os.O_WRONLY)
+        fd = os.open(self._path, os.O_WRONLY)
         try:
             os.ftruncate(fd, truncate_to)
             os.fsync(fd)
