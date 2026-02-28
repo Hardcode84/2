@@ -43,6 +43,68 @@ numbers, bools, lists, dicts. No opaque Python objects. UUIDs as hex strings,
 timestamps as ISO 8601 strings. This is a stability contract — the log format
 must be readable across versions and by external tools.
 
+## Agent lifecycle events
+
+The orchestrator logs agent lifecycle events to the session's own event log.
+This is the only persistence for tree structure — no `tree.json`, no agent
+metadata in `session.json`. The event log is already crash-safe (WAL, fsync),
+so agent metadata inherits those guarantees for free.
+
+### Events logged by the orchestrator
+
+```jsonl
+{"ts":"...","event":"agent.created","data":{"agent_id":"<hex>","name":"alpha","parent_session_id":null,"instructions":"..."}}
+{"ts":"...","event":"agent.created","data":{"agent_id":"<hex>","name":"worker","parent_session_id":"<parent-hex>","instructions":"..."}}
+{"ts":"...","event":"agent.terminated","data":{"agent_id":"<hex>"}}
+```
+
+`parent_session_id` (not `parent_id`) links to the parent's session UUID —
+the same UUID used as the directory name under `~/.substrat/agents/`. This
+avoids a dependency on agent UUIDs for the tree link; session UUIDs are the
+stable on-disk identifiers.
+
+`agent.created` is logged after the session is persisted but before `tree.add()`
+returns. If the daemon crashes between session creation and logging, recovery
+sees the session but no `agent.created` event — the session is orphaned and
+gets cleaned up. If the crash happens after logging but before the tool
+response reaches the agent, the event is durable and the agent is rebuilt;
+the parent simply never saw the acknowledgment (safe — deferred spawn runs
+after the parent's turn anyway).
+
+`agent.terminated` is logged after `tree.remove()`. On recovery, sessions
+with a terminated event are skipped.
+
+### Tree reconstruction
+
+On daemon startup:
+
+1. `SessionStore.scan()` — load all session records.
+2. `SessionStore.recover()` — flip ACTIVE → SUSPENDED, persist.
+3. For each non-terminated session, read its event log and find the
+   `agent.created` event. Extract `agent_id`, `name`, `parent_session_id`,
+   `instructions`.
+4. Build a `session_id → agent_id` index from step 3.
+5. For each agent, resolve `parent_session_id` → `parent_agent_id` using
+   the index. `null` parent means root agent.
+6. Construct `AgentNode` objects, `tree.add()` in dependency order (roots
+   first, then children).
+7. Rebuild `InboxRegistry` and `ToolHandler` instances for each agent.
+
+Sessions without an `agent.created` event are orphans from a crash during
+creation — terminate and clean up. Sessions with `agent.terminated` are
+already dead — skip.
+
+### Why not a separate tree file
+
+- One fewer file to keep in sync. The event log already fsyncs per entry.
+- Tree mutations (spawn, terminate) are rare — one log entry each. Zero
+  write amplification compared to rewriting a `tree.json` on every spawn.
+- The event log is already the crash recovery source of truth for everything
+  else. Extending it to cover agent metadata is natural.
+- Reconstruction cost is proportional to the number of agents, not the
+  number of turns. Even with thousands of log entries per session, finding
+  the first `agent.created` is a single scan.
+
 ## Recovery by provider type
 
 ### Agentic providers (cursor-agent, Claude CLI)
@@ -77,8 +139,9 @@ session is unrecoverable.
 
 - **Session records survive crashes.** Written atomically before first
   `send()`.
-- **Agent tree survives crashes.** Parent-child links written before spawn
-  is acknowledged.
+- **Agent tree survives crashes.** `agent.created` event is logged to the
+  session's event log before spawn is acknowledged. Tree is reconstructed
+  from these events on recovery.
 - **Event log is durable up to the last fsync.** Append-only, fsynced per
   entry. Pending-file WAL ensures no acknowledged entry is lost. Partial
   trailing lines from crash mid-write are truncated on recovery.
@@ -110,20 +173,25 @@ on creation and state transitions.
 `~/.substrat/agents/<uuid>/events.jsonl`. Append-only. Fsynced per turn.
 Source of truth for conversation reconstruction and message reconciliation.
 
-### 3. Agent tree
+### 3. Agent tree (derived from event logs)
 
-Parent-child links. Written on every `spawn_agent`, before returning success.
-Location: `~/.substrat/tree.json` or per-agent in the session record.
+No separate tree file. The agent tree is reconstructed from lifecycle events
+in the per-session event logs. Each session's log contains the agent metadata
+needed to rebuild its node and parent-child link. See "Agent lifecycle events"
+above.
 
 ## Recovery procedure
 
 On daemon startup:
 
-1. **Read session records.** Load provider name, model, state for each agent.
+1. **Read session records.** `SessionStore.scan()` loads all sessions.
 
-2. **Reconstruct agent tree.** From persisted links.
+2. **Mark all ACTIVE sessions as SUSPENDED.** `SessionStore.recover()`.
 
-3. **Mark all ACTIVE sessions as SUSPENDED.**
+3. **Reconstruct agent tree.** Scan each session's event log for
+   `agent.created` / `agent.terminated` events. Build `AgentNode` objects
+   and `tree.add()` in dependency order. Clean up orphaned sessions (no
+   `agent.created` event).
 
 4. **Reconcile messages.** For each agent, scan its event log for
    `message.enqueued` without a matching `message.delivered`. Cross-reference
@@ -139,13 +207,15 @@ Write-on-mutate with fsync. State mutations are infrequent (create, spawn,
 state transition). Event log appends are per-turn (seconds apart).
 
 - **Create session**: write record atomically, fsync, then proceed.
-- **Spawn agent**: write tree link, fsync, return success.
+- **Spawn agent**: append `agent.created` to session event log, fsync,
+  return success. No separate tree file.
+- **Terminate agent**: append `agent.terminated` to session event log, fsync.
 - **Each turn**: append send + response to event log, fsync.
 - **Message routing**: append enqueue/deliver events, fsync.
 
 ### Atomic writes
 
-All persisted files (session records, tree) use write-to-temp-then-rename:
+Session records use write-to-temp-then-rename:
 
 1. Write to `<path>.tmp` (same directory = same filesystem).
 2. `fsync` the file descriptor.
@@ -172,11 +242,12 @@ A mock provider (`FakeSession`) with controllable behavior. The test harness
 wraps every persist operation with a hook that can kill the daemon:
 
 - After `create()` but before writing session record.
-- After writing session record but before first `send()`.
+- After writing session record but before logging `agent.created`.
+- After logging `agent.created` but before returning spawn success.
 - After `send()` completes but before logging the response.
 - After logging the response but before delivering the reply.
 - After enqueueing a message but before logging delivery.
-- After writing tree link but before returning spawn success.
+- After logging `agent.terminated` but before removing from tree.
 
 For each injection point: crash, restart, run recovery, assert invariants.
 
