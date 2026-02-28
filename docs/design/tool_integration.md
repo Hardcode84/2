@@ -130,7 +130,6 @@ provider session is ready.
 Parameters:
   name: str
   instructions: str
-  role: str = "worker"             # "worker" | "reviewer".
   workspace_subdir: str | null     # Subdirectory of parent workspace.
 
 Returns:

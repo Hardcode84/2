@@ -109,7 +109,6 @@ class AgentNode:
 ```
 
 `AgentState` is an enum with a state-machine enforced via `transition()`.
-`role` is deferred — advisory only, no routing implications yet.
 
 `AgentTree` provides queries: `children()`, `parent()`, `team()` (siblings
 excluding self), `roots()`, `subtree()`.
@@ -165,6 +164,11 @@ All tool calls are non-blocking — see
 model and full tool catalog. Synchronous messaging uses a two-turn pattern
 orchestrated by the daemon; the agent process is never blocked waiting for
 a reply.
+
+Tool logic lives in `agent/tools.py` — pure operations on the tree and
+inboxes, no MCP protocol or I/O. `ToolHandler` is instantiated per-agent
+with deps injected; see the design doc for the full catalog and deferred
+spawn pattern.
 
 ---
 
@@ -241,9 +245,6 @@ canned responses for fast, deterministic integration tests.
   SYSTEM/USER (they're not in the tree). The daemon will need to intercept
   these at the boundary layer. Decide whether `validate_route` should
   whitelist sentinel recipients or keep routing pure and handle it above.
-- **Mutable envelopes on broadcast.** `MessageEnvelope` is not frozen;
-  broadcast delivery shares the same object across inboxes. Envelopes
-  should be copied or frozen before multi-delivery is implemented.
 - **Root-to-root routing.** Multiple root agents cannot communicate (no
   parent, so no siblings). Intentional for now — document or add a
   mechanism if multi-root topologies become real.
