@@ -106,3 +106,62 @@ The two-phase messaging pattern (`send_message` with `sync=true`) and deferred
 The multiplexer knows nothing about messaging or spawn queues — the daemon
 layer above orchestrates `acquire()`/`release()`/`put()` calls at the right
 times. See `tool_integration.md` for the full execution model.
+
+## Turn Scheduler
+
+`scheduler.py` ties sessions, providers, the multiplexer, and the store
+together. Thin orchestration layer — no policy, just the acquire → send →
+release lifecycle and deferred work drain.
+
+```python
+class TurnScheduler:
+    def __init__(
+        self,
+        providers: dict[str, AgentProvider],
+        mux: SessionMultiplexer,
+        store: SessionStore,
+        log_root: Path | None = None,
+    ) -> None: ...
+
+    async def create_session(self, provider_name: str, model: str, system_prompt: str) -> Session: ...
+    async def send_turn(self, session_id: UUID, prompt: str) -> str: ...
+    async def terminate_session(self, session_id: UUID) -> None: ...
+    def defer(self, callback: DeferredCallback) -> None: ...
+```
+
+### In-memory session cache
+
+The scheduler keeps `dict[UUID, Session]` in memory. The store is disk-only
+with no cache — reading `session.json` every turn is wasteful. On crash, the
+daemon recovers from disk via `store.recover()`.
+
+If the multiplexer evicts a session behind the scheduler's back (LRU pressure
+during another session's `put()` or `acquire()`), the cached copy goes stale.
+`send_turn` detects this via `mux.contains()` and reloads from the store before
+calling `acquire`.
+
+### Turn lifecycle
+
+1. Look up session and provider from in-memory caches.
+2. Log `turn.start`.
+3. `mux.acquire(session, provider)` — restores from suspension if needed.
+4. Collect streamed chunks from `ps.send(prompt)`.
+5. `mux.release(session_id)` — always runs (finally block).
+6. Log `turn.complete`.
+7. Drain deferred queue.
+
+On error in step 4, the slot is released (finally) but steps 6–7 are skipped.
+Failed turns should not trigger side effects like child spawns.
+
+### Deferred work
+
+`deque[Callable[[], Coroutine]]`. Synchronously filled during a turn (by MCP
+handlers, `spawn_agent`, etc.), drained after slot release. Not `asyncio.Queue`
+— no async await on enqueue, single consumer, simpler.
+
+### Known gaps
+
+- `mux.acquire` → `provider.restore` does not pass `EventLog`. The multiplexer
+  is deliberately log-unaware. Provider-level `@log_method` events are lost for
+  restored sessions. The scheduler's own `turn.start`/`turn.complete` events
+  still work. Fix when the daemon layer owns log routing.

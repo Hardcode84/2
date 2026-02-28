@@ -81,6 +81,12 @@ Provider-specific details: [design/providers/](design/providers/).
 
 See [design/session.md](design/session.md).
 
+**Key files:**
+- `session/model.py` — `Session` dataclass and state machine.
+- `session/store.py` — `SessionStore`, atomic JSON persistence, startup recovery.
+- `session/multiplexer.py` — `SessionMultiplexer`, fixed-slot LRU scheduling.
+- `scheduler.py` — `TurnScheduler`, turn execution lifecycle and deferred work.
+
 ---
 
 ## 5. Agent Hierarchy
