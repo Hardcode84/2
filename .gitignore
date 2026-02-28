@@ -19,6 +19,9 @@ venv/
 # pytest.
 .pytest_cache/
 
+# Hypothesis.
+.hypothesis/
+
 # Editors / tools.
 .idea/
 .vscode/
