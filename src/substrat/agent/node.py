@@ -6,8 +6,9 @@
 
 import enum
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from uuid import UUID, uuid4
+
+from substrat import now_iso
 
 
 class AgentState(enum.Enum):
@@ -32,10 +33,6 @@ class AgentStateError(Exception):
     """Raised on invalid agent state transition."""
 
 
-def _now_iso() -> str:
-    return datetime.now(UTC).isoformat()
-
-
 @dataclass
 class AgentNode:
     """A single agent in the hierarchy. Knows nothing about messages or routing."""
@@ -48,7 +45,7 @@ class AgentNode:
     instructions: str = ""
     workspace_id: UUID | None = None
     state: AgentState = AgentState.IDLE
-    created_at: str = field(default_factory=_now_iso)
+    created_at: str = field(default_factory=now_iso)
 
     def transition(self, target: AgentState) -> None:
         """Transition to a new state. Raises AgentStateError if invalid."""

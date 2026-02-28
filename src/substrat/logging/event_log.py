@@ -7,10 +7,10 @@
 import contextlib
 import json
 import os
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from substrat import now_iso
 from substrat.persistence import _full_write
 
 
@@ -59,7 +59,7 @@ class EventLog:
     def _serialize(self, event: str, data: dict[str, Any] | None) -> bytes:
         entry: dict[str, Any] = {
             **self._context,
-            "ts": datetime.now(UTC).isoformat(),
+            "ts": now_iso(),
             "event": event,
         }
         if data is not None:

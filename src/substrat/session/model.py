@@ -6,8 +6,9 @@
 
 import enum
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from uuid import UUID, uuid4
+
+from substrat import now_iso
 
 
 class SessionState(enum.Enum):
@@ -30,10 +31,6 @@ class SessionStateError(Exception):
     """Raised on invalid state transition."""
 
 
-def _now_iso() -> str:
-    return datetime.now(UTC).isoformat()
-
-
 @dataclass
 class Session:
     """A single provider session. Knows nothing about agents or messages."""
@@ -42,7 +39,7 @@ class Session:
     state: SessionState = SessionState.CREATED
     provider_name: str = ""
     model: str = ""
-    created_at: str = field(default_factory=_now_iso)
+    created_at: str = field(default_factory=now_iso)
     suspended_at: str | None = None
     provider_state: bytes = b""
 
@@ -53,7 +50,7 @@ class Session:
             msg = f"{self.state.value} → {target.value}"
             raise SessionStateError(msg)
         if target == SessionState.SUSPENDED:
-            self.suspended_at = _now_iso()
+            self.suspended_at = now_iso()
         self.state = target
 
     def activate(self) -> None:
