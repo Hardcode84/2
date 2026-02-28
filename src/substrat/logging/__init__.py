@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from substrat.logging.decorator import log_method
+from substrat.logging.decorator import Loggable, log_method
 from substrat.logging.event_log import EventLog
 
-__all__ = ["EventLog", "log_method"]
+__all__ = ["EventLog", "Loggable", "log_method"]

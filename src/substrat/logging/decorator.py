@@ -7,9 +7,16 @@
 import functools
 import inspect
 from collections.abc import AsyncGenerator, Callable
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from substrat.logging.event_log import EventLog
+
+
+@runtime_checkable
+class Loggable(Protocol):
+    """Instance with an optional event log. Used by @log_method."""
+
+    _log: EventLog | None
 
 
 def _build_args_dict(
@@ -23,9 +30,8 @@ def _build_args_dict(
     return dict(bound.arguments)
 
 
-def _get_log(instance: Any) -> EventLog | None:
-    log: EventLog | None = getattr(instance, "_log", None)
-    return log
+def _get_log(instance: Loggable) -> EventLog | None:
+    return instance._log
 
 
 def log_method(
@@ -56,7 +62,7 @@ def log_method(
                 chunks: list[str] = []
                 try:
                     async for chunk in fn(self, *args, **kwargs):
-                        chunks.append(chunk)
+                        chunks.append(str(chunk))
                         yield chunk
                 finally:
                     if log and after:
@@ -90,4 +96,6 @@ def _serialize_result(value: Any) -> Any:
         import base64
 
         return base64.b64encode(value).decode()
-    return value
+    if isinstance(value, str | int | float | bool | type(None)):
+        return value
+    return str(value)
