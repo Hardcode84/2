@@ -62,7 +62,8 @@ async def test_send_logs_before_and_after(event_log: EventLog) -> None:
     assert events[0]["event"] == "send"
     assert events[0]["data"]["message"] == "hi"
     assert events[1]["event"] == "send.result"
-    assert events[1]["data"]["text"] == "hello world"
+    assert events[1]["data"]["message"] == "hi"
+    assert events[1]["data"]["result"] == "hello world"
 
 
 @pytest.mark.asyncio
@@ -106,4 +107,5 @@ async def test_error_in_generator_logs_partial(event_log: EventLog) -> None:
     assert events[0]["event"] == "send_error"
     # finally block logs whatever was yielded before the error.
     assert events[1]["event"] == "send_error.result"
-    assert events[1]["data"]["text"] == "partial"
+    assert events[1]["data"]["message"] == "hi"
+    assert events[1]["data"]["result"] == "partial"

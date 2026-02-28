@@ -22,7 +22,11 @@ class Inbox:
         self._queue.append(envelope)
 
     def collect(self) -> list[MessageEnvelope]:
-        """Drain all messages in FIFO order. Inbox is empty afterwards."""
+        """Drain all messages in FIFO order. Inbox is empty afterwards.
+
+        Not atomic — assumes single-threaded access. The daemon wraps
+        this with an asyncio queue for concurrent use.
+        """
         items = list(self._queue)
         self._queue.clear()
         return items

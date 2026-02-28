@@ -7,7 +7,7 @@
 import functools
 import inspect
 from collections.abc import AsyncGenerator, Callable
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, TypeVar, runtime_checkable
 
 from substrat.logging.event_log import EventLog
 
@@ -34,11 +34,14 @@ def _get_log(instance: Loggable) -> EventLog | None:
     return instance._log
 
 
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
 def log_method(
     *,
     before: bool = False,
     after: bool = False,
-) -> Callable[[Any], Any]:
+) -> Callable[[_F], _F]:
     """Log method calls to the instance's EventLog.
 
     Expects the instance to have a `_log: EventLog | None` attribute.
@@ -46,7 +49,7 @@ def log_method(
     Handles both async coroutines and async generators (streaming).
     """
 
-    def decorator(fn: Any) -> Any:
+    def decorator(fn: _F) -> _F:
         event_name = fn.__name__
 
         if inspect.isasyncgenfunction(fn):
@@ -66,9 +69,11 @@ def log_method(
                         yield chunk
                 finally:
                     if log and after:
-                        log.log(f"{event_name}.result", {"text": "".join(chunks)})
+                        result_data: dict[str, Any] = {**args_dict}
+                        result_data["result"] = "".join(chunks)
+                        log.log(f"{event_name}.result", result_data)
 
-            return gen_wrapper
+            return gen_wrapper  # type: ignore[return-value]
         else:
 
             @functools.wraps(fn)
@@ -85,7 +90,7 @@ def log_method(
                     log.log(f"{event_name}.result", result_data)
                 return result
 
-            return wrapper
+            return wrapper  # type: ignore[return-value]
 
     return decorator
 

@@ -47,6 +47,8 @@ def validate_route(tree: AgentTree, sender: UUID, recipient: UUID) -> None:
         return
     if sender not in tree:
         raise RoutingError(f"sender {sender} not in tree")
+    if sender == recipient:
+        raise RoutingError("cannot send to self")
     if recipient not in reachable_set(tree, sender):
         raise RoutingError(f"{sender} cannot reach {recipient}")
 

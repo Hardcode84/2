@@ -4,6 +4,7 @@
 
 """Tests for the messaging layer: envelope, routing, inbox."""
 
+from typing import NamedTuple
 from uuid import uuid4
 
 import pytest
@@ -24,10 +25,17 @@ from substrat.agent import (
 )
 
 
+class TreeFixture(NamedTuple):
+    tree: AgentTree
+    root: AgentNode
+    alice: AgentNode
+    bob: AgentNode
+    carol: AgentNode
+    dave: AgentNode
+
+
 @pytest.fixture()
-def populated_tree() -> tuple[
-    AgentTree, AgentNode, AgentNode, AgentNode, AgentNode, AgentNode
-]:
+def populated_tree() -> TreeFixture:
     """Build a tree: root -> {alice, bob, carol}, carol -> dave."""
     tree = AgentTree()
     root = AgentNode(session_id=uuid4(), name="root")
@@ -40,7 +48,7 @@ def populated_tree() -> tuple[
     tree.add(bob)
     tree.add(carol)
     tree.add(dave)
-    return tree, root, alice, bob, carol, dave
+    return TreeFixture(tree, root, alice, bob, carol, dave)
 
 
 # --- MessageEnvelope + sentinels ---
@@ -101,27 +109,21 @@ def test_non_sentinel() -> None:
 
 
 def test_reachable_from_root(
-    populated_tree: tuple[
-        AgentTree, AgentNode, AgentNode, AgentNode, AgentNode, AgentNode
-    ],
+    populated_tree: TreeFixture,
 ) -> None:
     tree, root, alice, bob, carol, _dave = populated_tree
     assert reachable_set(tree, root.id) == {alice.id, bob.id, carol.id}
 
 
 def test_reachable_from_alice(
-    populated_tree: tuple[
-        AgentTree, AgentNode, AgentNode, AgentNode, AgentNode, AgentNode
-    ],
+    populated_tree: TreeFixture,
 ) -> None:
     tree, root, alice, bob, carol, _dave = populated_tree
     assert reachable_set(tree, alice.id) == {root.id, bob.id, carol.id}
 
 
 def test_reachable_from_carol(
-    populated_tree: tuple[
-        AgentTree, AgentNode, AgentNode, AgentNode, AgentNode, AgentNode
-    ],
+    populated_tree: TreeFixture,
 ) -> None:
     tree, root, alice, bob, carol, dave = populated_tree
     # Parent + siblings + child.
@@ -129,9 +131,7 @@ def test_reachable_from_carol(
 
 
 def test_reachable_from_dave(
-    populated_tree: tuple[
-        AgentTree, AgentNode, AgentNode, AgentNode, AgentNode, AgentNode
-    ],
+    populated_tree: TreeFixture,
 ) -> None:
     tree, _root, _alice, _bob, carol, dave = populated_tree
     assert reachable_set(tree, dave.id) == {carol.id}
@@ -141,36 +141,36 @@ def test_reachable_from_dave(
 
 
 def test_route_parent_to_child(
-    populated_tree: tuple[
-        AgentTree, AgentNode, AgentNode, AgentNode, AgentNode, AgentNode
-    ],
+    populated_tree: TreeFixture,
 ) -> None:
     tree, root, alice, _bob, _carol, _dave = populated_tree
     validate_route(tree, root.id, alice.id)  # Should not raise.
 
 
 def test_route_sibling_to_sibling(
-    populated_tree: tuple[
-        AgentTree, AgentNode, AgentNode, AgentNode, AgentNode, AgentNode
-    ],
+    populated_tree: TreeFixture,
 ) -> None:
     tree, _root, alice, bob, _carol, _dave = populated_tree
     validate_route(tree, alice.id, bob.id)  # Should not raise.
 
 
 def test_route_child_to_parent(
-    populated_tree: tuple[
-        AgentTree, AgentNode, AgentNode, AgentNode, AgentNode, AgentNode
-    ],
+    populated_tree: TreeFixture,
 ) -> None:
     tree, root, alice, _bob, _carol, _dave = populated_tree
     validate_route(tree, alice.id, root.id)  # Should not raise.
 
 
+def test_route_self_send_raises(
+    populated_tree: TreeFixture,
+) -> None:
+    tree, _root, alice, _bob, _carol, _dave = populated_tree
+    with pytest.raises(RoutingError, match="cannot send to self"):
+        validate_route(tree, alice.id, alice.id)
+
+
 def test_route_skip_level_raises(
-    populated_tree: tuple[
-        AgentTree, AgentNode, AgentNode, AgentNode, AgentNode, AgentNode
-    ],
+    populated_tree: TreeFixture,
 ) -> None:
     tree, root, _alice, _bob, _carol, dave = populated_tree
     with pytest.raises(RoutingError, match="cannot reach"):
@@ -178,18 +178,14 @@ def test_route_skip_level_raises(
 
 
 def test_route_system_bypasses_one_hop(
-    populated_tree: tuple[
-        AgentTree, AgentNode, AgentNode, AgentNode, AgentNode, AgentNode
-    ],
+    populated_tree: TreeFixture,
 ) -> None:
     tree, _root, _alice, _bob, _carol, dave = populated_tree
     validate_route(tree, SYSTEM, dave.id)  # Should not raise.
 
 
 def test_route_missing_recipient_raises(
-    populated_tree: tuple[
-        AgentTree, AgentNode, AgentNode, AgentNode, AgentNode, AgentNode
-    ],
+    populated_tree: TreeFixture,
 ) -> None:
     tree, root, _alice, _bob, _carol, _dave = populated_tree
     with pytest.raises(RoutingError, match="not in tree"):
@@ -197,9 +193,7 @@ def test_route_missing_recipient_raises(
 
 
 def test_route_missing_sender_raises(
-    populated_tree: tuple[
-        AgentTree, AgentNode, AgentNode, AgentNode, AgentNode, AgentNode
-    ],
+    populated_tree: TreeFixture,
 ) -> None:
     tree, _root, alice, _bob, _carol, _dave = populated_tree
     with pytest.raises(RoutingError, match="not in tree"):
@@ -210,9 +204,7 @@ def test_route_missing_sender_raises(
 
 
 def test_broadcast_from_alice(
-    populated_tree: tuple[
-        AgentTree, AgentNode, AgentNode, AgentNode, AgentNode, AgentNode
-    ],
+    populated_tree: TreeFixture,
 ) -> None:
     tree, _root, alice, bob, carol, _dave = populated_tree
     targets = resolve_broadcast(tree, alice.id)
@@ -220,9 +212,7 @@ def test_broadcast_from_alice(
 
 
 def test_broadcast_from_root_raises(
-    populated_tree: tuple[
-        AgentTree, AgentNode, AgentNode, AgentNode, AgentNode, AgentNode
-    ],
+    populated_tree: TreeFixture,
 ) -> None:
     tree, root, _alice, _bob, _carol, _dave = populated_tree
     with pytest.raises(RoutingError, match="no siblings"):
@@ -230,9 +220,7 @@ def test_broadcast_from_root_raises(
 
 
 def test_broadcast_sentinel_raises(
-    populated_tree: tuple[
-        AgentTree, AgentNode, AgentNode, AgentNode, AgentNode, AgentNode
-    ],
+    populated_tree: TreeFixture,
 ) -> None:
     with pytest.raises(RoutingError, match="sentinels cannot broadcast"):
         resolve_broadcast(tree=AgentTree(), sender=SYSTEM)
