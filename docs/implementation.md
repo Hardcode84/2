@@ -97,16 +97,19 @@ parent-child relationships, and the mapping from agents to their sessions.
 ```python
 @dataclass
 class AgentNode:
-    id: UUID
+    session_id: UUID               # 1:1 backing session. Required positional.
+    id: UUID = field(default_factory=uuid4)
     name: str = ""
-    session_id: UUID = ...         # 1:1 backing session.
     parent_id: UUID | None = None  # None for root agents.
     children: list[UUID] = field(default_factory=list)
     instructions: str = ""
-    role: str = "worker"           # "manager" | "worker" | "reviewer" (advisory).
     workspace_id: UUID | None = None
-    state: str = "idle"            # "idle" | "busy" | "waiting" | "terminated".
+    state: AgentState = AgentState.IDLE  # IDLE | BUSY | WAITING | TERMINATED.
+    created_at: str = field(default_factory=now_iso)
 ```
+
+`AgentState` is an enum with a state-machine enforced via `transition()`.
+`role` is deferred — advisory only, no routing implications yet.
 
 `AgentTree` provides queries: `children()`, `parent()`, `team()` (siblings
 excluding self), `roots()`, `subtree()`.
@@ -127,17 +130,30 @@ tool surface agents use for messaging.
 ### Message Envelope
 
 ```python
+SYSTEM: UUID = UUID(int=0)  # Daemon-originated messages.
+USER: UUID = UUID(int=1)    # CLI/user-originated messages.
+
+class MessageKind(enum.Enum):
+    REQUEST = "request"
+    RESPONSE = "response"
+    NOTIFICATION = "notification"
+    MULTICAST = "multicast"
+
 @dataclass
 class MessageEnvelope:
-    id: UUID
-    timestamp: str                    # ISO 8601.
-    sender: UUID                      # Agent UUID, or SYSTEM/USER sentinel.
-    recipient: UUID | None = None     # None for broadcasts.
+    sender: UUID                          # Required positional. Agent UUID or sentinel.
+    id: UUID = field(default_factory=uuid4)
+    timestamp: str = field(default_factory=now_iso)  # ISO 8601.
+    recipient: UUID | None = None         # None for broadcasts.
     reply_to: UUID | None = None
-    kind: str = "request"             # "request" | "response" | "notification" | "multicast".
+    kind: MessageKind = MessageKind.REQUEST
     payload: str = ""
     metadata: dict[str, str] = field(default_factory=dict)
 ```
+
+Routing validation and broadcast resolution live in `agent/router.py` — pure
+functions, no mutable state. Sentinels (SYSTEM, USER) bypass one-hop checks
+but recipients must exist in the tree.
 
 ### Delivery
 
@@ -221,3 +237,13 @@ canned responses for fast, deterministic integration tests.
 - **Resource limits.** CPU/memory per workspace, token budgets per session.
 - **Streaming UX.** How `agent attach` handles interleaved output from
   multiple agents.
+- **Sentinel-as-recipient.** Agents cannot currently route messages to
+  SYSTEM/USER (they're not in the tree). The daemon will need to intercept
+  these at the boundary layer. Decide whether `validate_route` should
+  whitelist sentinel recipients or keep routing pure and handle it above.
+- **Mutable envelopes on broadcast.** `MessageEnvelope` is not frozen;
+  broadcast delivery shares the same object across inboxes. Envelopes
+  should be copied or frozen before multi-delivery is implemented.
+- **Root-to-root routing.** Multiple root agents cannot communicate (no
+  parent, so no siblings). Intentional for now — document or add a
+  mechanism if multi-root topologies become real.
