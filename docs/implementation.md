@@ -89,7 +89,23 @@ See [design/session.md](design/session.md).
 
 ---
 
-## 5. Agent Hierarchy
+## 5. Orchestrator
+
+Composition root that bridges the agent and session layers. Lives in
+`orchestrator.py`, next to `scheduler.py`. Owns the `AgentTree`,
+`InboxRegistry`, and per-agent `ToolHandler` instances. The `TurnScheduler`
+is injected — the orchestrator delegates session concerns to it.
+
+Agent creation (`create_root_agent`) creates a backing session first, then
+registers the tree node. If tree insertion fails, the session is terminated.
+Turn execution (`run_turn`) manages `IDLE → BUSY → IDLE` state transitions
+and drains deferred spawn work after the scheduler releases its slot. Child
+agents inherit their parent's provider and model via closure-captured spawn
+callbacks.
+
+---
+
+## 6. Agent Hierarchy
 
 The agent hierarchy sits above the session layer. It owns the tree structure,
 parent-child relationships, and the mapping from agents to their sessions.
@@ -124,7 +140,7 @@ tool surface agents use for messaging.
 
 ---
 
-## 6. Communication Protocol
+## 7. Communication Protocol
 
 ### Message Envelope
 
@@ -172,7 +188,7 @@ spawn pattern.
 
 ---
 
-## 7. Workspace Model
+## 8. Workspace Model
 
 ```python
 @dataclass
@@ -197,7 +213,7 @@ bwrap bind flags for the same directories).
 
 ---
 
-## 8. Logging
+## 9. Logging
 
 Per-agent, at `~/.substrat/agents/<uuid>/`:
 
@@ -213,13 +229,13 @@ Log rotation is out of scope for v1.
 
 ---
 
-## 9. Crash Recovery
+## 10. Crash Recovery
 
 See [design/crash_recovery.md](design/crash_recovery.md).
 
 ---
 
-## 10. Testing Strategy
+## 11. Testing Strategy
 
 - **Strict mypy** (`--strict`) across the entire codebase.
 - **pytest** as the test runner.
