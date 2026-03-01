@@ -3,11 +3,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from substrat.workspace.model import LinkSpec, Workspace
+from substrat.workspace.resolve import mutable_scopes, resolve, visible_scopes
 from substrat.workspace.store import WorkspaceStore, validate_name
 
 __all__ = [
     "LinkSpec",
     "Workspace",
     "WorkspaceStore",
+    "mutable_scopes",
+    "resolve",
     "validate_name",
+    "visible_scopes",
 ]

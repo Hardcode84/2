@@ -101,6 +101,14 @@ class AgentTree:
         """Return all root nodes (no parent)."""
         return [n for n in self._nodes.values() if n.parent_id is None]
 
+    def child_by_name(self, parent_id: UUID, name: str) -> AgentNode:
+        """Return a direct child by name. Raises KeyError if not found."""
+        for cid in self._nodes[parent_id].children:
+            child = self._nodes[cid]
+            if child.name == name:
+                return child
+        raise KeyError(name)
+
     def subtree(self, agent_id: UUID) -> list[AgentNode]:
         """Return all descendants depth-first. Does not include the node itself."""
         node = self._nodes[agent_id]

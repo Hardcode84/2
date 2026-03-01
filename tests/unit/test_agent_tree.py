@@ -246,3 +246,24 @@ def test_contains_and_len(tree: AgentTree) -> None:
     tree.add(node)
     assert node.id in tree
     assert len(tree) == 1
+
+
+# --- child_by_name ---
+
+
+def test_child_by_name(tree: AgentTree) -> None:
+    root = AgentNode(session_id=uuid4(), name="root")
+    alice = AgentNode(session_id=uuid4(), name="alice", parent_id=root.id)
+    bob = AgentNode(session_id=uuid4(), name="bob", parent_id=root.id)
+    tree.add(root)
+    tree.add(alice)
+    tree.add(bob)
+    assert tree.child_by_name(root.id, "alice") is alice
+    assert tree.child_by_name(root.id, "bob") is bob
+
+
+def test_child_by_name_missing(tree: AgentTree) -> None:
+    root = AgentNode(session_id=uuid4(), name="root")
+    tree.add(root)
+    with pytest.raises(KeyError):
+        tree.child_by_name(root.id, "ghost")
