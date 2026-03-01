@@ -4,11 +4,15 @@
 
 """Session multiplexer — fixed-slot LRU scheduler for provider sessions."""
 
+from collections.abc import Callable
 from uuid import UUID
 
+from substrat.logging.event_log import EventLog
 from substrat.provider.base import AgentProvider, ProviderSession
 from substrat.session.model import Session, SessionState
 from substrat.session.store import SessionStore
+
+EvictCallback = Callable[[UUID, int], None]
 
 
 class SessionMultiplexer:
@@ -24,6 +28,7 @@ class SessionMultiplexer:
         self._slots: dict[UUID, ProviderSession] = {}
         self._lru: list[UUID] = []  # Released sessions, head = next victim.
         self._held: set[UUID] = set()  # Acquired, not evictable.
+        self.on_evict: EvictCallback | None = None
 
     async def put(self, session_id: UUID, ps: ProviderSession) -> None:
         """Slot a freshly-created ProviderSession. Evicts LRU if full."""
@@ -32,7 +37,10 @@ class SessionMultiplexer:
         self._held.add(session_id)
 
     async def acquire(
-        self, session: Session, provider: AgentProvider
+        self,
+        session: Session,
+        provider: AgentProvider,
+        log: EventLog | None = None,
     ) -> ProviderSession:
         """Get a live ProviderSession. Restores from suspension if needed.
 
@@ -51,7 +59,7 @@ class SessionMultiplexer:
                 " — use put() for new sessions"
             )
         await self._ensure_slot()
-        ps = await provider.restore(session.provider_state)
+        ps = await provider.restore(session.provider_state, log=log)
         self._slots[sid] = ps
         self._held.add(sid)
         session.activate()
@@ -92,6 +100,8 @@ class SessionMultiplexer:
         session = self._store.load(session_id)
         session.suspend(state_blob)
         self._store.save(session)
+        if self.on_evict is not None:
+            self.on_evict(session_id, len(state_blob))
         await ps.stop()
 
     def _touch(self, session_id: UUID) -> None:

@@ -41,6 +41,7 @@ class TurnScheduler:
         self._sessions: dict[UUID, Session] = {}
         self._logs: dict[UUID, EventLog] = {}
         self._deferred: deque[DeferredCallback] = deque()
+        self._mux.on_evict = self._on_session_evicted
 
     @property
     def store(self) -> SessionStore:
@@ -55,6 +56,12 @@ class TurnScheduler:
     ) -> None:
         """Log an event to a session's event log. KeyError if no log."""
         self._logs[session_id].log(event, data)
+
+    def _on_session_evicted(self, session_id: UUID, state_size: int) -> None:
+        """Evict callback — log suspend.result to the session's event log."""
+        log = self._logs.get(session_id)
+        if log is not None:
+            log.log("suspend.result", {"state_size": state_size})
 
     def restore_session(self, session: Session) -> None:
         """Load an existing session into the scheduler's cache and open its log.
@@ -113,11 +120,18 @@ class TurnScheduler:
             log.log("turn.start", {"prompt": prompt})
 
         # Resync with store if the mux evicted this session behind our back.
-        if not self._mux.contains(session_id):
+        was_suspended = not self._mux.contains(session_id)
+        if was_suspended:
             session = self._store.load(session_id)
             self._sessions[session_id] = session
 
-        ps = await self._mux.acquire(session, provider)
+        ps = await self._mux.acquire(session, provider, log=log)
+
+        if was_suspended and log is not None:
+            log.log(
+                "session.restored",
+                {"provider": session.provider_name, "model": session.model},
+            )
         try:
             chunks: list[str] = []
             async for chunk in ps.send(prompt):

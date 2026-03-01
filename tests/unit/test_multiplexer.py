@@ -6,9 +6,11 @@
 
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
+from substrat.logging import EventLog
 from substrat.provider.base import ProviderSession
 from substrat.session import Session, SessionState, SessionStore
 from substrat.session.multiplexer import SessionMultiplexer
@@ -39,7 +41,7 @@ class FakeProvider:
     """Records restore calls so tests can inspect them."""
 
     def __init__(self) -> None:
-        self.restore_calls: list[bytes] = []
+        self.restore_calls: list[tuple[bytes, EventLog | None]] = []
 
     @property
     def name(self) -> str:
@@ -48,8 +50,10 @@ class FakeProvider:
     async def create(self, model: str, system_prompt: str) -> FakeProviderSession:
         return FakeProviderSession()
 
-    async def restore(self, state: bytes) -> FakeProviderSession:
-        self.restore_calls.append(state)
+    async def restore(
+        self, state: bytes, log: EventLog | None = None
+    ) -> FakeProviderSession:
+        self.restore_calls.append((state, log))
         return FakeProviderSession(state)
 
 
@@ -142,7 +146,7 @@ async def test_acquire_returns_cached_slot(
     await mux.release(s.id)
     got = await mux.acquire(s, provider)
     assert got is ps
-    assert provider.restore_calls == []
+    assert len(provider.restore_calls) == 0
 
 
 async def test_acquire_restores_suspended_session(
@@ -151,7 +155,7 @@ async def test_acquire_restores_suspended_session(
     s = _suspended_session(store)
     ps = await mux.acquire(s, provider)
     assert isinstance(ps, ProviderSession)
-    assert provider.restore_calls == [b"saved-state"]
+    assert provider.restore_calls == [(b"saved-state", None)]
     assert mux.contains(s.id)
 
 
@@ -326,3 +330,63 @@ async def test_active_count_and_contains(mux: SessionMultiplexer) -> None:
     await mux.remove(s.id)
     assert mux.active_count == 0
     assert not mux.contains(s.id)
+
+
+# -- evict callback --------------------------------------------------------
+
+
+async def test_evict_callback_fires(
+    mux: SessionMultiplexer, store: SessionStore
+) -> None:
+    """on_evict fires with correct session_id and state_size."""
+    calls: list[tuple[UUID, int]] = []
+    mux.on_evict = lambda sid, sz: calls.append((sid, sz))
+
+    s = _make_session()
+    store.save(s)
+    s.activate()
+    store.save(s)
+    ps = FakeProviderSession(state=b"hello")
+    await mux.put(s.id, ps)
+    await mux.release(s.id)
+    # Fill both slots to trigger eviction of s.
+    await mux.put(_make_session().id, FakeProviderSession())
+    await mux.put(_make_session().id, FakeProviderSession())
+
+    assert len(calls) == 1
+    assert calls[0] == (s.id, 5)
+
+
+async def test_evict_callback_not_set(
+    mux: SessionMultiplexer, store: SessionStore
+) -> None:
+    """Eviction works fine when on_evict is None."""
+    mux.on_evict = None
+    s = _make_session()
+    store.save(s)
+    s.activate()
+    store.save(s)
+    await mux.put(s.id, FakeProviderSession())
+    await mux.release(s.id)
+    await mux.put(_make_session().id, FakeProviderSession())
+    await mux.put(_make_session().id, FakeProviderSession())
+    assert not mux.contains(s.id)
+
+
+async def test_acquire_passes_log_to_restore(
+    mux: SessionMultiplexer,
+    store: SessionStore,
+    provider: FakeProvider,
+    tmp_path: Path,
+) -> None:
+    """acquire() forwards log parameter to provider.restore()."""
+    s = _suspended_session(store)
+    log = EventLog(
+        tmp_path / "test-events.jsonl",
+        context={"session_id": s.id.hex},
+    )
+    log.open()
+    await mux.acquire(s, provider, log=log)
+    assert len(provider.restore_calls) == 1
+    assert provider.restore_calls[0] == (b"saved-state", log)
+    log.close()

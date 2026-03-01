@@ -290,3 +290,84 @@ async def test_send_turn_error_releases_slot(
     assert mux.contains(session.id)
     # Deferred was NOT drained.
     assert deferred_called == []
+
+
+# -- suspend/restore event logging -----------------------------------------
+
+
+async def test_eviction_logs_suspend_result(
+    store: SessionStore,
+    tmp_path: Path,
+) -> None:
+    """Evicting a session logs suspend.result with state_size."""
+    log_root = tmp_path / "logs"
+    mux = SessionMultiplexer(store, max_slots=1)
+    provider = FakeProvider()
+    sched = TurnScheduler(
+        providers={"fake": provider},
+        mux=mux,
+        store=store,
+        log_root=log_root,
+    )
+    s1 = await sched.create_session("fake", "m", "p")
+    # Creating s2 evicts s1 from the single slot.
+    _s2 = await sched.create_session("fake", "m", "p")
+    assert not mux.contains(s1.id)
+
+    log_file = log_root / s1.id.hex / "events.jsonl"
+    events = [json.loads(line) for line in log_file.read_text().splitlines()]
+    suspend_events = [e for e in events if e["event"] == "suspend.result"]
+    assert len(suspend_events) == 1
+    assert "state_size" in suspend_events[0]["data"]
+    assert isinstance(suspend_events[0]["data"]["state_size"], int)
+
+
+async def test_restore_logs_session_restored(
+    store: SessionStore,
+    tmp_path: Path,
+) -> None:
+    """send_turn on an evicted session logs session.restored."""
+    log_root = tmp_path / "logs"
+    mux = SessionMultiplexer(store, max_slots=1)
+    provider = FakeProvider()
+    sched = TurnScheduler(
+        providers={"fake": provider},
+        mux=mux,
+        store=store,
+        log_root=log_root,
+    )
+    s1 = await sched.create_session("fake", "m", "p")
+    _s2 = await sched.create_session("fake", "m", "p")
+    assert not mux.contains(s1.id)
+
+    await sched.send_turn(s1.id, "hello")
+
+    log_file = log_root / s1.id.hex / "events.jsonl"
+    events = [json.loads(line) for line in log_file.read_text().splitlines()]
+    restored = [e for e in events if e["event"] == "session.restored"]
+    assert len(restored) == 1
+    assert restored[0]["data"]["provider"] == "fake"
+    assert restored[0]["data"]["model"] == "m"
+
+
+async def test_no_restore_event_on_cache_hit(
+    store: SessionStore,
+    tmp_path: Path,
+) -> None:
+    """send_turn on a cached session does not log session.restored."""
+    log_root = tmp_path / "logs"
+    mux = SessionMultiplexer(store, max_slots=4)
+    provider = FakeProvider()
+    sched = TurnScheduler(
+        providers={"fake": provider},
+        mux=mux,
+        store=store,
+        log_root=log_root,
+    )
+    session = await sched.create_session("fake", "m", "p")
+    await sched.send_turn(session.id, "hello")
+
+    log_file = log_root / session.id.hex / "events.jsonl"
+    events = [json.loads(line) for line in log_file.read_text().splitlines()]
+    restored = [e for e in events if e["event"] == "session.restored"]
+    assert len(restored) == 0

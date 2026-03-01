@@ -25,7 +25,14 @@ Implemented events (logged by `TurnScheduler`):
 ```jsonl
 {"session_id":"...","ts":"...","event":"turn.start","data":{"prompt":"..."}}
 {"session_id":"...","ts":"...","event":"turn.complete","data":{"response":"..."}}
+{"session_id":"...","ts":"...","event":"suspend.result","data":{"state_size":N}}
+{"session_id":"...","ts":"...","event":"session.restored","data":{"provider":"...","model":"..."}}
 ```
+
+`suspend.result` is logged when the multiplexer evicts a session (LRU).
+`state_size` is the byte length of the serialized provider blob — the blob
+itself lives in `session.json`, not duplicated in the log. `session.restored`
+is logged when `send_turn` re-acquires a previously evicted session.
 
 Implemented events (logged by `Orchestrator`):
 
@@ -45,8 +52,6 @@ Planned events (not yet implemented):
 
 ```jsonl
 {"session_id":"...","ts":"...","event":"session.created","data":{"provider":"...","model":"...","system_prompt":"..."}}
-{"session_id":"...","ts":"...","event":"suspend.result","data":{"state":"<base64>"}}
-{"session_id":"...","ts":"...","event":"session.restored","data":{"provider":"...","model":"..."}}
 ```
 
 Location: `~/.substrat/agents/<uuid>/events.jsonl`.
