@@ -336,3 +336,115 @@ def test_resolve_sibling_by_name(fix: ToolFixture) -> None:
 def test_resolve_child_by_name(fix: ToolFixture) -> None:
     result = fix.h_carol.send_message("dave", "down")
     assert result["status"] == "sent"
+
+
+# --- log callback ---
+
+
+class LogCapture:
+    """Accumulates (agent_id, event, data) tuples for assertions."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[UUID, str, dict[str, Any]]] = []
+
+    def __call__(self, agent_id: UUID, event: str, data: dict[str, Any]) -> None:
+        self.events.append((agent_id, event, data))
+
+
+def test_send_logs_enqueued_to_recipient(fix: ToolFixture) -> None:
+    """send_message logs message.enqueued with recipient's agent_id."""
+    cap = LogCapture()
+    handler = ToolHandler(
+        fix.tree,
+        fix.inboxes,
+        fix.alice.id,
+        log_callback=cap,
+    )
+    handler.send_message("bob", "hello")
+    assert len(cap.events) == 1
+    agent_id, event, data = cap.events[0]
+    assert agent_id == fix.bob.id
+    assert event == "message.enqueued"
+    assert data["sender"] == fix.alice.id.hex
+    assert data["recipient"] == fix.bob.id.hex
+    assert data["payload"] == "hello"
+    assert data["kind"] == "request"
+    assert "message_id" in data
+    assert "timestamp" in data
+
+
+def test_broadcast_logs_enqueued_per_sibling(fix: ToolFixture) -> None:
+    """broadcast logs one enqueued event per sibling."""
+    cap = LogCapture()
+    handler = ToolHandler(
+        fix.tree,
+        fix.inboxes,
+        fix.alice.id,
+        log_callback=cap,
+    )
+    handler.broadcast("all hands")
+    enqueued = [(aid, d) for aid, ev, d in cap.events if ev == "message.enqueued"]
+    assert len(enqueued) == 2
+    recipient_ids = {aid for aid, _ in enqueued}
+    assert recipient_ids == {fix.bob.id, fix.carol.id}
+
+
+def test_check_inbox_logs_delivered(fix: ToolFixture) -> None:
+    """Draining inbox logs message.delivered per message."""
+    cap = LogCapture()
+    # Send two messages to alice.
+    fix.h_bob.send_message("alice", "m1")
+    fix.h_carol.send_message("alice", "m2")
+    handler = ToolHandler(
+        fix.tree,
+        fix.inboxes,
+        fix.alice.id,
+        log_callback=cap,
+    )
+    result = handler.check_inbox()
+    delivered = [(aid, d) for aid, ev, d in cap.events if ev == "message.delivered"]
+    assert len(delivered) == 2
+    logged_ids = {d["message_id"] for _, d in delivered}
+    result_ids = {m["message_id"].replace("-", "") for m in result["messages"]}
+    assert logged_ids == result_ids
+    # All delivered events target the caller.
+    assert all(aid == fix.alice.id for aid, _ in delivered)
+
+
+def test_check_inbox_empty_no_log(fix: ToolFixture) -> None:
+    """Empty inbox drain logs nothing."""
+    cap = LogCapture()
+    handler = ToolHandler(
+        fix.tree,
+        fix.inboxes,
+        fix.alice.id,
+        log_callback=cap,
+    )
+    handler.check_inbox()
+    assert len(cap.events) == 0
+
+
+def test_no_log_callback_silent(fix: ToolFixture) -> None:
+    """Handler with no callback — send_message works without crash."""
+    handler = ToolHandler(fix.tree, fix.inboxes, fix.alice.id)
+    result = handler.send_message("bob", "quiet")
+    assert result["status"] == "sent"
+
+
+def test_enqueue_logged_before_inbox_delivery(fix: ToolFixture) -> None:
+    """At log time the message is NOT yet in the recipient's inbox."""
+    inbox_lengths: list[int] = []
+
+    def spy(agent_id: UUID, event: str, data: dict[str, Any]) -> None:
+        if event == "message.enqueued":
+            inbox_lengths.append(len(fix.inboxes[agent_id]))
+
+    handler = ToolHandler(
+        fix.tree,
+        fix.inboxes,
+        fix.alice.id,
+        log_callback=spy,
+    )
+    handler.send_message("bob", "check timing")
+    # Callback fired before deliver — inbox was still at its pre-delivery length.
+    assert inbox_lengths == [0]

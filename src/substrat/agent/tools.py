@@ -27,6 +27,7 @@ class ToolError(Exception):
 
 DeferredWork = Callable[[], Coroutine[Any, Any, None]]
 SpawnCallback = Callable[[AgentNode], DeferredWork]
+LogCallback = Callable[[UUID, str, dict[str, Any]], None]
 InboxRegistry = dict[UUID, Inbox]
 
 
@@ -44,11 +45,13 @@ class ToolHandler:
         inboxes: InboxRegistry,
         caller_id: UUID,
         spawn_callback: SpawnCallback | None = None,
+        log_callback: LogCallback | None = None,
     ) -> None:
         self._tree = tree
         self._inboxes = inboxes
         self._caller_id = caller_id
         self._spawn_callback = spawn_callback
+        self._log_callback = log_callback
         self._deferred: list[DeferredWork] = []
 
     # --- Public tools ---
@@ -111,6 +114,12 @@ class ToolHandler:
         if inbox is None:
             return {"messages": []}
         messages = inbox.collect()
+        for m in messages:
+            self._log_event(
+                self._caller_id,
+                "message.delivered",
+                {"message_id": m.id.hex},
+            )
         return {
             "messages": [
                 {
@@ -215,8 +224,32 @@ class ToolHandler:
         except KeyError:
             return str(sender_id)
 
+    def _log_event(
+        self,
+        agent_id: UUID,
+        event: str,
+        data: dict[str, Any],
+    ) -> None:
+        """Fire log callback if configured. Silent otherwise."""
+        if self._log_callback is not None:
+            self._log_callback(agent_id, event, data)
+
     def _deliver(self, recipient_id: UUID, envelope: MessageEnvelope) -> None:
         """Deliver envelope to recipient's inbox, creating inbox if needed."""
+        self._log_event(
+            recipient_id,
+            "message.enqueued",
+            {
+                "message_id": envelope.id.hex,
+                "sender": envelope.sender.hex,
+                "recipient": recipient_id.hex,
+                "kind": envelope.kind.value,
+                "payload": envelope.payload,
+                "timestamp": envelope.timestamp,
+                "reply_to": envelope.reply_to.hex if envelope.reply_to else None,
+                "metadata": envelope.metadata,
+            },
+        )
         inbox = self._inboxes.get(recipient_id)
         if inbox is None:
             inbox = Inbox()

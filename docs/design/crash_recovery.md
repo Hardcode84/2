@@ -32,7 +32,14 @@ Implemented events (logged by `Orchestrator`):
 ```jsonl
 {"session_id":"...","ts":"...","event":"agent.created","data":{"agent_id":"<hex>","name":"...","parent_session_id":null,"instructions":"..."}}
 {"session_id":"...","ts":"...","event":"agent.terminated","data":{"agent_id":"<hex>"}}
+{"session_id":"...","ts":"...","event":"message.enqueued","data":{"message_id":"<hex>","sender":"<hex>","recipient":"<hex>","kind":"...","payload":"...","timestamp":"...","reply_to":null,"metadata":{...}}}
+{"session_id":"...","ts":"...","event":"message.delivered","data":{"message_id":"<hex>"}}
 ```
+
+`message.enqueued` is logged to the **recipient's** session log before
+`inbox.deliver()`. `message.delivered` is logged after `inbox.collect()`
+drains the inbox. Both events are fired by `ToolHandler` via a
+`LogCallback` that the orchestrator resolves to the correct session log.
 
 Planned events (not yet implemented):
 
@@ -40,8 +47,6 @@ Planned events (not yet implemented):
 {"session_id":"...","ts":"...","event":"session.created","data":{"provider":"...","model":"...","system_prompt":"..."}}
 {"session_id":"...","ts":"...","event":"suspend.result","data":{"state":"<base64>"}}
 {"session_id":"...","ts":"...","event":"session.restored","data":{"provider":"...","model":"..."}}
-{"session_id":"...","ts":"...","event":"message.enqueued","data":{"message_id":"...","sender":"...","recipient":"..."}}
-{"session_id":"...","ts":"...","event":"message.delivered","data":{"message_id":"..."}}
 ```
 
 Location: `~/.substrat/agents/<uuid>/events.jsonl`.
@@ -214,10 +219,12 @@ On daemon startup:
    and `tree.add()` in dependency order. Clean up orphaned sessions (no
    `agent.created` event).
 
-4. **Reconcile messages** (not yet implemented — requires `message.enqueued`
-   / `message.delivered` events). For each agent, scan its event log for
-   `message.enqueued` without a matching `message.delivered`. Cross-reference
-   with recipient logs to detect undelivered replies.
+4. **Reconcile messages.** For each recovered agent, scan its cached event
+   log entries for `message.enqueued` and `message.delivered` events.
+   Compute the pending set (enqueued minus delivered by message_id).
+   Reconstruct `MessageEnvelope` objects from stored data and inject into
+   the agent's inbox. No new events are logged during re-injection —
+   duplicate delivery on subsequent recovery is tolerable.
 
 5. **Resume root agents** (not yet implemented). For agentic providers:
    `--resume` with saved session ID. For bare LLM: replay event log to

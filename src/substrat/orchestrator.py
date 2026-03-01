@@ -12,10 +12,12 @@ from typing import Any
 from uuid import UUID
 
 from substrat.agent.inbox import Inbox
+from substrat.agent.message import MessageEnvelope, MessageKind
 from substrat.agent.node import AgentNode, AgentState
 from substrat.agent.tools import (
     DeferredWork,
     InboxRegistry,
+    LogCallback,
     SpawnCallback,
     ToolHandler,
 )
@@ -147,13 +149,26 @@ class Orchestrator:
         provider: str,
         model: str,
     ) -> ToolHandler:
-        """Build a ToolHandler with a spawn callback that inherits provider/model."""
+        """Build a ToolHandler with spawn and log callbacks."""
         return ToolHandler(
             self._tree,
             self._inboxes,
             agent_id,
             spawn_callback=self._make_spawn_callback(provider, model),
+            log_callback=self._make_log_callback(),
         )
+
+    def _make_log_callback(self) -> LogCallback:
+        """Return a closure that logs message events to the recipient's session log."""
+
+        def callback(agent_id: UUID, event: str, data: dict[str, Any]) -> None:
+            try:
+                node = self._tree.get(agent_id)
+            except KeyError:
+                return
+            self._log_lifecycle(node.session_id, event, data)
+
+        return callback
 
     def _make_spawn_callback(
         self,
@@ -250,6 +265,7 @@ class Orchestrator:
                 "parent_session_id": created_data.get("parent_session_id"),
                 "instructions": created_data.get("instructions", ""),
                 "session": session,
+                "entries": entries,
             }
 
         # Clean up orphaned sessions.
@@ -321,6 +337,49 @@ class Orchestrator:
                     info["session"].terminate()
                     store.save(info["session"])
                 break
+
+        # -- Message recovery: re-inject pending messages. --
+        for _sid, info in valid.items():
+            if info["agent_id"] not in placed:
+                continue
+            entries = info.get("entries", [])
+            enqueued: dict[str, dict[str, Any]] = {}
+            delivered: set[str] = set()
+            for entry in entries:
+                ev = entry.get("event")
+                if ev == "message.enqueued":
+                    data = entry.get("data", {})
+                    mid = data.get("message_id", "")
+                    if mid:
+                        enqueued[mid] = data
+                elif ev == "message.delivered":
+                    data = entry.get("data", {})
+                    mid = data.get("message_id", "")
+                    if mid:
+                        delivered.add(mid)
+
+            pending = {k: v for k, v in enqueued.items() if k not in delivered}
+            for mid, data in pending.items():
+                recipient_id = info["agent_id"]
+                kind_str = data.get("kind", MessageKind.REQUEST.value)
+                try:
+                    kind = MessageKind(kind_str)
+                except ValueError:
+                    kind = MessageKind.REQUEST
+                reply_to_hex = data.get("reply_to")
+                envelope = MessageEnvelope(
+                    sender=UUID(data["sender"]),
+                    id=UUID(mid),
+                    timestamp=data.get("timestamp", ""),
+                    recipient=UUID(data["recipient"]),
+                    reply_to=UUID(reply_to_hex) if reply_to_hex else None,
+                    kind=kind,
+                    payload=data.get("payload", ""),
+                    metadata=data.get("metadata", {}),
+                )
+                inbox = self._inboxes.get(recipient_id)
+                if inbox is not None:
+                    inbox.deliver(envelope)
 
     async def _drain_deferred(self, agent_id: UUID) -> None:
         """Drain and execute deferred work from the agent's tool handler."""

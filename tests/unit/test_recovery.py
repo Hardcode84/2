@@ -500,3 +500,181 @@ def test_log_event_missing_session(tmp_path: Path) -> None:
     )
     with pytest.raises(KeyError):
         sched.log_event(uuid4(), "test.event")
+
+
+# -- Message recovery -------------------------------------------------------
+
+
+async def test_recover_pending_message(
+    orch: Orchestrator,
+    tmp_path: Path,
+    provider: FakeProvider,
+) -> None:
+    """Sent but unchecked message is re-injected on recovery."""
+    root = await orch.create_root_agent("root", "r")
+    h = orch.get_handler(root.id)
+    r = h.spawn_agent("child", "ci")
+    child_id = UUID(r["agent_id"])
+    await orch.run_turn(root.id, "go")
+
+    # Root sends a message to child. No check_inbox on child.
+    h = orch.get_handler(root.id)
+    h.send_message("child", "hello from root")
+
+    orch2 = _fresh_orch(tmp_path, provider)
+    await orch2.recover()
+
+    inbox = orch2.inboxes[child_id]
+    assert len(inbox) == 1
+    msg = inbox.peek()[0]
+    assert msg.payload == "hello from root"
+
+
+async def test_recover_delivered_not_reinjected(
+    orch: Orchestrator,
+    tmp_path: Path,
+    provider: FakeProvider,
+) -> None:
+    """Message that was sent AND checked is not re-injected."""
+    root = await orch.create_root_agent("root", "r")
+    h_root = orch.get_handler(root.id)
+    r = h_root.spawn_agent("child", "ci")
+    child_id = UUID(r["agent_id"])
+    await orch.run_turn(root.id, "go")
+
+    h_root = orch.get_handler(root.id)
+    h_root.send_message("child", "delivered msg")
+
+    h_child = orch.get_handler(child_id)
+    h_child.check_inbox()
+
+    orch2 = _fresh_orch(tmp_path, provider)
+    await orch2.recover()
+
+    assert len(orch2.inboxes[child_id]) == 0
+
+
+async def test_recover_multiple_pending(
+    orch: Orchestrator,
+    tmp_path: Path,
+    provider: FakeProvider,
+) -> None:
+    """Send 3 messages, deliver 1. Recovery yields 2 pending."""
+    root = await orch.create_root_agent("root", "r")
+    h_root = orch.get_handler(root.id)
+    r = h_root.spawn_agent("child", "ci")
+    child_id = UUID(r["agent_id"])
+    await orch.run_turn(root.id, "go")
+
+    h_root = orch.get_handler(root.id)
+    h_root.send_message("child", "m1")
+    h_root.send_message("child", "m2")
+    h_root.send_message("child", "m3")
+
+    # Deliver one message (drains all 3, but only first check_inbox matters).
+    h_child = orch.get_handler(child_id)
+    result = h_child.check_inbox()
+    assert len(result["messages"]) == 3
+
+    # Send 2 more after drain — these are pending.
+    h_root = orch.get_handler(root.id)
+    h_root.send_message("child", "m4")
+    h_root.send_message("child", "m5")
+
+    orch2 = _fresh_orch(tmp_path, provider)
+    await orch2.recover()
+
+    assert len(orch2.inboxes[child_id]) == 2
+    payloads = {m.payload for m in orch2.inboxes[child_id].peek()}
+    assert payloads == {"m4", "m5"}
+
+
+async def test_recover_message_envelope_fields(
+    orch: Orchestrator,
+    tmp_path: Path,
+    provider: FakeProvider,
+) -> None:
+    """Reconstructed envelope preserves all fields."""
+    root = await orch.create_root_agent("root", "r")
+    h_root = orch.get_handler(root.id)
+    r = h_root.spawn_agent("child", "ci")
+    child_id = UUID(r["agent_id"])
+    await orch.run_turn(root.id, "go")
+
+    h_root = orch.get_handler(root.id)
+    result = h_root.send_message("child", "payload check", sync=False)
+    original_mid = result["message_id"]
+
+    # Grab original envelope for comparison.
+    original = orch.inboxes[child_id].peek()[0]
+
+    orch2 = _fresh_orch(tmp_path, provider)
+    await orch2.recover()
+
+    recovered = orch2.inboxes[child_id].peek()[0]
+    assert str(recovered.id) == original_mid
+    assert recovered.sender == root.id
+    assert recovered.recipient == child_id
+    assert recovered.payload == "payload check"
+    assert recovered.kind == original.kind
+    assert recovered.metadata == original.metadata
+    assert recovered.timestamp == original.timestamp
+
+
+async def test_recover_broadcast_pending(
+    orch: Orchestrator,
+    tmp_path: Path,
+    provider: FakeProvider,
+) -> None:
+    """Broadcast to siblings. Recovery puts message in each sibling's inbox."""
+    root = await orch.create_root_agent("root", "r")
+    h_root = orch.get_handler(root.id)
+    h_root.spawn_agent("a", "ai")
+    h_root.spawn_agent("b", "bi")
+    h_root.spawn_agent("c", "ci")
+    await orch.run_turn(root.id, "go")
+
+    a_id = orch.tree.get(
+        next(n.id for n in orch.tree.children(root.id) if n.name == "a")
+    ).id
+    b_id = next(n.id for n in orch.tree.children(root.id) if n.name == "b")
+    c_id = next(n.id for n in orch.tree.children(root.id) if n.name == "c")
+
+    h_a = orch.get_handler(a_id)
+    h_a.broadcast("team update")
+
+    orch2 = _fresh_orch(tmp_path, provider)
+    await orch2.recover()
+
+    assert len(orch2.inboxes[b_id]) == 1
+    assert len(orch2.inboxes[c_id]) == 1
+    assert orch2.inboxes[b_id].peek()[0].payload == "team update"
+    assert orch2.inboxes[c_id].peek()[0].payload == "team update"
+    # Sender should not get own broadcast.
+    assert len(orch2.inboxes[a_id]) == 0
+
+
+async def test_recover_sender_terminated(
+    orch: Orchestrator,
+    tmp_path: Path,
+    provider: FakeProvider,
+) -> None:
+    """Sender terminated after sending. Message still in recipient inbox on recovery."""
+    root = await orch.create_root_agent("root", "r")
+    h_root = orch.get_handler(root.id)
+    r_a = h_root.spawn_agent("sender", "si")
+    r_b = h_root.spawn_agent("receiver", "ri")
+    sender_id = UUID(r_a["agent_id"])
+    receiver_id = UUID(r_b["agent_id"])
+    await orch.run_turn(root.id, "go")
+
+    h_sender = orch.get_handler(sender_id)
+    h_sender.send_message("receiver", "farewell")
+
+    await orch.terminate_agent(sender_id)
+
+    orch2 = _fresh_orch(tmp_path, provider)
+    await orch2.recover()
+
+    assert len(orch2.inboxes[receiver_id]) == 1
+    assert orch2.inboxes[receiver_id].peek()[0].payload == "farewell"

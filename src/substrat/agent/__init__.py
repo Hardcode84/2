@@ -17,7 +17,7 @@ from substrat.agent.router import (
     resolve_broadcast,
     validate_route,
 )
-from substrat.agent.tools import InboxRegistry, ToolError, ToolHandler
+from substrat.agent.tools import InboxRegistry, LogCallback, ToolError, ToolHandler
 from substrat.agent.tree import AgentTree
 
 __all__ = [
@@ -27,6 +27,7 @@ __all__ = [
     "AgentTree",
     "Inbox",
     "InboxRegistry",
+    "LogCallback",
     "MessageEnvelope",
     "MessageKind",
     "RoutingError",
