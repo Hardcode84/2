@@ -266,7 +266,38 @@ After every crash+restart:
 
 ### Fuzzer
 
-Deterministic, simulation-based. No real timing, no threads, no sleeps.
+Two layers: an in-memory lifecycle fuzzer (exists now) and a crash-recovery
+fuzzer (requires tree persistence, future work).
+
+#### Hypothesis stateful testing
+
+Both fuzzers use Hypothesis `RuleBasedStateMachine`. This gives us:
+
+- **Rules** — actions the fuzzer can take (create, spawn, turn, terminate,
+  crash). Each rule has preconditions that guard against illegal states.
+- **Invariants** — checked after every step (registry sync, tree-shadow
+  match, parent-child consistency, no stuck states).
+- **Shrinking** — when a failure is found, Hypothesis deterministically
+  reduces the sequence to a minimal reproduction. 3-step repros instead
+  of 30-step monsters.
+- **Database** — `DirectoryBasedExampleDatabase` in `.hypothesis/` saves
+  failing examples. Subsequent runs replay saved failures first, then
+  explore new sequences. Findings persist across runs.
+
+#### Lifecycle fuzzer (in-memory)
+
+Lives in `tests/stress/test_orchestrator_fuzz.py`. Exercises the
+orchestrator's public API with random sequences of `create_root`,
+`spawn_child`, `run_turn`, and `terminate_leaf`. Uses a small name alphabet
+(5 names) to force collisions. Shadow state tracks alive agents and
+parent-child links; invariants verify the real tree matches. No persistence,
+no crash simulation — pure state machine correctness.
+
+Gated behind `--run-stress`.
+
+#### Crash-recovery fuzzer (future)
+
+Extends the lifecycle fuzzer with a `crash_and_recover` rule:
 
 1. **Generate** a random sequence of actions from a seeded RNG:
    `create_agent`, `send_message`, `broadcast`, `spawn_agent`,
@@ -290,8 +321,52 @@ Deterministic, simulation-based. No real timing, no threads, no sleeps.
    everything that was fsynced before the crash point is present, nothing
    after it is.
 
-Repeat for many seeds. Log the seed and step index on failure for
-reproduction. Gate behind `@pytest.mark.stress`.
+Requires tree persistence via event logs (see "Agent lifecycle events"
+above) before this can be built.
+
+### Parallel execution
+
+Hypothesis + pytest-xdist. `DirectoryBasedExampleDatabase` is process-safe
+on Linux — entries are written atomically (temp file + rename), so multiple
+workers sharing the same `.hypothesis/` directory is fine. No per-worker
+isolation or `database=None` hacks needed.
+
+```
+pytest tests/stress/ --run-stress -n 64 -q
+```
+
+### CI profiles
+
+Two Hypothesis profiles for different contexts:
+
+**PR gate (`ci` profile).** `derandomize=True`, moderate example count
+(~50). The seed is derived deterministically from the test name, so the
+same inputs run every time. No flakes from unrelated changes — a failure
+means the PR broke something. Fast enough to run on every push.
+
+**Nightly (`nightly` profile).** Random seeds, high example count, many
+xdist workers. Total runtime capped by `pytest --timeout` at the job
+level — burn as many cycles as the schedule allows. `deadline=None`
+disables the per-example timing check (default 200ms) so the fuzzer
+doesn't false-positive under load. Failures get filed as issues, not
+blamed on whoever pushed last. Runs on a cron schedule, not on PRs.
+
+The nightly `.hypothesis/` database is persisted across runs via GitHub
+Actions cache (`actions/cache` keyed on branch + date). This means the
+nightly fuzzer builds a corpus over time — previously-found edge cases are
+replayed first before exploring new sequences. A cache miss (first run,
+or eviction) just starts fresh.
+
+Hypothesis has built-in profile support:
+
+```python
+settings.register_profile("ci", derandomize=True, max_examples=50, deadline=None)
+settings.register_profile("nightly", max_examples=5000, deadline=None)
+settings.load_profile(os.getenv("HYPOTHESIS_PROFILE", "default"))
+```
+
+The `HYPOTHESIS_PROFILE` env var selects the profile. CI pipelines set it;
+local runs use the default (200 examples, random seeds, `deadline=None`).
 
 ### Crash granularity
 
