@@ -5,10 +5,10 @@
 """Orchestrator crash-recovery fuzzer.
 
 Exercises agent lifecycle operations (create, spawn, turn, terminate,
-send, check_inbox) with crash injection at arbitrary IO boundaries via
-VirtualFS. After each crash: thaw, build a fresh orchestrator, run
-``recover()``, and verify the recovered state is consistent with what
-was committed to disk.
+send, check_inbox, broadcast) with crash injection at arbitrary IO
+boundaries via VirtualFS. After each crash: thaw, build a fresh
+orchestrator, run ``recover()``, and verify the recovered state is
+consistent with what was committed to disk.
 
 The IO-level crash fuzzer (``test_crash_fuzz.py``) proves that
 ``atomic_write`` and ``EventLog`` survive crashes individually. This
@@ -44,6 +44,7 @@ from hypothesis.stateful import (
 )
 
 from substrat.agent import AgentState
+from substrat.logging import EventLog
 from substrat.logging.event_log import read_log
 from substrat.orchestrator import Orchestrator
 from substrat.scheduler import TurnScheduler
@@ -67,9 +68,6 @@ class FakeProviderSession:
     async def suspend(self) -> bytes:
         return b"s"
 
-    async def restore(self, state: bytes) -> None:
-        pass
-
     async def stop(self) -> None:
         pass
 
@@ -85,14 +83,14 @@ class FakeProvider:
         self,
         model: str,
         system_prompt: str,
-        log: Any = None,
+        log: EventLog | None = None,
     ) -> FakeProviderSession:
         return FakeProviderSession()
 
     async def restore(
         self,
         state: bytes,
-        log: Any = None,
+        log: EventLog | None = None,
     ) -> FakeProviderSession:
         return FakeProviderSession()
 
@@ -162,8 +160,8 @@ class OrchCrashRecoveryMachine(RuleBasedStateMachine):
     """Fuzz orchestrator crash recovery with random lifecycle + crash injection.
 
     Shadow state tracks which agents have been durably committed. On crash,
-    the shadow is reconciled against the recovered tree (ground truth).
-    Invariants verify consistency after every step.
+    committed agents are asserted to survive recovery (unless the crash was
+    mid-terminate). Invariants verify consistency after every step.
     """
 
     agents = Bundle("agents")
@@ -195,8 +193,17 @@ class OrchCrashRecoveryMachine(RuleBasedStateMachine):
 
     # -- Crash + recovery --------------------------------------------------
 
-    def _do_crash_and_recover(self) -> None:
-        """Thaw VFS, build fresh orchestrator, recover, reconcile shadow."""
+    def _do_crash_and_recover(
+        self,
+        *,
+        may_vanish: UUID | None = None,
+    ) -> None:
+        """Thaw VFS, build fresh orchestrator, recover, reconcile shadow.
+
+        ``may_vanish`` is an agent ID that was being terminated when the
+        crash hit — it may or may not survive depending on whether the
+        ``agent.terminated`` event was fsynced.
+        """
         self.vfs.thaw()
         self.orch = _make_orch(self.vfs)
         _run(self.orch.recover())
@@ -205,22 +212,46 @@ class OrchCrashRecoveryMachine(RuleBasedStateMachine):
         self.pending.clear()
         self.parents_needing_drain.clear()
 
-        self._reconcile_shadow()
+        self._reconcile_shadow(may_vanish=may_vanish)
 
-    def _reconcile_shadow(self) -> None:
-        """Make shadow follow reality after recovery.
+    def _reconcile_shadow(
+        self,
+        *,
+        may_vanish: UUID | None = None,
+    ) -> None:
+        """Reconcile shadow against recovered tree.
 
-        The recovered tree is ground truth. The shadow must match it for
-        future rules to work correctly.
+        Committed agents are asserted to survive recovery — if a committed
+        agent is missing from the recovered tree, that's a recovery bug.
+        The only exceptions are:
+
+        - ``may_vanish``: agent being terminated when the crash hit. Its
+          ``agent.terminated`` event may have been fsynced.
+        - Children being drained: crash mid-drain means some children's
+          sessions were created (partially committed) while others weren't.
+          These are already cleared from ``self.shadow`` via ``pending``.
         """
         recovered_ids = _tree_agent_ids(self.orch)
 
-        # Remove agents from shadow that didn't survive.
-        vanished = set(self.shadow) - recovered_ids
-        for aid in vanished:
-            del self.shadow[aid]
+        # Assert committed agents survived recovery.
+        for aid in list(self.shadow):
+            if aid in recovered_ids:
+                continue
+            if aid == may_vanish:
+                # Terminate was in flight — agent may or may not survive.
+                del self.shadow[aid]
+                for _pid, kids_set in self.children_map.items():
+                    kids_set.discard(aid)
+                del self.children_map[aid]
+                continue
+            raise AssertionError(
+                f"committed agent {aid} lost in recovery! "
+                f"recovered={recovered_ids}, shadow={set(self.shadow)}"
+            )
 
-        # Add agents in recovered tree but not in shadow (partially committed).
+        # Add agents in recovered tree but not in shadow (partially committed
+        # during the crash — e.g., deferred spawn got session + event fsynced
+        # before the crash hit).
         for aid in recovered_ids - set(self.shadow):
             node = self.orch.tree.get(aid)
             self.shadow[aid] = ShadowAgent(
@@ -234,7 +265,6 @@ class OrchCrashRecoveryMachine(RuleBasedStateMachine):
         # Rebuild children_map from recovered tree.
         self.children_map.clear()
         for aid in self.shadow:
-            node = self.orch.tree.get(aid)
             self.children_map[aid] = {c.id for c in self.orch.tree.children(aid)}
 
     # -- Rules -------------------------------------------------------------
@@ -301,14 +331,10 @@ class OrchCrashRecoveryMachine(RuleBasedStateMachine):
         return child_id
 
     @precondition(lambda self: bool(self.parents_needing_drain))
-    @rule(agent=agents, crash_at=st.integers(0, 50))
-    def run_turn(self, agent: UUID, crash_at: int) -> None:
-        """Run a turn on a living agent, optionally crashing mid-operation."""
-        if agent not in self.shadow or agent in self.pending:
-            return
-        node = self.orch.tree.get(agent)
-        if node.state != AgentState.IDLE:
-            return
+    @rule(data=st.data(), crash_at=st.integers(0, 50))
+    def run_turn(self, data: st.DataObject, crash_at: int) -> None:
+        """Run a turn on a parent that needs draining."""
+        agent = data.draw(st.sampled_from(sorted(self.parents_needing_drain)))
         if crash_at > 0:
             self.vfs.arm(crash_at)
         try:
@@ -319,20 +345,19 @@ class OrchCrashRecoveryMachine(RuleBasedStateMachine):
         if crash_at > 0:
             self.vfs.disarm()
         # Success — deferred drained, children now committed.
-        if agent in self.parents_needing_drain:
-            self.parents_needing_drain.discard(agent)
-            for child_id in list(self.children_map.get(agent, set())):
-                if child_id in self.pending:
-                    self.pending.discard(child_id)
-                    # Materialize into shadow.
-                    child_node = self.orch.tree.get(child_id)
-                    self.shadow[child_id] = ShadowAgent(
-                        agent_id=child_id,
-                        name=child_node.name,
-                        parent_id=agent,
-                        session_id=child_node.session_id,
-                        instructions=child_node.instructions,
-                    )
+        self.parents_needing_drain.discard(agent)
+        for child_id in list(self.children_map.get(agent, set())):
+            if child_id in self.pending:
+                self.pending.discard(child_id)
+                # Materialize into shadow.
+                child_node = self.orch.tree.get(child_id)
+                self.shadow[child_id] = ShadowAgent(
+                    agent_id=child_id,
+                    name=child_node.name,
+                    parent_id=agent,
+                    session_id=child_node.session_id,
+                    instructions=child_node.instructions,
+                )
 
     @precondition(lambda self: bool(self.shadow))
     @rule(agent=agents, crash_at=st.integers(0, 50))
@@ -341,9 +366,6 @@ class OrchCrashRecoveryMachine(RuleBasedStateMachine):
         if agent not in self.shadow or agent in self.pending:
             return
         if agent in self.parents_needing_drain:
-            return
-        node = self.orch.tree.get(agent)
-        if node.state != AgentState.IDLE:
             return
         if crash_at > 0:
             self.vfs.arm(crash_at)
@@ -383,6 +405,32 @@ class OrchCrashRecoveryMachine(RuleBasedStateMachine):
 
     @precondition(lambda self: bool(self.shadow))
     @rule(agent=agents, crash_at=st.integers(0, 50))
+    def broadcast_to_team(self, agent: UUID, crash_at: int) -> None:
+        """Broadcast from a non-root agent to its siblings."""
+        if agent not in self.shadow or agent in self.pending:
+            return
+        # Only non-root agents have siblings.
+        parent_id = self.shadow[agent].parent_id
+        if parent_id is None:
+            return
+        # All siblings must be materialized — messages to pending agents
+        # aren't logged (no session log yet), so they can't survive a crash.
+        siblings = self.children_map.get(parent_id, set()) - {agent}
+        if not siblings or siblings & self.pending:
+            return
+        handler = self.orch.get_handler(agent)
+        if crash_at > 0:
+            self.vfs.arm(crash_at)
+        try:
+            handler.broadcast("team update")
+        except CrashError:
+            self._do_crash_and_recover()
+            return
+        if crash_at > 0:
+            self.vfs.disarm()
+
+    @precondition(lambda self: bool(self.shadow))
+    @rule(agent=agents, crash_at=st.integers(0, 50))
     def check_inbox(self, agent: UUID, crash_at: int) -> None:
         """Drain an agent's inbox."""
         if agent not in self.shadow or agent in self.pending:
@@ -402,22 +450,17 @@ class OrchCrashRecoveryMachine(RuleBasedStateMachine):
     @rule(agent=agents, crash_at=st.integers(0, 50))
     def terminate_leaf(self, agent: UUID, crash_at: int) -> None:
         """Terminate a living leaf agent."""
-        if agent not in self.shadow:
+        if agent not in self.shadow or agent in self.pending:
             return
         kids = self.children_map.get(agent, set())
         if kids:
-            return
-        if agent in self.pending:
-            return
-        node = self.orch.tree.get(agent)
-        if node.state != AgentState.IDLE:
             return
         if crash_at > 0:
             self.vfs.arm(crash_at)
         try:
             _run(self.orch.terminate_agent(agent))
         except CrashError:
-            self._do_crash_and_recover()
+            self._do_crash_and_recover(may_vanish=agent)
             return
         if crash_at > 0:
             self.vfs.disarm()
@@ -515,13 +558,13 @@ class OrchCrashRecoveryMachine(RuleBasedStateMachine):
             delivered: set[str] = set()
             for entry in entries:
                 ev = entry.get("event")
-                data = entry.get("data", {})
+                edata = entry.get("data", {})
                 if ev == "message.enqueued":
-                    mid = data.get("message_id", "")
+                    mid = edata.get("message_id", "")
                     if mid:
                         enqueued.add(mid)
                 elif ev == "message.delivered":
-                    mid = data.get("message_id", "")
+                    mid = edata.get("message_id", "")
                     if mid:
                         delivered.add(mid)
             expected_pending = enqueued - delivered
