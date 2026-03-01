@@ -8,11 +8,20 @@ import os
 from pathlib import Path
 
 
-def _full_write(fd: int, data: bytes) -> None:
+def full_write(fd: int, data: bytes) -> None:
     """Write all bytes, retrying on short writes."""
     while data:
         n = os.write(fd, data)
         data = data[n:]
+
+
+def fsync_dir(dirpath: Path) -> None:
+    """Fsync a directory to make its entries durable."""
+    fd = os.open(dirpath, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def atomic_write(path: Path, data: bytes) -> None:
@@ -21,8 +30,9 @@ def atomic_write(path: Path, data: bytes) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
     try:
-        _full_write(fd, data)
+        full_write(fd, data)
         os.fsync(fd)
     finally:
         os.close(fd)
     os.replace(tmp, path)
+    fsync_dir(path.parent)

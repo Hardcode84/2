@@ -21,6 +21,14 @@ def is_sentinel(agent_id: UUID) -> bool:
     return agent_id in _SENTINELS
 
 
+_SENTINEL_NAMES: dict[UUID, str] = {SYSTEM: "SYSTEM", USER: "USER"}
+
+
+def sentinel_name(agent_id: UUID) -> str | None:
+    """Human-readable name for sentinel UUIDs, or None for real agents."""
+    return _SENTINEL_NAMES.get(agent_id)
+
+
 class MessageKind(enum.Enum):
     REQUEST = "request"
     RESPONSE = "response"

@@ -15,7 +15,11 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from substrat.agent.inbox import Inbox
-from substrat.agent.message import MessageEnvelope, MessageKind, is_sentinel
+from substrat.agent.message import (
+    MessageEnvelope,
+    MessageKind,
+    sentinel_name,
+)
 from substrat.agent.node import AgentNode
 from substrat.agent.router import RoutingError, resolve_broadcast, validate_route
 from substrat.agent.tree import AgentTree
@@ -216,9 +220,10 @@ class ToolHandler:
         raise ToolError(f"no child agent named {name!r}")
 
     def _sender_display_name(self, sender_id: UUID) -> str:
-        """Human-readable sender name. Falls back to UUID string for sentinels."""
-        if is_sentinel(sender_id):
-            return str(sender_id)
+        """Human-readable sender name. Falls back to UUID string for unknowns."""
+        name = sentinel_name(sender_id)
+        if name is not None:
+            return name
         try:
             return self._tree.get(sender_id).name or str(sender_id)
         except KeyError:

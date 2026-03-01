@@ -20,7 +20,7 @@ class SessionState(enum.Enum):
 
 # Valid state transitions.
 _TRANSITIONS: dict[SessionState, frozenset[SessionState]] = {
-    SessionState.CREATED: frozenset({SessionState.ACTIVE}),
+    SessionState.CREATED: frozenset({SessionState.ACTIVE, SessionState.TERMINATED}),
     SessionState.ACTIVE: frozenset({SessionState.SUSPENDED, SessionState.TERMINATED}),
     SessionState.SUSPENDED: frozenset({SessionState.ACTIVE, SessionState.TERMINATED}),
     SessionState.TERMINATED: frozenset(),
@@ -64,5 +64,5 @@ class Session:
         self.provider_state = provider_state
 
     def terminate(self) -> None:
-        """ACTIVE/SUSPENDED → TERMINATED."""
+        """CREATED/ACTIVE/SUSPENDED → TERMINATED."""
         self.transition(SessionState.TERMINATED)

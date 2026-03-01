@@ -197,14 +197,14 @@ def test_check_inbox_from_shows_name(fix: ToolFixture) -> None:
     assert result["messages"][0]["from"] == "bob"
 
 
-def test_check_inbox_sentinel_sender_shows_uuid(fix: ToolFixture) -> None:
+def test_check_inbox_sentinel_sender_shows_name(fix: ToolFixture) -> None:
     # Manually deliver a SYSTEM message.
     from substrat.agent.message import MessageEnvelope
 
     envelope = MessageEnvelope(sender=SYSTEM, recipient=fix.alice.id, payload="sys")
     fix.inboxes[fix.alice.id].deliver(envelope)
     result = fix.h_alice.check_inbox()
-    assert result["messages"][0]["from"] == str(SYSTEM)
+    assert result["messages"][0]["from"] == "SYSTEM"
 
 
 # --- spawn_agent ---

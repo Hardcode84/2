@@ -12,16 +12,7 @@ from types import TracebackType
 from typing import Any
 
 from substrat import now_iso
-from substrat.persistence import _full_write
-
-
-def _fsync_dir(dirpath: Path) -> None:
-    """Fsync a directory to make its entries durable."""
-    fd = os.open(dirpath, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+from substrat.persistence import fsync_dir, full_write
 
 
 def read_log(path: Path) -> list[dict[str, Any]]:
@@ -76,7 +67,7 @@ class EventLog:
             0o644,
         )
         # Fsync the directory so the new file's dir entry is durable.
-        _fsync_dir(self._path.parent)
+        fsync_dir(self._path.parent)
 
     def __enter__(self) -> "EventLog":
         self.open()
@@ -97,7 +88,7 @@ class EventLog:
             raise RuntimeError(msg)
         line = self._serialize(event, data)
         self._write_pending(line)
-        _full_write(self._fd, line)
+        full_write(self._fd, line)
         os.fsync(self._fd)
         self._remove_pending()
 
@@ -124,7 +115,7 @@ class EventLog:
             0o644,
         )
         try:
-            _full_write(fd, line)
+            full_write(fd, line)
             os.fsync(fd)
         finally:
             os.close(fd)
@@ -162,7 +153,7 @@ class EventLog:
             0o644,
         )
         try:
-            _full_write(fd, pending_data)
+            full_write(fd, pending_data)
             os.fsync(fd)
         finally:
             os.close(fd)

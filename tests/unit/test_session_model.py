@@ -85,6 +85,12 @@ def test_cannot_double_activate() -> None:
         s.activate()
 
 
+def test_terminate_from_created() -> None:
+    s = Session()
+    s.terminate()
+    assert s.state == SessionState.TERMINATED
+
+
 def test_terminated_is_terminal() -> None:
     s = Session()
     s.activate()
