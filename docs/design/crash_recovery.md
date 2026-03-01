@@ -37,7 +37,7 @@ is logged when `send_turn` re-acquires a previously evicted session.
 Implemented events (logged by `Orchestrator`):
 
 ```jsonl
-{"session_id":"...","ts":"...","event":"agent.created","data":{"agent_id":"<hex>","name":"...","parent_session_id":null,"instructions":"...","workspace":null}}
+{"session_id":"...","ts":"...","event":"agent.created","data":{"agent_id":"<hex>","name":"...","parent_session_id":null,"instructions":"...","workspace_scope":null,"workspace_name":null}}
 {"session_id":"...","ts":"...","event":"agent.terminated","data":{"agent_id":"<hex>"}}
 {"session_id":"...","ts":"...","event":"message.enqueued","data":{"message_id":"<hex>","sender":"<hex>","recipient":"<hex>","kind":"...","payload":"...","timestamp":"...","reply_to":null,"metadata":{...}}}
 {"session_id":"...","ts":"...","event":"message.delivered","data":{"message_id":"<hex>"}}
@@ -76,8 +76,8 @@ so agent metadata inherits those guarantees for free.
 ### Events logged by the orchestrator
 
 ```jsonl
-{"ts":"...","event":"agent.created","data":{"agent_id":"<hex>","name":"alpha","parent_session_id":null,"instructions":"...","workspace":"my-project"}}
-{"ts":"...","event":"agent.created","data":{"agent_id":"<hex>","name":"worker","parent_session_id":"<parent-hex>","instructions":"...","workspace":"worker-ws"}}
+{"ts":"...","event":"agent.created","data":{"agent_id":"<hex>","name":"alpha","parent_session_id":null,"instructions":"...","workspace_scope":"<user-hex>","workspace_name":"my-project"}}
+{"ts":"...","event":"agent.created","data":{"agent_id":"<hex>","name":"worker","parent_session_id":"<parent-hex>","instructions":"...","workspace_scope":"<manager-hex>","workspace_name":"worker-ws"}}
 {"ts":"...","event":"agent.terminated","data":{"agent_id":"<hex>"}}
 ```
 
@@ -113,7 +113,7 @@ On daemon startup:
    persist. Returns the full session list (calls `scan()` internally).
 2. For each non-terminated session, read its event log and find the
    `agent.created` event. Extract `agent_id`, `name`, `parent_session_id`,
-   `instructions`, `workspace`.
+   `instructions`, `workspace_scope`, `workspace_name`.
 3. Build a `session_id → agent_id` index from step 2.
 4. For each agent, resolve `parent_session_id` → `parent_agent_id` using
    the index. `null` parent means root agent.

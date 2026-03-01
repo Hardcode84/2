@@ -29,7 +29,8 @@ routing. Blocking operations (bwrap, subprocess spawning) run in a
 │       ├── transcript.txt  # Human-readable conversation log.
 │       └── mcp.json        # Generated MCP config for this agent.
 └── workspaces/
-    └── <name>/
+    └── <scope-hex>/
+        └── <name>/
 ```
 
 ### Request Dispatch
@@ -119,7 +120,7 @@ class AgentNode:
     parent_id: UUID | None = None  # None for root agents.
     children: list[UUID] = field(default_factory=list)
     instructions: str = ""
-    workspace: str | None = None          # Workspace name. Daemon manages mapping.
+    workspace: tuple[UUID, str] | None = None  # (scope, name). Daemon manages mapping.
     state: AgentState = AgentState.IDLE  # IDLE | BUSY | WAITING | TERMINATED.
     created_at: str = field(default_factory=now_iso)
 ```
