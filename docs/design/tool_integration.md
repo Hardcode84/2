@@ -130,11 +130,15 @@ provider session is ready.
 Parameters:
   name: str
   instructions: str
-  workspace_subdir: str | null     # Subdirectory of parent workspace.
+  workspace: str | WorkspaceSpec | null   # Name or inline spec. See workspace.md.
 
 Returns:
   {"status": "accepted", "agent_id": "uuid", "name": "str"}
 ```
+
+The workspace must exist (or be created inline). See
+[workspace.md](workspace.md) for the full workspace tool catalog and the
+inline convenience form.
 
 Typical flow with sync messaging:
 

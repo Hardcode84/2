@@ -119,7 +119,7 @@ class AgentNode:
     parent_id: UUID | None = None  # None for root agents.
     children: list[UUID] = field(default_factory=list)
     instructions: str = ""
-    workspace_id: UUID | None = None
+    workspace: str | None = None          # Workspace name. Daemon manages mapping.
     state: AgentState = AgentState.IDLE  # IDLE | BUSY | WAITING | TERMINATED.
     created_at: str = field(default_factory=now_iso)
 ```
@@ -203,26 +203,13 @@ spawn pattern.
 
 ## 8. Workspace Model
 
-```python
-@dataclass
-class WorkspaceSpec:
-    id: UUID
-    parent_id: UUID | None = None
-    root_path: Path
-    network_access: bool = False
-    symlinks: list[SymlinkSpec] = field(default_factory=list)
+See [design/workspace.md](design/workspace.md).
 
-@dataclass
-class SymlinkSpec:
-    host_path: Path
-    mount_path: Path       # Relative, inside workspace.
-    mode: str = "ro"       # "ro" | "rw".
-```
-
-`bwrap.py` builds the `bwrap` command line from a `WorkspaceSpec`. Hierarchical
-nesting: a subdirectory of a parent workspace becomes the child's root.
-Multiple agents can share a workspace with different permissions (different
-bwrap bind flags for the same directories).
+Workspaces are independent named resources — they know nothing about agents or
+sessions. The daemon bridges the two at runtime via an agent-workspace mapping.
+Each agent turn is a separate bwrap invocation built from the workspace spec
+and provider bind requirements. `bwrap.py` builds the command line from the
+current `Workspace` state plus provider-reported bind mounts.
 
 ---
 

@@ -35,11 +35,11 @@ Sessions are the lowest layer — the substrate that the agent hierarchy and mes
 
 ### Workspaces
 
-* Work is organized in isolated workspaces, managed independently from the agents.
-* Sandboxed isolation, optional access to network.
+* Independent named resources, managed separately from agents and sessions.
+* Sandboxed isolation via bwrap, optional access to network.
 * Agents can use native provider tools in the workspace.
-* Symlinks (RO, RW) into external dirs (e.g. project repo).
-* Multiple agents can use same workspace (potentially with different permissions).
-* Hierarchical workspaces — agents can mark a subfolder in their workspace as a workspace for a launched team.
-* Symlinks within the workspace — link something from your workspace to the child agent workspace.
+* Bind mounts (RO, RW) to external dirs (e.g. project repo).
+* Multiple agents can share the same workspace.
+* Read-only live views of existing workspaces for child agents.
+* Agents create and configure workspaces via tools, then assign them to spawned children.
 * Agents maintain long-term context via files/todo in workspace (other tools TBD).
