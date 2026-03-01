@@ -162,6 +162,13 @@ class OrchCrashRecoveryMachine(RuleBasedStateMachine):
     Shadow state tracks which agents have been durably committed. On crash,
     committed agents are asserted to survive recovery (unless the crash was
     mid-terminate). Invariants verify consistency after every step.
+
+    Agent selection uses a Hypothesis ``Bundle`` — the only approach that
+    keeps data generation deterministic across internal replays. Failed
+    target-producing rules return ``UUID(int=0)`` which pollutes the bundle;
+    non-target rules detect and skip it. This matches the lifecycle fuzzer's
+    pattern. The trade-off (some wasted steps) is offset by bumping
+    ``max_examples`` and ``stateful_step_count``.
     """
 
     agents = Bundle("agents")
@@ -302,7 +309,6 @@ class OrchCrashRecoveryMachine(RuleBasedStateMachine):
             return UUID(int=0)
         if crash_at > 0:
             self.vfs.disarm()
-        # Success — update shadow.
         self.shadow[node.id] = ShadowAgent(
             agent_id=node.id,
             name=name,
@@ -330,11 +336,12 @@ class OrchCrashRecoveryMachine(RuleBasedStateMachine):
         self.children_map[child_id] = set()
         return child_id
 
-    @precondition(lambda self: bool(self.parents_needing_drain))
-    @rule(data=st.data(), crash_at=st.integers(0, 50))
-    def run_turn(self, data: st.DataObject, crash_at: int) -> None:
-        """Run a turn on a parent that needs draining."""
-        agent = data.draw(st.sampled_from(sorted(self.parents_needing_drain)))
+    @precondition(lambda self: bool(self.shadow))
+    @rule(agent=agents, crash_at=st.integers(0, 50))
+    def run_turn(self, agent: UUID, crash_at: int) -> None:
+        """Run a turn on a living agent, draining deferred spawns if any."""
+        if agent not in self.shadow or agent in self.pending:
+            return
         if crash_at > 0:
             self.vfs.arm(crash_at)
         try:
@@ -344,12 +351,11 @@ class OrchCrashRecoveryMachine(RuleBasedStateMachine):
             return
         if crash_at > 0:
             self.vfs.disarm()
-        # Success — deferred drained, children now committed.
+        # If this agent had deferred children, they're now drained.
         self.parents_needing_drain.discard(agent)
         for child_id in list(self.children_map.get(agent, set())):
             if child_id in self.pending:
                 self.pending.discard(child_id)
-                # Materialize into shadow.
                 child_node = self.orch.tree.get(child_id)
                 self.shadow[child_id] = ShadowAgent(
                     agent_id=child_id,
@@ -360,37 +366,19 @@ class OrchCrashRecoveryMachine(RuleBasedStateMachine):
                 )
 
     @precondition(lambda self: bool(self.shadow))
-    @rule(agent=agents, crash_at=st.integers(0, 50))
-    def run_turn_no_drain(self, agent: UUID, crash_at: int) -> None:
-        """Run a turn on an agent that has no pending children."""
-        if agent not in self.shadow or agent in self.pending:
-            return
-        if agent in self.parents_needing_drain:
-            return
-        if crash_at > 0:
-            self.vfs.arm(crash_at)
-        try:
-            _run(self.orch.run_turn(agent, "go"))
-        except CrashError:
-            self._do_crash_and_recover()
-            return
-        if crash_at > 0:
-            self.vfs.disarm()
-
-    @precondition(lambda self: bool(self.shadow))
     @rule(agent=agents, data=st.data(), crash_at=st.integers(0, 50))
     def send_message(self, agent: UUID, data: st.DataObject, crash_at: int) -> None:
-        """Send a message from parent to child."""
+        """Send a message from parent to a materialized child."""
         if agent not in self.shadow or agent in self.pending:
             return
-        materialized = [
+        materialized = sorted(
             c
             for c in self.children_map.get(agent, set())
             if c not in self.pending and c in self.shadow
-        ]
+        )
         if not materialized:
             return
-        child_id = data.draw(st.sampled_from(sorted(materialized)))
+        child_id = data.draw(st.sampled_from(materialized))
         child_node = self.orch.tree.get(child_id)
         handler = self.orch.get_handler(agent)
         if crash_at > 0:
@@ -406,10 +394,9 @@ class OrchCrashRecoveryMachine(RuleBasedStateMachine):
     @precondition(lambda self: bool(self.shadow))
     @rule(agent=agents, crash_at=st.integers(0, 50))
     def broadcast_to_team(self, agent: UUID, crash_at: int) -> None:
-        """Broadcast from a non-root agent to its siblings."""
+        """Broadcast from a non-root agent to its materialized siblings."""
         if agent not in self.shadow or agent in self.pending:
             return
-        # Only non-root agents have siblings.
         parent_id = self.shadow[agent].parent_id
         if parent_id is None:
             return
@@ -452,8 +439,7 @@ class OrchCrashRecoveryMachine(RuleBasedStateMachine):
         """Terminate a living leaf agent."""
         if agent not in self.shadow or agent in self.pending:
             return
-        kids = self.children_map.get(agent, set())
-        if kids:
+        if self.children_map.get(agent):
             return
         if crash_at > 0:
             self.vfs.arm(crash_at)
@@ -464,7 +450,6 @@ class OrchCrashRecoveryMachine(RuleBasedStateMachine):
             return
         if crash_at > 0:
             self.vfs.disarm()
-        # Success — remove from shadow.
         del self.shadow[agent]
         for _pid, kids_set in self.children_map.items():
             kids_set.discard(agent)
@@ -581,7 +566,7 @@ class OrchCrashRecoveryMachine(RuleBasedStateMachine):
 # Hypothesis needs a concrete TestCase class.
 TestOrchCrashRecoveryFuzz = OrchCrashRecoveryMachine.TestCase
 TestOrchCrashRecoveryFuzz.settings = settings(
-    max_examples=200,
-    stateful_step_count=30,
+    max_examples=500,
+    stateful_step_count=50,
     deadline=None,
 )
