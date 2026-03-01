@@ -7,6 +7,10 @@
 Exercises agent lifecycle operations (create, spawn, turn, terminate) in
 random sequences and checks structural invariants after every step.
 Gated behind --run-stress.
+
+Do NOT use ``random`` in rules. All randomness must go through Hypothesis
+strategies (``st.sampled_from``, ``st.data().draw``, etc.) so that
+shrinking, replay, and ``derandomize=True`` work correctly.
 """
 
 from __future__ import annotations
