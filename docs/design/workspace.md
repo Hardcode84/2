@@ -313,9 +313,11 @@ mapping is reconstructed from agent records.
 - **Disk quotas.** Should workspaces have size limits?
 - **Cleanup policy.** Auto-delete workspaces with no agents and no recent
   activity? Or manual-only for v1?
-- **Cross-workspace links.** Can an agent link dirs from a workspace it is not
-  assigned to? Current design says source is resolved from the agent's own
-  workspace — linking from arbitrary workspaces would need a different
-  mechanism.
+- **Workspace namespace and access control.** Currently workspace names are
+  flat and any agent can mutate any workspace by name. Possible direction:
+  path-like namespace prefixed by agent name (`/root/manager/analyst-ws`),
+  with visibility scoped to the agent's own subtree — mirroring the one-hop
+  routing rule. Would unify naming rules and access control in one mechanism.
+  Needs concrete design.
 - **Workspace-level permissions.** Currently permissions are per-link. Should
   there be a workspace-wide default mode?
