@@ -32,8 +32,10 @@ class AgentTree:
             parent = self._nodes.get(node.parent_id)
             if parent is None:
                 raise ValueError(f"parent {node.parent_id} not in tree")
-            # Check sibling name uniqueness.
+            # Check name uniqueness within one-hop neighborhood.
             if node.name:
+                if parent.name == node.name:
+                    raise ValueError(f"parent name collision: {node.name!r}")
                 self._check_name_collision(node.name, parent.children)
             parent.children.append(node.id)
         else:

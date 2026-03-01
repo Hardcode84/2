@@ -132,6 +132,19 @@ excluding self), `roots()`, `subtree()`.
 Teams are not a separate data structure — they emerge from the tree as
 children of a single parent.
 
+### Naming
+
+Agent names must be unique within the one-hop neighborhood (the set of nodes
+reachable by `_resolve_name`). Enforced at insertion time by `tree.add()`:
+
+- **Siblings** cannot share a name (children of the same parent).
+- **Parent-child** pairs cannot share a name.
+- **Root agents** are treated as siblings of each other.
+
+Names are the addressing mechanism for agent-facing tools (`send_message`,
+`inspect_agent`). The uniqueness invariant guarantees unambiguous resolution
+within any agent's reachable set.
+
 ### Routing
 
 One-hop only: parent, children, siblings. The daemon enforces this at routing

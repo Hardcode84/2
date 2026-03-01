@@ -104,6 +104,14 @@ def test_add_sibling_name_collision(tree: AgentTree) -> None:
         tree.add(b)
 
 
+def test_parent_name_collision(tree: AgentTree) -> None:
+    root = AgentNode(session_id=uuid4(), name="boss")
+    child = AgentNode(session_id=uuid4(), name="boss", parent_id=root.id)
+    tree.add(root)
+    with pytest.raises(ValueError, match="parent name collision"):
+        tree.add(child)
+
+
 def test_root_name_collision(tree: AgentTree) -> None:
     r1 = AgentNode(session_id=uuid4(), name="boss")
     r2 = AgentNode(session_id=uuid4(), name="boss")
