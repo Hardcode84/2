@@ -52,11 +52,25 @@ class VirtualFS:
         self._next_fd: int = 1000
         self._crash_after: int | None = None
         self._op_count: int = 0
+        self._frozen: bool = False
 
     # -- Crash counter -----------------------------------------------------
 
     def _tick(self) -> None:
-        """Called AFTER each ticking op. Models power loss between syscalls."""
+        """Called AFTER each ticking op. Models power loss between syscalls.
+
+        Raises RuntimeError if the VFS is frozen (post-crash). A real crash
+        kills the process instantly — finally/except blocks never get to do
+        IO. The freeze catches code that would silently rely on unwinding.
+        """
+        if self._frozen:
+            msg = (
+                "IO op after crash — process would be dead. "
+                "A finally/except block is doing IO that would not "
+                "survive a real kill -9. Call vfs.thaw() only after "
+                "catching CrashError in the test."
+            )
+            raise RuntimeError(msg)
         self._op_count += 1
         if self._crash_after is not None:
             self._crash_after -= 1
@@ -73,10 +87,15 @@ class VirtualFS:
         self._crash_after = None
 
     def crash(self) -> None:
-        """Simulate power loss: discard volatile state."""
+        """Simulate power loss: discard volatile state, freeze IO."""
         self._cache.clear()
         self._fd_table.clear()
         self._crash_after = None
+        self._frozen = True
+
+    def thaw(self) -> None:
+        """Unfreeze after crash. The "reboot" — allows IO for recovery."""
+        self._frozen = False
 
     @contextmanager
     def count_ops(self) -> Iterator[list[int]]:

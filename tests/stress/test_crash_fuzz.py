@@ -114,6 +114,7 @@ class CrashRecoveryMachine(RuleBasedStateMachine):
             self.vfs.disarm()
             self.atomic_content = data
         except CrashError:
+            self.vfs.thaw()
             self._invalidate_log()
             norm = self.vfs._norm(self.atomic_path)
             disk = self.vfs._disk.get(norm)
@@ -165,7 +166,8 @@ class CrashRecoveryMachine(RuleBasedStateMachine):
         except CrashError:
             pass
 
-        # Log is dead. Run recovery on a fresh instance.
+        # Log is dead. Thaw the VFS ("reboot") and run recovery.
+        self.vfs.thaw()
         self._invalidate_log()
         recovery_log = EventLog(self.log_path, context={"sid": "test"})
         recovery_log.open()
