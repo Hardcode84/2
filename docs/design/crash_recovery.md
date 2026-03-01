@@ -301,8 +301,17 @@ After every crash+restart:
 
 ### Fuzzer
 
-Two layers: an in-memory lifecycle fuzzer (exists now) and a crash-recovery
-fuzzer (requires tree persistence, future work).
+Three layers:
+
+1. **In-memory lifecycle fuzzer** (`tests/stress/test_orchestrator_fuzz.py`) —
+   exercises the orchestrator state machine. No persistence, no crash sim.
+2. **IO-level crash fuzzer** (`tests/stress/test_crash_fuzz.py`) — exercises
+   `atomic_write` and `EventLog` crash recovery via a virtual filesystem
+   (`tests/stress/vfs.py`) that simulates power loss at arbitrary IO
+   boundaries. Validates all-or-nothing and WAL prefix-consistency.
+3. **Full orchestrator crash fuzzer** (future) — extends the lifecycle fuzzer
+   with `crash_and_recover` rules using the VFS. Requires `SessionStore` /
+   `Orchestrator.recover()` integration.
 
 #### Hypothesis stateful testing
 
@@ -426,10 +435,14 @@ crash-injecting wrapper that can fail at each sub-step:
 - After `fsync()` but before `os.replace()` (temp file durable, target stale).
 - After `os.replace()` (fully committed).
 
-The mock tracks a "crash counter" — decrement on each I/O op, crash when it
-hits zero. This gives deterministic, reproducible sub-step crashes without
-touching real I/O. For paranoid validation against real filesystems, LazyFS
-(FUSE-based power loss simulator) can discard unfsynced pages.
+Implemented as `VirtualFS` in `tests/stress/vfs.py`: an in-memory two-tier
+filesystem (disk + page cache) with a crash counter that ticks on each I/O
+op and raises `CrashError` when it hits zero. `crash()` discards the page
+cache and fd table; disk survives. A `patch_io()` context manager selectively
+monkey-patches `os.*` and `pathlib.Path.*` for paths under a virtual root,
+so the real persistence code runs unmodified against the mock. For paranoid
+validation against real filesystems, LazyFS (FUSE-based power loss simulator)
+can discard unfsynced pages.
 
 ## Open questions
 
