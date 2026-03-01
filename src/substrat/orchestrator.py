@@ -6,6 +6,9 @@
 
 from __future__ import annotations
 
+import contextlib
+import logging
+from typing import Any
 from uuid import UUID
 
 from substrat.agent.inbox import Inbox
@@ -17,7 +20,11 @@ from substrat.agent.tools import (
     ToolHandler,
 )
 from substrat.agent.tree import AgentTree
+from substrat.logging.event_log import read_log
 from substrat.scheduler import TurnScheduler
+from substrat.session.model import Session, SessionState
+
+_log = logging.getLogger(__name__)
 
 
 class Orchestrator:
@@ -76,6 +83,17 @@ class Orchestrator:
             await self._scheduler.terminate_session(session.id)
             raise
 
+        self._log_lifecycle(
+            session.id,
+            "agent.created",
+            {
+                "agent_id": node.id.hex,
+                "name": node.name,
+                "parent_session_id": None,
+                "instructions": node.instructions,
+            },
+        )
+
         self._inboxes[node.id] = Inbox()
         self._handlers[node.id] = self._make_handler(node.id, prov, mdl)
         return node
@@ -105,6 +123,13 @@ class Orchestrator:
         if node.children:
             raise ValueError(f"agent {agent_id} has children; terminate them first")
         node.terminate()
+        self._log_lifecycle(
+            node.session_id,
+            "agent.terminated",
+            {
+                "agent_id": node.id.hex,
+            },
+        )
         await self._scheduler.terminate_session(node.session_id)
         self._tree.remove(agent_id)
         self._handlers.pop(agent_id, None)
@@ -149,6 +174,19 @@ class Orchestrator:
                     child.instructions,
                 )
                 child.session_id = session.id
+                # Log after session created so the event goes to the real log.
+                parent_node = self._tree.parent(child.id)
+                parent_sid = parent_node.session_id.hex if parent_node else None
+                self._log_lifecycle(
+                    session.id,
+                    "agent.created",
+                    {
+                        "agent_id": child.id.hex,
+                        "name": child.name,
+                        "parent_session_id": parent_sid,
+                        "instructions": child.instructions,
+                    },
+                )
                 self._handlers[child.id] = self._make_handler(
                     child.id,
                     provider,
@@ -158,6 +196,131 @@ class Orchestrator:
             return do_spawn
 
         return callback
+
+    def _log_lifecycle(
+        self,
+        session_id: UUID,
+        event: str,
+        data: dict[str, Any],
+    ) -> None:
+        """Best-effort lifecycle event logging. Silent if no log configured."""
+        with contextlib.suppress(KeyError):
+            self._scheduler.log_event(session_id, event, data)
+
+    async def recover(self) -> None:
+        """Reconstruct agent tree from persisted session event logs.
+
+        Called once on a fresh orchestrator at daemon startup.
+        """
+        store = self._scheduler.store
+        sessions = store.recover()
+
+        # Index: sid -> (agent_id, name, parent_session_id, instructions, session).
+        index: dict[UUID, dict[str, Any]] = {}
+        orphans: list[Session] = []
+        session_by_id: dict[UUID, Session] = {}
+
+        for session in sessions:
+            session_by_id[session.id] = session
+            if session.state == SessionState.TERMINATED:
+                continue
+
+            log_path = store.agent_dir(session.id) / "events.jsonl"
+            entries = read_log(log_path)
+
+            # Find agent.created and agent.terminated events.
+            created_data: dict[str, Any] | None = None
+            terminated = False
+            for entry in entries:
+                ev = entry.get("event")
+                if ev == "agent.created":
+                    created_data = entry.get("data", {})
+                elif ev == "agent.terminated":
+                    terminated = True
+
+            if terminated:
+                continue
+            if created_data is None:
+                orphans.append(session)
+                continue
+
+            index[session.id] = {
+                "agent_id": UUID(created_data["agent_id"]),
+                "name": created_data.get("name", ""),
+                "parent_session_id": created_data.get("parent_session_id"),
+                "instructions": created_data.get("instructions", ""),
+                "session": session,
+            }
+
+        # Clean up orphaned sessions.
+        for s in orphans:
+            _log.warning("orphan session %s — no agent.created event", s.id.hex)
+            s.terminate()
+            store.save(s)
+
+        # Build session_id -> agent_id lookup for parent resolution.
+        sid_to_aid: dict[str, UUID] = {}
+        for sid, info in index.items():
+            sid_to_aid[sid.hex] = info["agent_id"]
+
+        # Drop agents whose parent doesn't resolve. Terminate their sessions.
+        valid: dict[UUID, dict[str, Any]] = {}
+        for sid, info in index.items():
+            psid = info["parent_session_id"]
+            if psid is not None and psid not in sid_to_aid:
+                _log.warning(
+                    "agent %s parent session %s not found — terminating",
+                    info["agent_id"].hex,
+                    psid,
+                )
+                info["session"].terminate()
+                store.save(info["session"])
+                continue
+            valid[sid] = info
+
+        # Topological insert: roots first, then children whose parent is placed.
+        placed: set[UUID] = set()  # agent_ids already in tree.
+        remaining = dict(valid)
+
+        while remaining:
+            progress = False
+            for sid in list(remaining):
+                info = remaining[sid]
+                psid = info["parent_session_id"]
+                if psid is None:
+                    parent_agent_id = None
+                else:
+                    parent_agent_id = sid_to_aid.get(psid)
+                    if parent_agent_id not in placed:
+                        continue
+
+                node = AgentNode(
+                    id=info["agent_id"],
+                    session_id=info["session"].id,
+                    name=info["name"],
+                    parent_id=parent_agent_id,
+                    instructions=info["instructions"],
+                )
+                self._tree.add(node)
+                self._inboxes[node.id] = Inbox()
+                prov = info["session"].provider_name or self._default_provider
+                mdl = info["session"].model or self._default_model
+                self._handlers[node.id] = self._make_handler(node.id, prov, mdl)
+                self._scheduler.restore_session(info["session"])
+                placed.add(node.id)
+                del remaining[sid]
+                progress = True
+
+            if not progress:
+                # Remaining agents form a cycle or have unresolvable parents.
+                for _sid, info in remaining.items():
+                    _log.warning(
+                        "unplaceable agent %s — terminating",
+                        info["agent_id"].hex,
+                    )
+                    info["session"].terminate()
+                    store.save(info["session"])
+                break
 
     async def _drain_deferred(self, agent_id: UUID) -> None:
         """Drain and execute deferred work from the agent's tool handler."""

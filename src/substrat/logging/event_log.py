@@ -24,6 +24,33 @@ def _fsync_dir(dirpath: Path) -> None:
         os.close(fd)
 
 
+def read_log(path: Path) -> list[dict[str, Any]]:
+    """Read a JSONL event log from disk.
+
+    Handles missing files, partial trailing lines, and pending entries.
+    Read-only — no file mutation.
+    """
+    entries: list[dict[str, Any]] = []
+    if path.exists():
+        for line in path.read_bytes().split(b"\n"):
+            if not line:
+                continue
+            with contextlib.suppress(json.JSONDecodeError):
+                entries.append(json.loads(line))
+
+    # Include pending file if it's not already the tail of the main log.
+    pending_path = path.with_suffix(".pending")
+    if pending_path.exists():
+        pending_data = pending_path.read_bytes()
+        if pending_data:
+            with contextlib.suppress(json.JSONDecodeError):
+                pending_entry = json.loads(pending_data)
+                if not entries or entries[-1] != pending_entry:
+                    entries.append(pending_entry)
+
+    return entries
+
+
 class EventLog:
     """Per-agent structured event log.
 
@@ -163,4 +190,4 @@ class EventLog:
             os.close(fd)
 
 
-__all__ = ["EventLog"]
+__all__ = ["EventLog", "read_log"]

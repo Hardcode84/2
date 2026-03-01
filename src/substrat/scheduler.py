@@ -42,6 +42,35 @@ class TurnScheduler:
         self._logs: dict[UUID, EventLog] = {}
         self._deferred: deque[DeferredCallback] = deque()
 
+    @property
+    def store(self) -> SessionStore:
+        """Public read-only access to the session store."""
+        return self._store
+
+    def log_event(
+        self,
+        session_id: UUID,
+        event: str,
+        data: dict[str, Any] | None = None,
+    ) -> None:
+        """Log an event to a session's event log. KeyError if no log."""
+        self._logs[session_id].log(event, data)
+
+    def restore_session(self, session: Session) -> None:
+        """Load an existing session into the scheduler's cache and open its log.
+
+        Used during recovery. No provider session created — that happens
+        on next send_turn via mux acquire.
+        """
+        self._sessions[session.id] = session
+        if self._log_root is not None:
+            log = EventLog(
+                self._log_root / session.id.hex / "events.jsonl",
+                context={"session_id": session.id.hex},
+            )
+            log.open()
+            self._logs[session.id] = log
+
     async def create_session(
         self,
         provider_name: str,

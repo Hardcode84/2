@@ -27,6 +27,13 @@ Implemented events (logged by `TurnScheduler`):
 {"session_id":"...","ts":"...","event":"turn.complete","data":{"response":"..."}}
 ```
 
+Implemented events (logged by `Orchestrator`):
+
+```jsonl
+{"session_id":"...","ts":"...","event":"agent.created","data":{"agent_id":"<hex>","name":"...","parent_session_id":null,"instructions":"..."}}
+{"session_id":"...","ts":"...","event":"agent.terminated","data":{"agent_id":"<hex>"}}
+```
+
 Planned events (not yet implemented):
 
 ```jsonl
@@ -71,9 +78,9 @@ stable on-disk identifiers.
 
 The timing of `agent.created` differs between root and child agents:
 
-**Root agents.** Session is created first, then `agent.created` is logged,
-then `tree.add()`. If the daemon crashes between session creation and
-logging, recovery sees the session but no `agent.created` event — the
+**Root agents.** Session is created first, then `tree.add()`, then
+`agent.created` is logged. If the daemon crashes between session creation
+and logging, recovery sees the session but no `agent.created` event — the
 session is orphaned and gets cleaned up.
 
 **Child agents.** `tree.add()` happens synchronously during `spawn_agent`,
@@ -84,8 +91,9 @@ the child is in the in-memory tree but has no session and no log entry —
 it vanishes on recovery. This is safe: the parent's turn was still
 in-flight, so the spawn was never acknowledged.
 
-`agent.terminated` is logged after `tree.remove()`. On recovery, sessions
-with a terminated event are skipped.
+`agent.terminated` is logged before `tree.remove()` and before the session's
+event log is closed. On recovery, sessions with a terminated event are
+skipped.
 
 ### Tree reconstruction
 
@@ -206,13 +214,14 @@ On daemon startup:
    and `tree.add()` in dependency order. Clean up orphaned sessions (no
    `agent.created` event).
 
-4. **Reconcile messages.** For each agent, scan its event log for
+4. **Reconcile messages** (not yet implemented — requires `message.enqueued`
+   / `message.delivered` events). For each agent, scan its event log for
    `message.enqueued` without a matching `message.delivered`. Cross-reference
    with recipient logs to detect undelivered replies.
 
-5. **Resume root agents.** For agentic providers: `--resume` with saved
-   session ID. For bare LLM: replay event log to reconstruct context.
-   Sub-agents resumed on demand by parents.
+5. **Resume root agents** (not yet implemented). For agentic providers:
+   `--resume` with saved session ID. For bare LLM: replay event log to
+   reconstruct context. Sub-agents resumed on demand by parents.
 
 ## Persistence strategy
 
