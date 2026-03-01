@@ -114,7 +114,7 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         self._tmp = Path(f"/tmp/substrat-fuzz-{id(self)}")
         self._tmp.mkdir(parents=True, exist_ok=True)
         store = SessionStore(self._tmp / "sessions")
-        mux = SessionMultiplexer(store, max_slots=8)
+        mux = SessionMultiplexer(store, max_slots=3)
         provider = FakeProvider()
         scheduler = TurnScheduler(
             providers={"fake": provider},
@@ -134,8 +134,6 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         self.parents_needing_drain: set[UUID] = set()
         # Parent → children mapping (shadow of tree).
         self.children: dict[UUID, set[UUID]] = {}
-        # Child names per parent.
-        self.child_names: dict[UUID, set[str]] = {}
 
     def teardown(self) -> None:
         import shutil
@@ -153,7 +151,6 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         node = _run(self.orch.create_root_agent("seed", "init"))
         self.alive.add(node.id)
         self.children[node.id] = set()
-        self.child_names[node.id] = set()
         return node.id
 
     @rule(target=agents)
@@ -169,7 +166,6 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
             return UUID(int=0)  # Dummy, won't match any alive agent.
         self.alive.add(node.id)
         self.children[node.id] = set()
-        self.child_names[node.id] = set()
         return node.id
 
     @precondition(lambda self: bool(self.alive))
@@ -192,8 +188,6 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         self.parents_needing_drain.add(agent)
         self.children[agent].add(child_id)
         self.children[child_id] = set()
-        self.child_names[child_id] = set()
-        self.child_names.setdefault(agent, set()).add(name)
         return child_id
 
     @precondition(lambda self: bool(self.alive))
@@ -233,7 +227,6 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         for _parent_id, kids in self.children.items():
             kids.discard(agent)
         del self.children[agent]
-        del self.child_names[agent]
 
     # -- Invariants --------------------------------------------------------
 
@@ -244,12 +237,17 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         for rid in list(tree_ids):
             tree_ids.update(n.id for n in self.orch.tree.subtree(rid))
         handler_ids = set(self.orch._handlers.keys())
+        inbox_ids = set(self.orch.inboxes.keys())
         # Pending children are in the tree but don't have handlers yet.
         # All other tree nodes must have a handler.
         materialized = tree_ids - self.pending_children
         assert materialized == handler_ids, (
             f"tree-handler mismatch: tree(materialized)={materialized}, "
             f"handlers={handler_ids}"
+        )
+        # Inboxes are created eagerly (on spawn), so they match the full tree.
+        assert tree_ids == inbox_ids, (
+            f"tree-inbox mismatch: tree={tree_ids}, inboxes={inbox_ids}"
         )
 
     @invariant()

@@ -16,19 +16,25 @@ requirement.
 
 ## Event log format
 
-Context fields (`agent_id`, etc.) are set by the caller when creating the
-`EventLog` and injected into every entry. Event-specific payload lives under
-`data`. Event names derive from provider method names (`send`, `suspend`) with
-a `.result` suffix for after-call entries.
+Context fields are set by the caller when creating the `EventLog` and
+injected into every entry. Currently the scheduler sets
+`{"session_id": "<hex>"}`. Event-specific payload lives under `data`.
+
+Implemented events (logged by `TurnScheduler`):
 
 ```jsonl
-{"agent_id":"...","ts":"...","event":"session.created","data":{"provider":"...","model":"...","session_id":"...","system_prompt":"...","workspace":"..."}}
-{"agent_id":"...","ts":"...","event":"send","data":{"message":"..."}}
-{"agent_id":"...","ts":"...","event":"send.result","data":{"text":"..."}}
-{"agent_id":"...","ts":"...","event":"suspend.result","data":{"result":"<base64>"}}
-{"agent_id":"...","ts":"...","event":"session.restored","data":{"provider":"...","model":"...","session_id":"...","workspace":"..."}}
-{"agent_id":"...","ts":"...","event":"message.enqueued","data":{"message_id":"...","sender":"...","recipient":"..."}}
-{"agent_id":"...","ts":"...","event":"message.delivered","data":{"message_id":"..."}}
+{"session_id":"...","ts":"...","event":"turn.start","data":{"prompt":"..."}}
+{"session_id":"...","ts":"...","event":"turn.complete","data":{"response":"..."}}
+```
+
+Planned events (not yet implemented):
+
+```jsonl
+{"session_id":"...","ts":"...","event":"session.created","data":{"provider":"...","model":"...","system_prompt":"..."}}
+{"session_id":"...","ts":"...","event":"suspend.result","data":{"state":"<base64>"}}
+{"session_id":"...","ts":"...","event":"session.restored","data":{"provider":"...","model":"..."}}
+{"session_id":"...","ts":"...","event":"message.enqueued","data":{"message_id":"...","sender":"...","recipient":"..."}}
+{"session_id":"...","ts":"...","event":"message.delivered","data":{"message_id":"..."}}
 ```
 
 Location: `~/.substrat/agents/<uuid>/events.jsonl`.
@@ -63,13 +69,20 @@ the same UUID used as the directory name under `~/.substrat/agents/`. This
 avoids a dependency on agent UUIDs for the tree link; session UUIDs are the
 stable on-disk identifiers.
 
-`agent.created` is logged after the session is persisted but before `tree.add()`
-returns. If the daemon crashes between session creation and logging, recovery
-sees the session but no `agent.created` event — the session is orphaned and
-gets cleaned up. If the crash happens after logging but before the tool
-response reaches the agent, the event is durable and the agent is rebuilt;
-the parent simply never saw the acknowledgment (safe — deferred spawn runs
-after the parent's turn anyway).
+The timing of `agent.created` differs between root and child agents:
+
+**Root agents.** Session is created first, then `agent.created` is logged,
+then `tree.add()`. If the daemon crashes between session creation and
+logging, recovery sees the session but no `agent.created` event — the
+session is orphaned and gets cleaned up.
+
+**Child agents.** `tree.add()` happens synchronously during `spawn_agent`,
+but session creation is *deferred* until the parent's turn ends.
+`agent.created` is logged during the deferred spawn, after the child's
+session is created. If the daemon crashes before the deferred spawn runs,
+the child is in the in-memory tree but has no session and no log entry —
+it vanishes on recovery. This is safe: the parent's turn was still
+in-flight, so the spawn was never acknowledged.
 
 `agent.terminated` is logged after `tree.remove()`. On recovery, sessions
 with a terminated event are skipped.
@@ -78,17 +91,17 @@ with a terminated event are skipped.
 
 On daemon startup:
 
-1. `SessionStore.scan()` — load all session records.
-2. `SessionStore.recover()` — flip ACTIVE → SUSPENDED, persist.
-3. For each non-terminated session, read its event log and find the
+1. `SessionStore.recover()` — load all sessions, flip ACTIVE → SUSPENDED,
+   persist. Returns the full session list (calls `scan()` internally).
+2. For each non-terminated session, read its event log and find the
    `agent.created` event. Extract `agent_id`, `name`, `parent_session_id`,
    `instructions`.
-4. Build a `session_id → agent_id` index from step 3.
-5. For each agent, resolve `parent_session_id` → `parent_agent_id` using
+3. Build a `session_id → agent_id` index from step 2.
+4. For each agent, resolve `parent_session_id` → `parent_agent_id` using
    the index. `null` parent means root agent.
-6. Construct `AgentNode` objects, `tree.add()` in dependency order (roots
+5. Construct `AgentNode` objects, `tree.add()` in dependency order (roots
    first, then children).
-7. Rebuild `InboxRegistry` and `ToolHandler` instances for each agent.
+6. Rebuild `InboxRegistry` and `ToolHandler` instances for each agent.
 
 Sessions without an `agent.created` event are orphans from a crash during
 creation — terminate and clean up. Sessions with `agent.terminated` are
@@ -204,7 +217,8 @@ On daemon startup:
 ## Persistence strategy
 
 Write-on-mutate with fsync. State mutations are infrequent (create, spawn,
-state transition). Event log appends are per-turn (seconds apart).
+state transition). The event log fsyncs on every `log()` call — typically
+twice per turn (`turn.start` + `turn.complete`).
 
 - **Create session**: write record atomically, fsync, then proceed.
 - **Spawn agent**: append `agent.created` to session event log, fsync,
@@ -275,8 +289,9 @@ Both fuzzers use Hypothesis `RuleBasedStateMachine`. This gives us:
 
 - **Rules** — actions the fuzzer can take (create, spawn, turn, terminate,
   crash). Each rule has preconditions that guard against illegal states.
-- **Invariants** — checked after every step (registry sync, tree-shadow
-  match, parent-child consistency, no stuck states).
+- **Invariants** — checked after every step (registry sync for handlers
+  and inboxes, tree-shadow match, parent-child consistency, no stuck
+  states, all-idle-between-steps).
 - **Shrinking** — when a failure is found, Hypothesis deterministically
   reduces the sequence to a minimal reproduction. 3-step repros instead
   of 30-step monsters.
@@ -290,10 +305,12 @@ Lives in `tests/stress/test_orchestrator_fuzz.py`. Exercises the
 orchestrator's public API with random sequences of `create_root`,
 `spawn_child`, `run_turn`, and `terminate_leaf`. Uses a small name alphabet
 (5 names) to force collisions. Shadow state tracks alive agents and
-parent-child links; invariants verify the real tree matches. No persistence,
-no crash simulation — pure state machine correctness.
+parent-child links; invariants verify the real tree matches. Multiplexer
+slots are set low (3) to force the eviction/suspend/restore path. No
+persistence, no crash simulation — pure state machine correctness.
 
-Gated behind `--run-stress`.
+Settings: 200 examples, 30 steps per example (`stateful_step_count`),
+`deadline=None`. Gated behind `--run-stress`.
 
 #### Crash-recovery fuzzer (future)
 
@@ -360,13 +377,20 @@ or eviction) just starts fresh.
 Hypothesis has built-in profile support:
 
 ```python
-settings.register_profile("ci", derandomize=True, max_examples=50, deadline=None)
-settings.register_profile("nightly", max_examples=5000, deadline=None)
+settings.register_profile(
+    "ci", derandomize=True, max_examples=50,
+    stateful_step_count=30, deadline=None,
+)
+settings.register_profile(
+    "nightly", max_examples=5000,
+    stateful_step_count=50, deadline=None,
+)
 settings.load_profile(os.getenv("HYPOTHESIS_PROFILE", "default"))
 ```
 
+`stateful_step_count` controls how many rule invocations per example.
 The `HYPOTHESIS_PROFILE` env var selects the profile. CI pipelines set it;
-local runs use the default (200 examples, random seeds, `deadline=None`).
+local runs use the default (200 examples, 30 steps, `deadline=None`).
 
 ### Crash granularity
 
