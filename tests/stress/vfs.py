@@ -42,14 +42,14 @@ class VirtualFS:
     crash() discards cache and fd table; disk and dirs survive.
     """
 
-    def __init__(self, root: str = "/virtual/substrat") -> None:
+    def __init__(self, root: str = "/virtual/substrat", fd_base: int = 1000) -> None:
         self.root = root
         self._disk: dict[str, bytes] = {}
         self._cache: dict[str, bytes] = {}
         self._dirs: set[str] = set()
         self._fd_table: dict[int, FdState] = {}
         self._all_fds: set[int] = set()  # Every fd ever allocated.
-        self._next_fd: int = 1000
+        self._next_fd: int = fd_base
         self._crash_after: int | None = None
         self._op_count: int = 0
         self._frozen: bool = False
@@ -453,4 +453,177 @@ def patch_io(vfs: VirtualFS) -> Iterator[VirtualFS]:
             p.stop()
 
 
-__all__ = ["CrashError", "FdState", "VirtualFS", "patch_io"]
+@contextmanager
+def patch_io_multi(*instances: VirtualFS) -> Iterator[tuple[VirtualFS, ...]]:
+    """Monkey-patch os.* and pathlib.Path.* for multiple VFS instances.
+
+    Routes path-based ops by prefix match and fd-based ops by fd ownership.
+    Unmatched calls fall through to real OS functions.
+    """
+    real_os_open = os.open
+    real_os_close = os.close
+    real_os_write = os.write
+    real_os_fsync = os.fsync
+    real_os_replace = os.replace
+    real_os_unlink = os.unlink
+    real_os_ftruncate = os.ftruncate
+
+    real_path_exists = Path.exists
+    real_path_read_bytes = Path.read_bytes
+    real_path_stat = Path.stat
+    real_path_open = Path.open
+    real_path_mkdir = Path.mkdir
+    real_path_is_dir = Path.is_dir
+    real_path_is_file = Path.is_file
+    real_path_iterdir = Path.iterdir
+
+    def _find_by_path(p: str | Path) -> VirtualFS | None:
+        s = str(p)
+        for vfs in instances:
+            if s.startswith(vfs.root):
+                return vfs
+        return None
+
+    def _find_by_fd(fd: int) -> VirtualFS | None:
+        for vfs in instances:
+            if fd in vfs._all_fds:
+                return vfs
+        return None
+
+    # -- os.* wrappers ----------------------------------------------------
+
+    def patched_os_open(
+        path: Any, flags: int, mode: int = 0o777, *args: Any, **kwargs: Any
+    ) -> int:
+        vfs = _find_by_path(path)
+        if vfs is not None:
+            return vfs.os_open(path, flags, mode)
+        return real_os_open(path, flags, mode, *args, **kwargs)
+
+    def patched_os_close(fd: int) -> None:
+        vfs = _find_by_fd(fd)
+        if vfs is not None:
+            return vfs.os_close(fd)
+        return real_os_close(fd)
+
+    def patched_os_write(fd: int, data: bytes) -> int:
+        vfs = _find_by_fd(fd)
+        if vfs is not None:
+            return vfs.os_write(fd, data)
+        return real_os_write(fd, data)
+
+    def patched_os_fsync(fd: int) -> None:
+        vfs = _find_by_fd(fd)
+        if vfs is not None:
+            return vfs.os_fsync(fd)
+        return real_os_fsync(fd)
+
+    def patched_os_replace(src: Any, dst: Any) -> None:
+        vfs = _find_by_path(src) or _find_by_path(dst)
+        if vfs is not None:
+            return vfs.os_replace(src, dst)
+        return real_os_replace(src, dst)
+
+    def patched_os_unlink(path: Any) -> None:
+        vfs = _find_by_path(path)
+        if vfs is not None:
+            return vfs.os_unlink(path)
+        return real_os_unlink(path)
+
+    def patched_os_ftruncate(fd: int, length: int) -> None:
+        vfs = _find_by_fd(fd)
+        if vfs is not None:
+            return vfs.os_ftruncate(fd, length)
+        return real_os_ftruncate(fd, length)
+
+    # -- pathlib.Path wrappers --------------------------------------------
+
+    def patched_exists(self: Path, *args: Any, **kwargs: Any) -> bool:
+        vfs = _find_by_path(self)
+        if vfs is not None:
+            return vfs.exists(self)
+        return real_path_exists(self, *args, **kwargs)
+
+    def patched_read_bytes(self: Path) -> bytes:
+        vfs = _find_by_path(self)
+        if vfs is not None:
+            return vfs.read_bytes(self)
+        return real_path_read_bytes(self)
+
+    @dataclass
+    class FakeStat:
+        """Minimal stat result for virtual files."""
+
+        st_size: int
+        st_mode: int = stat.S_IFREG | 0o644
+
+    def patched_stat(self: Path, *args: Any, **kwargs: Any) -> Any:
+        vfs = _find_by_path(self)
+        if vfs is not None:
+            return FakeStat(st_size=vfs.stat_size(self))
+        return real_path_stat(self, *args, **kwargs)
+
+    def patched_open(self: Path, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
+        vfs = _find_by_path(self)
+        if vfs is not None:
+            if "b" in mode and "r" in mode:
+                return vfs.open_rb(self)
+            raise NotImplementedError(f"VFS only supports 'rb' mode, got {mode!r}")
+        return real_path_open(self, mode, *args, **kwargs)
+
+    def patched_mkdir(
+        self: Path, mode: int = 0o777, parents: bool = False, exist_ok: bool = False
+    ) -> None:
+        vfs = _find_by_path(self)
+        if vfs is not None:
+            return vfs.mkdir(self, parents=parents, exist_ok=exist_ok)
+        return real_path_mkdir(self, mode, parents, exist_ok)
+
+    def patched_is_dir(self: Path, *args: Any, **kwargs: Any) -> bool:
+        vfs = _find_by_path(self)
+        if vfs is not None:
+            return vfs.is_dir(self)
+        return real_path_is_dir(self, *args, **kwargs)
+
+    def patched_is_file(self: Path, *args: Any, **kwargs: Any) -> bool:
+        vfs = _find_by_path(self)
+        if vfs is not None:
+            return vfs.is_file(self)
+        return real_path_is_file(self, *args, **kwargs)
+
+    def patched_iterdir(self: Path) -> Iterator[Path]:
+        vfs = _find_by_path(self)
+        if vfs is not None:
+            for name in vfs.iterdir(self):
+                yield self / name
+            return
+        yield from real_path_iterdir(self)
+
+    all_patches: list[Any] = [
+        patch("os.open", patched_os_open),
+        patch("os.close", patched_os_close),
+        patch("os.write", patched_os_write),
+        patch("os.fsync", patched_os_fsync),
+        patch("os.replace", patched_os_replace),
+        patch("os.unlink", patched_os_unlink),
+        patch("os.ftruncate", patched_os_ftruncate),
+        patch.object(Path, "exists", patched_exists),
+        patch.object(Path, "read_bytes", patched_read_bytes),
+        patch.object(Path, "stat", patched_stat),
+        patch.object(Path, "open", patched_open),
+        patch.object(Path, "mkdir", patched_mkdir),
+        patch.object(Path, "is_dir", patched_is_dir),
+        patch.object(Path, "is_file", patched_is_file),
+        patch.object(Path, "iterdir", patched_iterdir),
+    ]
+
+    for p in all_patches:
+        p.start()
+    try:
+        yield instances
+    finally:
+        for p in reversed(all_patches):
+            p.stop()
+
+
+__all__ = ["CrashError", "FdState", "VirtualFS", "patch_io", "patch_io_multi"]

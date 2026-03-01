@@ -2,18 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Orchestrator crash-recovery fuzzer.
+"""Dual-orchestrator crash-recovery fuzzer.
 
-Exercises agent lifecycle operations (create, spawn, turn, terminate,
-send, check_inbox, broadcast) with crash injection at arbitrary IO
-boundaries via VirtualFS. After each crash: thaw, build a fresh
-orchestrator, run ``recover()``, and verify the recovered state is
-consistent with what was committed to disk.
+Runs two orchestrators in lockstep on separate VFS instances. The *reference*
+never crashes; the *test* crashes and recovers. After recovery, structural
+state is compared: every agent in the reference must appear in the test with
+matching tree shape and state.
 
-The IO-level crash fuzzer (``test_crash_fuzz.py``) proves that
-``atomic_write`` and ``EventLog`` survive crashes individually. This
-fuzzer proves the full recovery path: crash the orchestrator mid-operation,
-reconstruct from disk, verify everything lines up.
+This eliminates the hand-rolled shadow model — the reference orchestrator *is*
+the oracle.
 
 Gated behind ``--run-stress``.
 
@@ -51,7 +48,7 @@ from substrat.scheduler import TurnScheduler
 from substrat.session import SessionStore
 from substrat.session.multiplexer import SessionMultiplexer
 
-from .vfs import CrashError, VirtualFS, patch_io
+from .vfs import CrashError, VirtualFS, patch_io_multi
 
 pytestmark = pytest.mark.stress
 
@@ -95,20 +92,6 @@ class FakeProvider:
         return FakeProviderSession()
 
 
-# -- Shadow state ----------------------------------------------------------
-
-
-@dataclass
-class ShadowAgent:
-    """Committed agent tracked by the shadow."""
-
-    agent_id: UUID
-    name: str
-    parent_id: UUID | None
-    session_id: UUID
-    instructions: str
-
-
 # -- Helpers ---------------------------------------------------------------
 
 
@@ -144,7 +127,50 @@ def _make_orch(vfs: VirtualFS) -> Orchestrator:
     )
 
 
-def _tree_agent_ids(orch: Orchestrator) -> set[UUID]:
+# -- Name paths ------------------------------------------------------------
+
+
+NamePath = tuple[str, ...]
+
+
+def _name_path(orch: Orchestrator, agent_id: UUID) -> NamePath:
+    """Build (root_name, ..., agent_name) path for an agent."""
+    parts: list[str] = []
+    node = orch.tree.get(agent_id)
+    while True:
+        parts.append(node.name)
+        if node.parent_id is None:
+            break
+        node = orch.tree.get(node.parent_id)
+    return tuple(reversed(parts))
+
+
+def _resolve(orch: Orchestrator, path: NamePath) -> UUID | None:
+    """Resolve a name path to an agent UUID. Returns None if not found."""
+    if not path:
+        return None
+    # Find root by first name component.
+    root_node = None
+    for r in orch.tree.roots():
+        if r.name == path[0]:
+            root_node = r
+            break
+    if root_node is None:
+        return None
+    current = root_node
+    for name in path[1:]:
+        found = None
+        for child in orch.tree.children(current.id):
+            if child.name == name:
+                found = child
+                break
+        if found is None:
+            return None
+        current = found
+    return current.id
+
+
+def _all_tree_ids(orch: Orchestrator) -> set[UUID]:
     """Collect all agent IDs from the orchestrator's tree."""
     ids: set[UUID] = set()
     for root in orch.tree.roots():
@@ -153,420 +179,478 @@ def _tree_agent_ids(orch: Orchestrator) -> set[UUID]:
     return ids
 
 
+# -- Snapshots -------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AgentSnapshot:
+    """Structural snapshot of one agent."""
+
+    name_path: NamePath
+    children: frozenset[NamePath]
+    state: str
+
+
+def _snapshot(orch: Orchestrator) -> dict[NamePath, AgentSnapshot]:
+    """Build structural snapshot keyed by name path."""
+    result: dict[NamePath, AgentSnapshot] = {}
+    for root in orch.tree.roots():
+        _snapshot_subtree(orch, root.id, (), result)
+    return result
+
+
+def _snapshot_subtree(
+    orch: Orchestrator,
+    aid: UUID,
+    parent_path: NamePath,
+    result: dict[NamePath, AgentSnapshot],
+) -> None:
+    node = orch.tree.get(aid)
+    path = parent_path + (node.name,)
+    children_paths = frozenset(path + (c.name,) for c in orch.tree.children(aid))
+    result[path] = AgentSnapshot(
+        name_path=path,
+        children=children_paths,
+        state=node.state.value,
+    )
+    for child in orch.tree.children(aid):
+        _snapshot_subtree(orch, child.id, path, result)
+
+
+# -- Sentinel for failed bundle entries ------------------------------------
+
+_DEAD: NamePath = ("",)
+
+
+def _is_dead(path: NamePath) -> bool:
+    return len(path) == 1 and path[0] == ""
+
+
 # -- State machine ---------------------------------------------------------
 
 
-class OrchCrashRecoveryMachine(RuleBasedStateMachine):
-    """Fuzz orchestrator crash recovery with random lifecycle + crash injection.
+class DualOrchCrashMachine(RuleBasedStateMachine):
+    """Fuzz orchestrator crash recovery with a dual-orchestrator oracle.
 
-    Shadow state tracks which agents have been durably committed. On crash,
-    committed agents are asserted to survive recovery (unless the crash was
-    mid-terminate). Invariants verify consistency after every step.
-
-    Agent selection uses a Hypothesis ``Bundle`` — the only approach that
-    keeps data generation deterministic across internal replays. Failed
-    target-producing rules return ``UUID(int=0)`` which pollutes the bundle;
-    non-target rules detect and skip it. This matches the lifecycle fuzzer's
-    pattern. The trade-off (some wasted steps) is offset by bumping
-    ``max_examples`` and ``stateful_step_count``.
+    Reference orchestrator never crashes. Test orchestrator crashes and
+    recovers. After recovery, ref is rebuilt from test's disk state so both
+    stay in sync. Structural comparison replaces the old shadow model.
     """
 
     agents = Bundle("agents")
 
     def __init__(self) -> None:
         super().__init__()
-        self.vfs = VirtualFS()
-        self._patch_ctx = patch_io(self.vfs)
+        self.ref_vfs = VirtualFS(root="/virtual/ref", fd_base=1000)
+        self.test_vfs = VirtualFS(root="/virtual/test", fd_base=2000)
+        self._patch_ctx = patch_io_multi(self.ref_vfs, self.test_vfs)
         self._patch_ctx.__enter__()
 
-        # Ensure the sessions directory exists.
-        self.vfs.mkdir(
-            str(Path(self.vfs.root) / "sessions"), parents=True, exist_ok=True
-        )
+        # Ensure session dirs exist.
+        for vfs in (self.ref_vfs, self.test_vfs):
+            vfs.mkdir(str(Path(vfs.root) / "sessions"), parents=True, exist_ok=True)
 
-        self.orch = _make_orch(self.vfs)
+        self.ref = _make_orch(self.ref_vfs)
+        self.test = _make_orch(self.test_vfs)
 
-        # Shadow: committed agents (survived to disk).
-        self.shadow: dict[UUID, ShadowAgent] = {}
         # Pending children: in tree but no session yet (deferred spawn).
-        self.pending: set[UUID] = set()
-        # Parents that need run_turn to drain deferred work.
-        self.parents_needing_drain: set[UUID] = set()
-        # Parent -> children mapping.
-        self.children_map: dict[UUID, set[UUID]] = {}
+        self.pending_paths: set[NamePath] = set()
+        # Parents with un-drained deferred spawns.
+        self.parents_needing_drain: set[NamePath] = set()
 
     def teardown(self) -> None:
         self._patch_ctx.__exit__(None, None, None)
 
     # -- Crash + recovery --------------------------------------------------
 
-    def _do_crash_and_recover(
-        self,
-        *,
-        may_vanish: UUID | None = None,
-    ) -> None:
-        """Thaw VFS, build fresh orchestrator, recover, reconcile shadow.
+    def _do_crash_and_recover(self) -> None:
+        """Thaw test VFS, recover test, rebuild ref from test's disk."""
+        # 1. Thaw and recover test.
+        self.test_vfs.thaw()
+        self.test = _make_orch(self.test_vfs)
+        _run(self.test.recover())
 
-        ``may_vanish`` is an agent ID that was being terminated when the
-        crash hit — it may or may not survive depending on whether the
-        ``agent.terminated`` event was fsynced.
-        """
-        self.vfs.thaw()
-        self.orch = _make_orch(self.vfs)
-        _run(self.orch.recover())
+        # 2. Copy test disk to ref (adjusting path prefixes).
+        self.ref_vfs._disk.clear()
+        self.ref_vfs._cache.clear()
+        for path, content in self.test_vfs._disk.items():
+            ref_path = path.replace("/virtual/test/", "/virtual/ref/", 1)
+            self.ref_vfs._disk[ref_path] = content
+        self.ref_vfs._dirs = {
+            d.replace("/virtual/test/", "/virtual/ref/", 1) for d in self.test_vfs._dirs
+        }
 
-        # Purge pending children — no disk footprint.
-        self.pending.clear()
+        # 3. Recover ref from copied disk.
+        self.ref = _make_orch(self.ref_vfs)
+        _run(self.ref.recover())
+
+        # 4. Clear pending tracking — no disk footprint survived.
+        self.pending_paths.clear()
         self.parents_needing_drain.clear()
-
-        self._reconcile_shadow(may_vanish=may_vanish)
-
-    def _reconcile_shadow(
-        self,
-        *,
-        may_vanish: UUID | None = None,
-    ) -> None:
-        """Reconcile shadow against recovered tree.
-
-        Committed agents are asserted to survive recovery — if a committed
-        agent is missing from the recovered tree, that's a recovery bug.
-        The only exceptions are:
-
-        - ``may_vanish``: agent being terminated when the crash hit. Its
-          ``agent.terminated`` event may have been fsynced.
-        - Children being drained: crash mid-drain means some children's
-          sessions were created (partially committed) while others weren't.
-          These are already cleared from ``self.shadow`` via ``pending``.
-        """
-        recovered_ids = _tree_agent_ids(self.orch)
-
-        # Assert committed agents survived recovery.
-        for aid in list(self.shadow):
-            if aid in recovered_ids:
-                continue
-            if aid == may_vanish:
-                # Terminate was in flight — agent may or may not survive.
-                del self.shadow[aid]
-                for _pid, kids_set in self.children_map.items():
-                    kids_set.discard(aid)
-                del self.children_map[aid]
-                continue
-            raise AssertionError(
-                f"committed agent {aid} lost in recovery! "
-                f"recovered={recovered_ids}, shadow={set(self.shadow)}"
-            )
-
-        # Add agents in recovered tree but not in shadow (partially committed
-        # during the crash — e.g., deferred spawn got session + event fsynced
-        # before the crash hit).
-        for aid in recovered_ids - set(self.shadow):
-            node = self.orch.tree.get(aid)
-            self.shadow[aid] = ShadowAgent(
-                agent_id=aid,
-                name=node.name,
-                parent_id=node.parent_id,
-                session_id=node.session_id,
-                instructions=node.instructions,
-            )
-
-        # Rebuild children_map from recovered tree.
-        self.children_map.clear()
-        for aid in self.shadow:
-            self.children_map[aid] = {c.id for c in self.orch.tree.children(aid)}
 
     # -- Rules -------------------------------------------------------------
 
     _NAMES = st.sampled_from(["a", "b", "c", "d", "e"])
 
     @initialize(target=agents)
-    def seed_agent(self) -> UUID:
-        """Create the first root without crash. Other rules need at least one agent."""
-        node = _run(self.orch.create_root_agent("seed", "init"))
-        self.shadow[node.id] = ShadowAgent(
-            agent_id=node.id,
-            name="seed",
-            parent_id=None,
-            session_id=node.session_id,
-            instructions="init",
-        )
-        self.children_map[node.id] = set()
-        return node.id
+    def seed_agent(self) -> NamePath:
+        """Create the first root on both orchs without crash."""
+        _run(self.ref.create_root_agent("seed", "init"))
+        _run(self.test.create_root_agent("seed", "init"))
+        return ("seed",)
 
     @rule(target=agents, name=_NAMES, crash_at=st.integers(0, 50))
-    def create_root(self, name: str, crash_at: int) -> UUID:
-        """Create a root agent, optionally crashing mid-operation."""
-        if crash_at > 0:
-            self.vfs.arm(crash_at)
+    def create_root(self, name: str, crash_at: int) -> NamePath:
+        """Create a root agent on both orchs, optionally crashing test."""
+        # Ref first.
         try:
-            node = _run(self.orch.create_root_agent(name, f"inst-{name}"))
-        except CrashError:
-            self._do_crash_and_recover()
-            return UUID(int=0)
+            _run(self.ref.create_root_agent(name, f"inst-{name}"))
         except ValueError:
-            # Name collision.
-            if crash_at > 0:
-                self.vfs.disarm()
-            return UUID(int=0)
-        if crash_at > 0:
-            self.vfs.disarm()
-        self.shadow[node.id] = ShadowAgent(
-            agent_id=node.id,
-            name=name,
-            parent_id=None,
-            session_id=node.session_id,
-            instructions=f"inst-{name}",
-        )
-        self.children_map[node.id] = set()
-        return node.id
+            # Name collision — skip test too.
+            return _DEAD
 
-    @precondition(lambda self: bool(self.shadow))
-    @rule(target=agents, agent=agents, name=_NAMES)
-    def spawn_child(self, agent: UUID, name: str) -> UUID:
-        """Spawn a child on a living agent. No crash — purely in-memory."""
-        if agent not in self.shadow or agent in self.pending:
-            return UUID(int=0)
-        handler = self.orch.get_handler(agent)
-        result = handler.spawn_agent(name, f"child-{name}")
-        if "error" in result:
-            return UUID(int=0)
-        child_id = UUID(result["agent_id"])
-        self.pending.add(child_id)
-        self.parents_needing_drain.add(agent)
-        self.children_map[agent].add(child_id)
-        self.children_map[child_id] = set()
-        return child_id
-
-    @precondition(lambda self: bool(self.shadow))
-    @rule(agent=agents, crash_at=st.integers(0, 50))
-    def run_turn(self, agent: UUID, crash_at: int) -> None:
-        """Run a turn on a living agent, draining deferred spawns if any."""
-        if agent not in self.shadow or agent in self.pending:
-            return
+        # Test (may crash).
         if crash_at > 0:
-            self.vfs.arm(crash_at)
+            self.test_vfs.arm(crash_at)
         try:
-            _run(self.orch.run_turn(agent, "go"))
+            _run(self.test.create_root_agent(name, f"inst-{name}"))
+        except CrashError:
+            self._do_crash_and_recover()
+            return _DEAD
+        except ValueError:
+            # Shouldn't happen (ref succeeded), but defend anyway.
+            if crash_at > 0:
+                self.test_vfs.disarm()
+            return _DEAD
+        if crash_at > 0:
+            self.test_vfs.disarm()
+        return (name,)
+
+    @precondition(lambda self: bool(_all_tree_ids(self.ref)))
+    @rule(target=agents, agent=agents, name=_NAMES)
+    def spawn_child(self, agent: NamePath, name: str) -> NamePath:
+        """Spawn a child on a living agent. No crash — purely in-memory."""
+        if _is_dead(agent) or agent in self.pending_paths:
+            return _DEAD
+        ref_id = _resolve(self.ref, agent)
+        test_id = _resolve(self.test, agent)
+        if ref_id is None or test_id is None:
+            return _DEAD
+
+        ref_handler = self.ref.get_handler(ref_id)
+        result = ref_handler.spawn_agent(name, f"child-{name}")
+        if "error" in result:
+            return _DEAD
+
+        test_handler = self.test.get_handler(test_id)
+        test_result = test_handler.spawn_agent(name, f"child-{name}")
+        if "error" in test_result:
+            # Shouldn't happen if ref succeeded, but be safe.
+            return _DEAD
+
+        child_path = agent + (name,)
+        self.pending_paths.add(child_path)
+        self.parents_needing_drain.add(agent)
+        return child_path
+
+    @precondition(lambda self: bool(_all_tree_ids(self.ref)))
+    @rule(agent=agents, crash_at=st.integers(0, 50))
+    def run_turn(self, agent: NamePath, crash_at: int) -> None:
+        """Run a turn on a living agent, draining deferred spawns."""
+        if _is_dead(agent) or agent in self.pending_paths:
+            return
+        ref_id = _resolve(self.ref, agent)
+        test_id = _resolve(self.test, agent)
+        if ref_id is None or test_id is None:
+            return
+
+        # Ref always succeeds.
+        _run(self.ref.run_turn(ref_id, "go"))
+
+        # Test may crash.
+        if crash_at > 0:
+            self.test_vfs.arm(crash_at)
+        try:
+            _run(self.test.run_turn(test_id, "go"))
         except CrashError:
             self._do_crash_and_recover()
             return
         if crash_at > 0:
-            self.vfs.disarm()
-        # If this agent had deferred children, they're now drained.
-        self.parents_needing_drain.discard(agent)
-        for child_id in list(self.children_map.get(agent, set())):
-            if child_id in self.pending:
-                self.pending.discard(child_id)
-                child_node = self.orch.tree.get(child_id)
-                self.shadow[child_id] = ShadowAgent(
-                    agent_id=child_id,
-                    name=child_node.name,
-                    parent_id=agent,
-                    session_id=child_node.session_id,
-                    instructions=child_node.instructions,
-                )
+            self.test_vfs.disarm()
 
-    @precondition(lambda self: bool(self.shadow))
+        # Drain pending children of this parent.
+        self.parents_needing_drain.discard(agent)
+        drained = {p for p in self.pending_paths if p[:-1] == agent}
+        self.pending_paths -= drained
+
+    @precondition(lambda self: bool(_all_tree_ids(self.ref)))
     @rule(agent=agents, data=st.data(), crash_at=st.integers(0, 50))
-    def send_message(self, agent: UUID, data: st.DataObject, crash_at: int) -> None:
+    def send_message(self, agent: NamePath, data: st.DataObject, crash_at: int) -> None:
         """Send a message from parent to a materialized child."""
-        if agent not in self.shadow or agent in self.pending:
+        if _is_dead(agent) or agent in self.pending_paths:
             return
-        materialized = sorted(
-            c
-            for c in self.children_map.get(agent, set())
-            if c not in self.pending and c in self.shadow
-        )
+        ref_id = _resolve(self.ref, agent)
+        test_id = _resolve(self.test, agent)
+        if ref_id is None or test_id is None:
+            return
+
+        # Find materialized children via ref tree.
+        materialized: list[str] = []
+        for child in self.ref.tree.children(ref_id):
+            child_path = agent + (child.name,)
+            if child_path not in self.pending_paths:
+                materialized.append(child.name)
         if not materialized:
             return
-        child_id = data.draw(st.sampled_from(materialized))
-        child_node = self.orch.tree.get(child_id)
-        handler = self.orch.get_handler(agent)
+        child_name = data.draw(st.sampled_from(sorted(materialized)))
+
+        # Ref always succeeds.
+        ref_handler = self.ref.get_handler(ref_id)
+        ref_handler.send_message(child_name, "hello")
+
+        # Test may crash.
+        test_handler = self.test.get_handler(test_id)
         if crash_at > 0:
-            self.vfs.arm(crash_at)
+            self.test_vfs.arm(crash_at)
         try:
-            handler.send_message(child_node.name, "hello")
+            test_handler.send_message(child_name, "hello")
         except CrashError:
             self._do_crash_and_recover()
             return
         if crash_at > 0:
-            self.vfs.disarm()
+            self.test_vfs.disarm()
 
-    @precondition(lambda self: bool(self.shadow))
+    @precondition(lambda self: bool(_all_tree_ids(self.ref)))
     @rule(agent=agents, crash_at=st.integers(0, 50))
-    def broadcast_to_team(self, agent: UUID, crash_at: int) -> None:
+    def broadcast_to_team(self, agent: NamePath, crash_at: int) -> None:
         """Broadcast from a non-root agent to its materialized siblings."""
-        if agent not in self.shadow or agent in self.pending:
+        if _is_dead(agent) or agent in self.pending_paths:
             return
-        parent_id = self.shadow[agent].parent_id
-        if parent_id is None:
+        if len(agent) < 2:
+            return  # Roots have no team.
+        ref_id = _resolve(self.ref, agent)
+        test_id = _resolve(self.test, agent)
+        if ref_id is None or test_id is None:
             return
-        # All siblings must be materialized — messages to pending agents
-        # aren't logged (no session log yet), so they can't survive a crash.
-        siblings = self.children_map.get(parent_id, set()) - {agent}
-        if not siblings or siblings & self.pending:
+
+        # All siblings must be materialized.
+        parent_path = agent[:-1]
+        ref_parent_id = _resolve(self.ref, parent_path)
+        if ref_parent_id is None:
             return
-        handler = self.orch.get_handler(agent)
+        siblings = self.ref.tree.children(ref_parent_id)
+        for sib in siblings:
+            if sib.id == ref_id:
+                continue
+            sib_path = parent_path + (sib.name,)
+            if sib_path in self.pending_paths:
+                return
+
+        # Ref always succeeds.
+        ref_handler = self.ref.get_handler(ref_id)
+        ref_handler.broadcast("team update")
+
+        # Test may crash.
+        test_handler = self.test.get_handler(test_id)
         if crash_at > 0:
-            self.vfs.arm(crash_at)
+            self.test_vfs.arm(crash_at)
         try:
-            handler.broadcast("team update")
+            test_handler.broadcast("team update")
         except CrashError:
             self._do_crash_and_recover()
             return
         if crash_at > 0:
-            self.vfs.disarm()
+            self.test_vfs.disarm()
 
-    @precondition(lambda self: bool(self.shadow))
+    @precondition(lambda self: bool(_all_tree_ids(self.ref)))
     @rule(agent=agents, crash_at=st.integers(0, 50))
-    def check_inbox(self, agent: UUID, crash_at: int) -> None:
+    def check_inbox(self, agent: NamePath, crash_at: int) -> None:
         """Drain an agent's inbox."""
-        if agent not in self.shadow or agent in self.pending:
+        if _is_dead(agent) or agent in self.pending_paths:
             return
-        handler = self.orch.get_handler(agent)
+        ref_id = _resolve(self.ref, agent)
+        test_id = _resolve(self.test, agent)
+        if ref_id is None or test_id is None:
+            return
+
+        # Ref always succeeds.
+        ref_handler = self.ref.get_handler(ref_id)
+        ref_handler.check_inbox()
+
+        # Test may crash.
+        test_handler = self.test.get_handler(test_id)
         if crash_at > 0:
-            self.vfs.arm(crash_at)
+            self.test_vfs.arm(crash_at)
         try:
-            handler.check_inbox()
+            test_handler.check_inbox()
         except CrashError:
             self._do_crash_and_recover()
             return
         if crash_at > 0:
-            self.vfs.disarm()
+            self.test_vfs.disarm()
 
-    @precondition(lambda self: bool(self.shadow))
+    @precondition(lambda self: bool(_all_tree_ids(self.ref)))
     @rule(agent=agents, crash_at=st.integers(0, 50))
-    def terminate_leaf(self, agent: UUID, crash_at: int) -> None:
+    def terminate_leaf(self, agent: NamePath, crash_at: int) -> None:
         """Terminate a living leaf agent."""
-        if agent not in self.shadow or agent in self.pending:
+        if _is_dead(agent) or agent in self.pending_paths:
             return
-        if self.children_map.get(agent):
+        ref_id = _resolve(self.ref, agent)
+        test_id = _resolve(self.test, agent)
+        if ref_id is None or test_id is None:
             return
+        # Must be a leaf in both orchs.
+        if self.ref.tree.children(ref_id):
+            return
+
+        # Ref always succeeds.
+        _run(self.ref.terminate_agent(ref_id))
+
+        # Test may crash.
         if crash_at > 0:
-            self.vfs.arm(crash_at)
+            self.test_vfs.arm(crash_at)
         try:
-            _run(self.orch.terminate_agent(agent))
+            _run(self.test.terminate_agent(test_id))
         except CrashError:
-            self._do_crash_and_recover(may_vanish=agent)
+            self._do_crash_and_recover()
             return
         if crash_at > 0:
-            self.vfs.disarm()
-        del self.shadow[agent]
-        for _pid, kids_set in self.children_map.items():
-            kids_set.discard(agent)
-        del self.children_map[agent]
+            self.test_vfs.disarm()
 
     # -- Invariants --------------------------------------------------------
 
     @invariant()
-    def tree_matches_shadow(self) -> None:
-        """Agent IDs in the live tree match shadow (excluding pending)."""
-        tree_ids = _tree_agent_ids(self.orch)
-        shadow_ids = set(self.shadow) | self.pending
-        assert tree_ids == shadow_ids, f"tree={tree_ids}, shadow+pending={shadow_ids}"
-
-    @invariant()
-    def parent_child_consistent(self) -> None:
-        """For every committed agent, tree.children matches children_map."""
-        for aid in self.shadow:
-            if aid not in self.orch.tree:
+    def ref_subset_of_test(self) -> None:
+        """Every non-pending agent in ref appears in test with matching state."""
+        ref_snap = _snapshot(self.ref)
+        test_snap = _snapshot(self.test)
+        for path, ref_agent in ref_snap.items():
+            if path in self.pending_paths:
                 continue
-            real_children = {c.id for c in self.orch.tree.children(aid)}
-            shadow_children = self.children_map.get(aid, set())
-            assert real_children == shadow_children, (
-                f"agent {aid}: real={real_children}, shadow={shadow_children}"
+            assert path in test_snap, (
+                f"ref agent {path} missing from test. "
+                f"ref paths={set(ref_snap)}, test paths={set(test_snap)}"
+            )
+            test_agent = test_snap[path]
+            assert ref_agent.state == test_agent.state, (
+                f"state mismatch at {path}: ref={ref_agent.state}, "
+                f"test={test_agent.state}"
+            )
+            # Compare children excluding pending.
+            ref_children = ref_agent.children - self.pending_paths
+            test_children = test_agent.children - self.pending_paths
+            assert ref_children == test_children, (
+                f"children mismatch at {path}: ref={ref_children}, test={test_children}"
             )
 
     @invariant()
     def registries_in_sync(self) -> None:
         """Tree, handlers, and inboxes contain the same agent IDs."""
-        tree_ids = _tree_agent_ids(self.orch)
-        handler_ids = set(self.orch._handlers.keys())
-        inbox_ids = set(self.orch.inboxes.keys())
-        # Pending children are in tree but don't have handlers yet.
-        materialized = tree_ids - self.pending
-        assert materialized == handler_ids, (
-            f"tree(materialized)={materialized}, handlers={handler_ids}"
-        )
-        assert tree_ids == inbox_ids, f"tree={tree_ids}, inboxes={inbox_ids}"
+        for label, orch, pending in [
+            ("ref", self.ref, self.pending_paths),
+            ("test", self.test, self.pending_paths),
+        ]:
+            tree_ids = _all_tree_ids(orch)
+            handler_ids = set(orch._handlers.keys())
+            inbox_ids = set(orch.inboxes.keys())
+            # Resolve pending paths to UUIDs for this orch.
+            pending_ids = set[UUID]()
+            for p in pending:
+                uid = _resolve(orch, p)
+                if uid is not None:
+                    pending_ids.add(uid)
+            materialized = tree_ids - pending_ids
+            assert materialized == handler_ids, (
+                f"{label}: tree(materialized)={materialized}, handlers={handler_ids}"
+            )
+            assert tree_ids == inbox_ids, (
+                f"{label}: tree={tree_ids}, inboxes={inbox_ids}"
+            )
 
     @invariant()
     def all_idle(self) -> None:
         """All living agents are IDLE between steps."""
-        for aid in self.shadow:
-            if aid not in self.orch.tree:
-                continue
-            node = self.orch.tree.get(aid)
-            assert node.state == AgentState.IDLE, (
-                f"agent {aid} in state {node.state.value}, expected IDLE"
-            )
+        for label, orch in [("ref", self.ref), ("test", self.test)]:
+            for root in orch.tree.roots():
+                for node in [root] + orch.tree.subtree(root.id):
+                    assert node.state == AgentState.IDLE, (
+                        f"{label} agent {node.name} in state "
+                        f"{node.state.value}, expected IDLE"
+                    )
 
     @invariant()
     def event_logs_valid_jsonl(self) -> None:
-        """Every events.jsonl on disk contains only valid JSONL lines."""
-        for path, content in self.vfs._disk.items():
-            if not path.endswith("/events.jsonl"):
-                continue
-            for line in content.split(b"\n"):
-                if not line:
+        """Every events.jsonl on disk is valid JSONL."""
+        for vfs in (self.ref_vfs, self.test_vfs):
+            for path, content in vfs._disk.items():
+                if not path.endswith("/events.jsonl"):
                     continue
-                try:
-                    json.loads(line)
-                except json.JSONDecodeError as exc:
-                    raise AssertionError(f"corrupt JSONL in {path}: {line!r}") from exc
+                for line in content.split(b"\n"):
+                    if not line:
+                        continue
+                    try:
+                        json.loads(line)
+                    except json.JSONDecodeError as exc:
+                        raise AssertionError(
+                            f"corrupt JSONL in {path}: {line!r}"
+                        ) from exc
 
     @invariant()
     def session_files_valid(self) -> None:
-        """Every session.json on disk is valid JSON with a valid state field."""
+        """Every session.json on disk is valid JSON with a valid state."""
         valid_states = {"created", "active", "suspended", "terminated"}
-        for path, content in self.vfs._disk.items():
-            if not path.endswith("/session.json"):
-                continue
-            obj = json.loads(content)
-            assert obj.get("state") in valid_states, (
-                f"bad state in {path}: {obj.get('state')}"
-            )
+        for vfs in (self.ref_vfs, self.test_vfs):
+            for path, content in vfs._disk.items():
+                if not path.endswith("/session.json"):
+                    continue
+                obj = json.loads(content)
+                assert obj.get("state") in valid_states, (
+                    f"bad state in {path}: {obj.get('state')}"
+                )
 
     @invariant()
     def inbox_matches_events(self) -> None:
-        """For each materialized agent, inbox matches enqueued - delivered."""
-        for aid in self.shadow:
-            if aid in self.pending:
-                continue
-            if aid not in self.orch.tree:
-                continue
-            node = self.orch.tree.get(aid)
-            log_path = (
-                Path(self.vfs.root) / "sessions" / node.session_id.hex / "events.jsonl"
-            )
-            entries = read_log(log_path)
-            enqueued: set[str] = set()
-            delivered: set[str] = set()
-            for entry in entries:
-                ev = entry.get("event")
-                edata = entry.get("data", {})
-                if ev == "message.enqueued":
-                    mid = edata.get("message_id", "")
-                    if mid:
-                        enqueued.add(mid)
-                elif ev == "message.delivered":
-                    mid = edata.get("message_id", "")
-                    if mid:
-                        delivered.add(mid)
-            expected_pending = enqueued - delivered
-            inbox = self.orch.inboxes.get(aid)
-            actual_pending = set()
-            if inbox is not None:
-                actual_pending = {m.id.hex for m in inbox.peek()}
-            assert expected_pending == actual_pending, (
-                f"agent {aid}: expected pending={expected_pending}, "
-                f"actual inbox={actual_pending}"
-            )
+        """For each materialized agent in test, inbox matches events."""
+        for root in self.test.tree.roots():
+            for node in [root] + self.test.tree.subtree(root.id):
+                path = _name_path(self.test, node.id)
+                if path in self.pending_paths:
+                    continue
+                log_path = (
+                    Path(self.test_vfs.root)
+                    / "sessions"
+                    / node.session_id.hex
+                    / "events.jsonl"
+                )
+                entries = read_log(log_path)
+                enqueued: set[str] = set()
+                delivered: set[str] = set()
+                for entry in entries:
+                    ev = entry.get("event")
+                    edata = entry.get("data", {})
+                    if ev == "message.enqueued":
+                        mid = edata.get("message_id", "")
+                        if mid:
+                            enqueued.add(mid)
+                    elif ev == "message.delivered":
+                        mid = edata.get("message_id", "")
+                        if mid:
+                            delivered.add(mid)
+                expected_pending = enqueued - delivered
+                inbox = self.test.inboxes.get(node.id)
+                actual_pending = set[str]()
+                if inbox is not None:
+                    actual_pending = {m.id.hex for m in inbox.peek()}
+                assert expected_pending == actual_pending, (
+                    f"test agent {path}: expected pending="
+                    f"{expected_pending}, actual inbox={actual_pending}"
+                )
 
 
 # Hypothesis needs a concrete TestCase class.
-TestOrchCrashRecoveryFuzz = OrchCrashRecoveryMachine.TestCase
-TestOrchCrashRecoveryFuzz.settings = settings(
-    max_examples=500,
-    stateful_step_count=50,
+TestDualOrchCrashFuzz = DualOrchCrashMachine.TestCase
+TestDualOrchCrashFuzz.settings = settings(
+    max_examples=300,
+    stateful_step_count=40,
     deadline=None,
 )
