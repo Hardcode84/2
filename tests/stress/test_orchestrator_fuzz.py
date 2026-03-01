@@ -19,6 +19,7 @@ from uuid import UUID
 
 import pytest
 from hypothesis import settings
+from hypothesis import strategies as st
 from hypothesis.stateful import (
     Bundle,
     RuleBasedStateMachine,
@@ -54,6 +55,14 @@ class FakeProviderSession:
         pass
 
 
+class FlakyProviderSession(FakeProviderSession):
+    """Provider session whose send() always raises."""
+
+    async def send(self, message: str) -> AsyncGenerator[str, None]:
+        raise RuntimeError("flaky send")
+        yield ""  # noqa: RUF027  # Unreachable, makes it a generator.
+
+
 class FakeProvider:
     """Provider that always succeeds."""
 
@@ -75,6 +84,29 @@ class FakeProvider:
         log: EventLog | None = None,
     ) -> FakeProviderSession:
         return FakeProviderSession()
+
+
+class FlakyProvider:
+    """Provider whose sessions always fail on send()."""
+
+    @property
+    def name(self) -> str:
+        return "flaky"
+
+    async def create(
+        self,
+        model: str,
+        system_prompt: str,
+        log: EventLog | None = None,
+    ) -> FlakyProviderSession:
+        return FlakyProviderSession()
+
+    async def restore(
+        self,
+        state: bytes,
+        log: EventLog | None = None,
+    ) -> FlakyProviderSession:
+        return FlakyProviderSession()
 
 
 # -- Helpers ---------------------------------------------------------------
@@ -115,9 +147,8 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         self._tmp.mkdir(parents=True, exist_ok=True)
         store = SessionStore(self._tmp / "sessions")
         mux = SessionMultiplexer(store, max_slots=3)
-        provider = FakeProvider()
         scheduler = TurnScheduler(
-            providers={"fake": provider},
+            providers={"fake": FakeProvider(), "flaky": FlakyProvider()},
             mux=mux,
             store=store,
         )
@@ -134,6 +165,8 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         self.parents_needing_drain: set[UUID] = set()
         # Parent → children mapping (shadow of tree).
         self.children: dict[UUID, set[UUID]] = {}
+        # Agents created with the flaky provider (send always fails).
+        self.flaky_agents: set[UUID] = set()
 
     def teardown(self) -> None:
         import shutil
@@ -143,7 +176,7 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
     # -- Rules -------------------------------------------------------------
 
     # Small name alphabet to force collisions.
-    _NAMES = ["a", "b", "c", "d", "e"]
+    _NAMES = st.sampled_from(["a", "b", "c", "d", "e"])
 
     @initialize(target=agents)
     def seed_agent(self) -> UUID:
@@ -153,12 +186,9 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         self.children[node.id] = set()
         return node.id
 
-    @rule(target=agents)
-    def create_root(self) -> UUID:
+    @rule(target=agents, name=_NAMES)
+    def create_root(self, name: str) -> UUID:
         """Try to create a root agent. May collide on name."""
-        import random
-
-        name = random.choice(self._NAMES)
         try:
             node = _run(self.orch.create_root_agent(name, "inst"))
         except ValueError:
@@ -169,14 +199,11 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         return node.id
 
     @precondition(lambda self: bool(self.alive))
-    @rule(target=agents, agent=agents)
-    def spawn_child(self, agent: UUID) -> UUID:
+    @rule(target=agents, agent=agents, name=_NAMES)
+    def spawn_child(self, agent: UUID, name: str) -> UUID:
         """Spawn a child on a living agent via its tool handler."""
         if agent not in self.alive or agent in self.pending_children:
             return UUID(int=0)
-        import random
-
-        name = random.choice(self._NAMES)
         handler = self.orch.get_handler(agent)
         result = handler.spawn_agent(name, "child-inst")
         if "error" in result:
@@ -195,6 +222,8 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
     def run_turn(self, agent: UUID) -> None:
         """Run a turn on a living idle agent."""
         if agent not in self.alive or agent in self.pending_children:
+            return
+        if agent in self.flaky_agents:
             return
         node = self.orch.tree.get(agent)
         if node.state != AgentState.IDLE:
@@ -227,6 +256,92 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         for _parent_id, kids in self.children.items():
             kids.discard(agent)
         del self.children[agent]
+
+    @rule(target=agents, name=_NAMES)
+    def create_flaky_root(self, name: str) -> UUID:
+        """Create a root agent backed by the flaky provider."""
+        try:
+            node = _run(self.orch.create_root_agent(name, "flaky", provider="flaky"))
+        except ValueError:
+            return UUID(int=0)
+        self.alive.add(node.id)
+        self.children[node.id] = set()
+        self.flaky_agents.add(node.id)
+        return node.id
+
+    @precondition(lambda self: bool(self.flaky_agents & self.alive))
+    @rule(agent=agents)
+    def run_turn_flaky(self, agent: UUID) -> None:
+        """Run a turn on a flaky agent — expects error, verifies IDLE rollback."""
+        if agent not in self.flaky_agents or agent not in self.alive:
+            return
+        if agent in self.pending_children:
+            return
+        node = self.orch.tree.get(agent)
+        if node.state != AgentState.IDLE:
+            return
+        try:
+            _run(self.orch.run_turn(agent, "go"))
+            # Should not reach here.
+            assert False, "flaky provider should have raised"  # noqa: B011
+        except RuntimeError:
+            pass
+        # Agent must be back to IDLE despite the error.
+        assert node.state == AgentState.IDLE
+
+    @precondition(lambda self: bool(self.alive))
+    @rule(agent=agents)
+    def terminate_parent_fails(self, agent: UUID) -> None:
+        """Attempt to terminate a non-leaf agent. Must fail, agent survives."""
+        if agent not in self.alive or agent in self.pending_children:
+            return
+        if not self.children[agent]:
+            return
+        try:
+            _run(self.orch.terminate_agent(agent))
+            assert False, "should have raised ValueError"  # noqa: B011
+        except ValueError:
+            pass
+        # Agent is still alive and in the tree.
+        assert agent in self.orch.tree
+
+    @precondition(lambda self: bool(self.alive))
+    @rule(agent=agents, data=st.data())
+    def send_message_to_child(self, agent: UUID, data: st.DataObject) -> None:
+        """Send a message from a parent to one of its children."""
+        if agent not in self.alive or agent in self.pending_children:
+            return
+        materialized = [
+            c for c in self.children[agent] if c not in self.pending_children
+        ]
+        if not materialized:
+            return
+        child_id = data.draw(st.sampled_from(materialized))
+        child_node = self.orch.tree.get(child_id)
+        handler = self.orch.get_handler(agent)
+        result = handler.send_message(child_node.name, "hello")
+        assert result.get("status") == "sent"
+
+    @precondition(lambda self: bool(self.alive))
+    @rule(agent=agents)
+    def broadcast_to_team(self, agent: UUID) -> None:
+        """Broadcast from an agent to its siblings."""
+        if agent not in self.alive or agent in self.pending_children:
+            return
+        handler = self.orch.get_handler(agent)
+        result = handler.broadcast("hello team")
+        # Either succeeds (has siblings) or returns error (no siblings/root).
+        assert "status" in result or "error" in result
+
+    @precondition(lambda self: bool(self.alive))
+    @rule(agent=agents)
+    def check_inbox(self, agent: UUID) -> None:
+        """Drain an agent's inbox."""
+        if agent not in self.alive or agent in self.pending_children:
+            return
+        handler = self.orch.get_handler(agent)
+        result = handler.check_inbox()
+        assert "messages" in result
 
     # -- Invariants --------------------------------------------------------
 
@@ -284,6 +399,21 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
             assert node.state == AgentState.IDLE, (
                 f"agent {aid} in state {node.state.value}, expected IDLE"
             )
+
+    @invariant()
+    def deferred_queues_empty(self) -> None:
+        """Non-pending agents should have no deferred work queued."""
+        for aid in self.alive:
+            if aid in self.pending_children:
+                continue
+            if aid in self.parents_needing_drain:
+                continue
+            handler = self.orch._handlers.get(aid)
+            if handler is None:
+                continue
+            # Peek at the internal list — drain_deferred() is destructive.
+            n = len(handler._deferred)
+            assert n == 0, f"agent {aid} has {n} undrained deferred"
 
 
 # Hypothesis needs a concrete TestCase class.
