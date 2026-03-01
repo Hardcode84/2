@@ -271,8 +271,12 @@ class DualOrchCrashMachine(RuleBasedStateMachine):
         _run(self.test.recover())
 
         # 2. Copy test disk to ref (adjusting path prefixes).
+        #    Reset all ephemeral state — this is a full "reboot".
         self.ref_vfs._disk.clear()
         self.ref_vfs._cache.clear()
+        self.ref_vfs._fd_table.clear()
+        self.ref_vfs._all_fds.clear()
+        self.ref_vfs._next_fd = 1000  # Reset to fd_base.
         for path, content in self.test_vfs._disk.items():
             ref_path = path.replace("/virtual/test/", "/virtual/ref/", 1)
             self.ref_vfs._disk[ref_path] = content
@@ -500,7 +504,7 @@ class DualOrchCrashMachine(RuleBasedStateMachine):
         if ref_id is None or test_id is None:
             return
         # Must be a leaf in both orchs.
-        if self.ref.tree.children(ref_id):
+        if self.ref.tree.children(ref_id) or self.test.tree.children(test_id):
             return
 
         # Ref always succeeds.

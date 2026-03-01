@@ -519,7 +519,12 @@ def patch_io_multi(*instances: VirtualFS) -> Iterator[tuple[VirtualFS, ...]]:
         return real_os_fsync(fd)
 
     def patched_os_replace(src: Any, dst: Any) -> None:
-        vfs = _find_by_path(src) or _find_by_path(dst)
+        src_vfs = _find_by_path(src)
+        dst_vfs = _find_by_path(dst)
+        assert src_vfs is dst_vfs or src_vfs is None or dst_vfs is None, (
+            f"cross-VFS replace: src={src} -> {src_vfs}, dst={dst} -> {dst_vfs}"
+        )
+        vfs = src_vfs or dst_vfs
         if vfs is not None:
             return vfs.os_replace(src, dst)
         return real_os_replace(src, dst)
