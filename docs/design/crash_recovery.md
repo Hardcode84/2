@@ -309,13 +309,17 @@ Three layers:
    `atomic_write` and `EventLog` crash recovery via a virtual filesystem
    (`tests/stress/vfs.py`) that simulates power loss at arbitrary IO
    boundaries. Validates all-or-nothing and WAL prefix-consistency.
-3. **Full orchestrator crash fuzzer** (future) — extends the lifecycle fuzzer
-   with `crash_and_recover` rules using the VFS. Requires `SessionStore` /
-   `Orchestrator.recover()` integration.
+3. **Full orchestrator crash fuzzer** (`tests/stress/test_orch_crash_fuzz.py`) —
+   exercises the full recovery path: crash the orchestrator mid-operation via
+   VFS crash injection, rebuild from disk with `recover()`, verify the
+   recovered state is consistent with what was committed. Shadow state tracks
+   committed agents; reconciliation after each crash lets the shadow follow
+   reality. Invariants verify tree/handler/inbox sync, JSONL validity,
+   session file validity, and inbox-vs-event-log consistency.
 
 #### Hypothesis stateful testing
 
-Both fuzzers use Hypothesis `RuleBasedStateMachine`. This gives us:
+All three fuzzers use Hypothesis `RuleBasedStateMachine`. This gives us:
 
 - **Rules** — actions the fuzzer can take (create, spawn, turn, terminate,
   crash). Each rule has preconditions that guard against illegal states.
@@ -342,34 +346,38 @@ persistence, no crash simulation — pure state machine correctness.
 Settings: 200 examples, 30 steps per example (`stateful_step_count`),
 `deadline=None`. Gated behind `--run-stress`.
 
-#### Crash-recovery fuzzer (future)
+#### Orchestrator crash-recovery fuzzer
 
-Extends the lifecycle fuzzer with a `crash_and_recover` rule:
+Lives in `tests/stress/test_orch_crash_fuzz.py`. Every mutating rule
+accepts a `crash_at` integer — when nonzero, the VFS is armed before the
+operation. Two outcomes:
 
-1. **Generate** a random sequence of actions from a seeded RNG:
-   `create_agent`, `send_message`, `broadcast`, `spawn_agent`,
-   `deliver_message`, `suspend_agent`, etc.
+- **CrashError raised**: thaw, build fresh orchestrator, `recover()`,
+  reconcile shadow, continue.
+- **No CrashError** (crash_at exceeded real op count): disarm, update
+  shadow normally.
 
-2. **Execute** the sequence against the real daemon code (with a mock
-   provider). Each action advances the state machine — no actual delays,
-   all timing is simulated.
+This gives Hypothesis full control over crash timing as a searchable
+integer, enabling deterministic shrinking.
 
-3. **Crash** after a random prefix of N steps (chosen from the same seed).
-   The "crash" just stops execution and discards in-memory state.
+Shadow state tracks committed agents (`ShadowAgent` dataclass).
+Pending children (in tree but no session) are purged on crash — they had
+no disk footprint. After recovery, the shadow is reconciled against the
+recovered tree: vanished agents removed, partially-committed agents added,
+children map rebuilt. The "shadow follows reality" pattern from the
+IO-level fuzzer.
 
-4. **Recover** by running the recovery procedure against the persisted
-   state on disk.
+No message shadow. Message correctness is verified by the
+`inbox_matches_events` invariant: for each agent, read the event log,
+compute `enqueued - delivered`, compare with `inbox.peek()`. This catches
+the same bugs without maintaining a parallel message oracle.
 
-5. **Replay** the same N-step prefix against a fresh in-memory model (the
-   oracle) that tracks what *should* have been persisted by each step.
-   Compare the recovered state with the oracle's expected state.
+Invariants checked after every step: tree-shadow match, parent-child
+consistency, registry sync (tree/handlers/inboxes), all-idle, JSONL
+validity, session.json validity, inbox-vs-events consistency.
 
-6. **Assert** that recovered state is a valid subset of the oracle state:
-   everything that was fsynced before the crash point is present, nothing
-   after it is.
-
-Requires tree persistence via event logs (see "Agent lifecycle events"
-above) before this can be built.
+Settings: 200 examples, 30 steps, `max_slots=2` to force eviction,
+`deadline=None`. Gated behind `--run-stress`.
 
 ### Parallel execution
 
