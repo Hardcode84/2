@@ -303,7 +303,7 @@ class DualOrchCrashMachine(RuleBasedStateMachine):
         _run(self.test.create_root_agent("seed", "init"))
         return ("seed",)
 
-    @rule(target=agents, name=_NAMES, crash_at=st.integers(0, 50))
+    @rule(target=agents, name=_NAMES, crash_at=st.integers(0, 200))
     def create_root(self, name: str, crash_at: int) -> NamePath:
         """Create a root agent on both orchs, optionally crashing test."""
         # Ref first.
@@ -358,7 +358,7 @@ class DualOrchCrashMachine(RuleBasedStateMachine):
         return child_path
 
     @precondition(lambda self: bool(_all_tree_ids(self.ref)))
-    @rule(agent=agents, crash_at=st.integers(0, 50))
+    @rule(agent=agents, crash_at=st.integers(0, 200))
     def run_turn(self, agent: NamePath, crash_at: int) -> None:
         """Run a turn on a living agent, draining deferred spawns."""
         if _is_dead(agent) or agent in self.pending_paths:
@@ -388,7 +388,7 @@ class DualOrchCrashMachine(RuleBasedStateMachine):
         self.pending_paths -= drained
 
     @precondition(lambda self: bool(_all_tree_ids(self.ref)))
-    @rule(agent=agents, data=st.data(), crash_at=st.integers(0, 50))
+    @rule(agent=agents, data=st.data(), crash_at=st.integers(0, 200))
     def send_message(self, agent: NamePath, data: st.DataObject, crash_at: int) -> None:
         """Send a message from parent to a materialized child."""
         if _is_dead(agent) or agent in self.pending_paths:
@@ -425,7 +425,7 @@ class DualOrchCrashMachine(RuleBasedStateMachine):
             self.test_vfs.disarm()
 
     @precondition(lambda self: bool(_all_tree_ids(self.ref)))
-    @rule(agent=agents, crash_at=st.integers(0, 50))
+    @rule(agent=agents, crash_at=st.integers(0, 200))
     def broadcast_to_team(self, agent: NamePath, crash_at: int) -> None:
         """Broadcast from a non-root agent to its materialized siblings."""
         if _is_dead(agent) or agent in self.pending_paths:
@@ -467,7 +467,7 @@ class DualOrchCrashMachine(RuleBasedStateMachine):
             self.test_vfs.disarm()
 
     @precondition(lambda self: bool(_all_tree_ids(self.ref)))
-    @rule(agent=agents, crash_at=st.integers(0, 50))
+    @rule(agent=agents, crash_at=st.integers(0, 200))
     def check_inbox(self, agent: NamePath, crash_at: int) -> None:
         """Drain an agent's inbox."""
         if _is_dead(agent) or agent in self.pending_paths:
@@ -494,7 +494,7 @@ class DualOrchCrashMachine(RuleBasedStateMachine):
             self.test_vfs.disarm()
 
     @precondition(lambda self: bool(_all_tree_ids(self.ref)))
-    @rule(agent=agents, crash_at=st.integers(0, 50))
+    @rule(agent=agents, crash_at=st.integers(0, 200))
     def terminate_leaf(self, agent: NamePath, crash_at: int) -> None:
         """Terminate a living leaf agent."""
         if _is_dead(agent) or agent in self.pending_paths:

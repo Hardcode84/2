@@ -19,6 +19,7 @@ dev = [
     "nest-asyncio>=1.0",
     "pytest>=8.0",
     "pytest-asyncio>=0.25",
+    "pytest-xdist>=3.0",
     "pre-commit>=4.0",
     "ruff>=0.9",
 ]
