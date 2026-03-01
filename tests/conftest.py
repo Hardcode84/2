@@ -20,13 +20,20 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=False,
         help="Run long-running stress tests.",
     )
+    parser.addoption(
+        "--run-torture",
+        action="store_true",
+        default=False,
+        help="Run stress tests with extreme Hypothesis settings (overnight).",
+    )
 
 
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
     skip_e2e = not config.getoption("--run-e2e")
-    skip_stress = not config.getoption("--run-stress")
+    torture = config.getoption("--run-torture")
+    skip_stress = not config.getoption("--run-stress") and not torture
     for item in items:
         if skip_e2e and "e2e" in item.keywords:
             item.add_marker(pytest.mark.skip(reason="needs --run-e2e flag"))
