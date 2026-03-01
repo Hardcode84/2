@@ -133,7 +133,7 @@ Parameters:
   workspace: str | WorkspaceSpec | null   # Name or inline spec. See workspace.md.
 
 Returns:
-  {"status": "accepted", "agent_id": "uuid", "name": "str"}
+  {"status": "accepted", "agent_id": "uuid", "name": "str", "workspace": "str" | null}
 ```
 
 The workspace must exist (or be created inline). See

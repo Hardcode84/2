@@ -29,7 +29,7 @@ routing. Blocking operations (bwrap, subprocess spawning) run in a
 │       ├── transcript.txt  # Human-readable conversation log.
 │       └── mcp.json        # Generated MCP config for this agent.
 └── workspaces/
-    └── <uuid>/
+    └── <name>/
 ```
 
 ### Request Dispatch

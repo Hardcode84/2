@@ -26,6 +26,9 @@ Links are bind mounts, not filesystem symlinks. They map an external host
 directory into the workspace's virtual filesystem at `mount_path`. Mode
 controls whether the bind is read-only or read-write.
 
+Note: the data model uses `host_path`/`mount_path` internally. Agent-facing
+tool JSON uses `source`/`target` for readability — the daemon translates.
+
 ## Filesystem Layout
 
 ```
@@ -48,10 +51,16 @@ metadata. Name must be unique across all workspaces.
 
 ### Delete
 
-Delete a workspace and its backing directory. Fails if any agent is currently
-assigned to the workspace. The daemon enforces this constraint — the workspace
-model exposes a deletion hook, the daemon checks its agent-workspace mapping
-before allowing it.
+Delete a workspace, its backing directory, and all workspaces that are live
+views of it (recursively). The entire view tree is deleted as a unit. Fails
+if any workspace in the tree has alive (non-terminated) agents assigned to it.
+The daemon enforces this — checks the agent-workspace mapping for every
+workspace in the view tree before allowing deletion.
+
+View tree discovery: a workspace B is a view of workspace A if any of B's
+links point into A's `root_path`. The daemon maintains this dependency graph
+(derived from `LinkSpec.host_path` at link time). Deleting a leaf view does
+not affect the source workspace.
 
 ### Link / Unlink
 
@@ -169,7 +178,8 @@ subfolder of it). The agent can give a child RO access to its `src/` dir:
 
 Link a directory into a workspace. The `source` path is resolved relative to
 the calling agent's workspace — the daemon translates virtual paths to host
-paths using the agent's workspace spec.
+paths using the agent's workspace spec. The calling agent must have a workspace
+assigned; the call fails otherwise.
 
 ```
 Parameters:
@@ -181,6 +191,10 @@ Parameters:
 Returns:
   {"status": "linked"}
 ```
+
+The daemon validates that the resolved host path exists at link time. If it
+does not, the call fails immediately rather than producing a broken bwrap
+invocation later.
 
 For linking host paths directly (e.g. a project repo), use the CLI.
 
@@ -205,7 +219,8 @@ Returns:
   {"status": "deleted"}
 ```
 
-Fails if any agent is assigned to the workspace.
+Fails if any agent is assigned to the workspace (or any workspace in its
+view tree — see [Delete](#delete)).
 
 ### `spawn_agent` integration
 
@@ -218,12 +233,14 @@ Parameters:
   workspace: str | null    # Name of pre-configured workspace.
 
 Returns:
-  {"status": "accepted", "agent_id": "uuid", "name": "str"}
+  {"status": "accepted", "agent_id": "uuid", "name": "str", "workspace": "str" | null}
 ```
 
 For convenience, `spawn_agent` also accepts an inline workspace spec. The
 daemon decomposes it into individual workspace operations before processing
-the spawn — on the data model level, these are separate operations.
+the spawn — on the data model level, these are separate operations. If the
+deferred spawn fails after the workspace was created, the daemon deletes the
+workspace (cleanup, not rollback — the workspace had no agent assigned yet).
 
 ```
 Parameters:
