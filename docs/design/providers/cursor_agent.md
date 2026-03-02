@@ -223,11 +223,63 @@ To suspend, store the session UUID and workspace path. To restore, pass
 `--resume <session_id>` on the next invocation. All conversation state is in
 the local SQLite database — no server-side state to worry about.
 
+## Sandbox (bwrap) Requirements
+
+Verified with cursor-agent `2026.02.27-e7d2ef6` inside bubblewrap 0.9.0.
+
+### Installation
+
+cursor-agent is a Node.js app with a bundled `node` binary. The install tree
+lives under `~/.local/share/cursor-agent/versions/<version>/` with a symlink
+at `~/.local/bin/cursor-agent`. The wrapper script resolves its own directory
+via `realpath`, so the entire `~/.local` tree must be visible inside the
+sandbox (read-only is fine).
+
+### Network
+
+Network access is **mandatory**. cursor-agent calls Cursor's API
+(`api2.cursor.sh`) for inference — `--unshare-net` kills it. Workspaces
+hosting cursor-agent sessions must set `network_access=True`.
+
+### DNS resolution
+
+On systemd-resolved hosts, DNS goes through a stub resolver at `127.0.0.53`
+which connects to `systemd-resolved` via a socket under `/run/systemd/resolve/`.
+Without `/run` visible in the sandbox, `getaddrinfo` fails with `EAI_AGAIN`.
+The fix is a read-only bind of `/run` (part of the system bind set).
+
+### Required bind mounts
+
+| Host path | Mount path | Mode | Why |
+|-----------|-----------|------|-----|
+| `~/.local` | `~/.local` | ro | Installation: node binary, JS bundles, wrapper script. |
+| `~/.cursor` | `~/.cursor` | rw | Session storage (chats), project config, MCP approvals. |
+| `~/.config/cursor` | `~/.config/cursor` | ro | Auth tokens (`auth.json`). |
+
+The design doc for workspace.md originally listed `~/.cursor/chats/` and
+`~/.cursor/projects/` as separate rw binds. In practice, cursor-agent touches
+more of `~/.cursor/` (blocklist, ide_state, statsig cache), so binding the
+whole directory is simpler and safer than chasing individual files.
+
+### Node compile cache
+
+cursor-agent enables `NODE_COMPILE_CACHE` at `~/.cache/cursor-compile-cache`.
+This can be redirected into the workspace to avoid leaking state:
+
+```
+--bind <workspace>/.cache /home/<user>/.cache/cursor-compile-cache
+```
+
+Not strictly required — node falls back gracefully if the cache dir is missing.
+
+### `--workspace` flag
+
+`--workspace` controls the agent's working directory (cwd inside cursor-agent),
+**not** the chat storage path. Chat storage is always keyed by a hash of the
+workspace path under `~/.cursor/chats/<hash>/`. This means the bind mount for
+`~/.cursor/chats/` is always needed regardless of `--workspace` value.
+
 ## Open Questions
 
-- Whether `--workspace` controls the chat storage path or only the agent's
-  working directory (affects bwrap bind mount strategy).
-- Behavior inside bwrap with restricted/no network (cursor-agent needs API
-  access for inference — network cannot be fully blocked).
 - MCP server process lifecycle inside bwrap — does seccomp affect the daemon
   socket connection?

@@ -170,6 +170,14 @@ command from three sources, merged at launch time:
 Because bwrap is rebuilt each turn, link/unlink operations made between turns
 are picked up automatically. No hot-reloading needed.
 
+### System dependencies
+
+The default system read-only binds (`/usr`, `/bin`, `/lib`, `/lib64`, `/sbin`,
+`/etc`) cover libraries and config. On systemd-resolved hosts, DNS resolution
+also requires `/run` (read-only) — the stub resolver at `127.0.0.53` talks to
+`systemd-resolved` via a socket under `/run/systemd/resolve/`. Without it,
+`getaddrinfo` fails for any provider that needs network access.
+
 ## Provider Bind Requirements
 
 Providers (cursor-agent, Claude CLI, etc.) need access to host directories for
@@ -190,12 +198,15 @@ providers at startup and caches the results. Examples:
 
 | Provider       | Host path              | Mount path             | Mode |
 |----------------|------------------------|------------------------|------|
-| cursor-agent   | `~/.cursor/chats/`     | `~/.cursor/chats/`     | rw   |
-| cursor-agent   | `~/.cursor/projects/`  | `~/.cursor/projects/`  | rw   |
+| cursor-agent   | `~/.local`             | `~/.local`             | ro   |
+| cursor-agent   | `~/.cursor`            | `~/.cursor`            | rw   |
+| cursor-agent   | `~/.config/cursor`     | `~/.config/cursor`     | ro   |
 | claude-cli     | `~/.claude/`           | `~/.claude/`           | rw   |
 
-The provider manages its own subdirectory structure internally. Substrat mounts
-the parent directory and stays out of the way.
+See `docs/design/providers/cursor_agent.md` for the full breakdown of why
+cursor-agent needs these paths. The provider manages its own subdirectory
+structure internally. Substrat mounts the parent directory and stays out of
+the way.
 
 ## Agent-Workspace Mapping
 
