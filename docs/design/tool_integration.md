@@ -182,10 +182,9 @@ them to MCP JSON internally via `_tool_to_schema()`.
 Two dispatch factories exist:
 
 - **`direct_dispatch(methods)`** — takes a `Mapping[str, Callable]`
-  (name → callable). Used by tests. The caller is responsible for any
-  parameter renaming (e.g. `workspace` → `workspace_subdir`).
-- **`daemon_dispatch(socket, agent_id)`** — **stub** (`NotImplementedError`).
-  Will speak UDS to the daemon once it exists.
+  (name → callable). Used by tests.
+- **`daemon_dispatch(socket, agent_id)`** — UDS client that routes tool
+  calls through `sync_call("tool.call", ...)` to the daemon.
 
 ### Error surfacing
 

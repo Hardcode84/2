@@ -264,3 +264,61 @@ async def test_already_running_raises(tmp_path: Path, provider: FakeProvider) ->
             await d2.start()
     finally:
         await d1.stop()
+
+
+# -- Bug regression tests ------------------------------------------------------
+
+
+async def test_tool_call_rejects_non_tool_method(daemon: Daemon) -> None:
+    """tool.call must reject methods not in AGENT_TOOLS (e.g. drain_deferred)."""
+    await daemon.start()
+    try:
+        created = await daemon._h_agent_create({"name": "a", "instructions": "i"})
+        with pytest.raises(ValueError, match="unknown tool"):
+            await daemon._h_tool_call(
+                {
+                    "agent_id": created["agent_id"],
+                    "tool": "drain_deferred",
+                    "arguments": {},
+                }
+            )
+    finally:
+        await daemon.stop()
+
+
+async def test_malformed_json_returns_error(daemon: Daemon) -> None:
+    """Malformed JSON on UDS returns an error envelope, not a silent close."""
+    import asyncio
+    import json
+
+    await daemon.start()
+    try:
+        reader, writer = await asyncio.open_unix_connection(str(daemon.socket_path))
+        writer.write(b"not valid json\n")
+        writer.write_eof()
+        data = await reader.read()
+        resp = json.loads(data)
+        assert "error" in resp
+        assert resp["error"]["code"] == ERR_INVALID
+    finally:
+        await daemon.stop()
+
+
+async def test_cleanup_stale_permission_error(
+    tmp_path: Path, provider: FakeProvider
+) -> None:
+    """PermissionError during PID check means process is alive — raise RuntimeError."""
+    import os
+    from unittest.mock import patch
+
+    root = tmp_path / "perm"
+    root.mkdir()
+    pid_file = root / "daemon.pid"
+    pid_file.write_text("12345")
+
+    d = Daemon(root, providers={"fake": provider}, default_provider="fake")
+    with (
+        patch.object(os, "kill", side_effect=PermissionError("not yours")),
+        pytest.raises(RuntimeError, match="already running"),
+    ):
+        await d.start()

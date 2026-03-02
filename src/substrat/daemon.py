@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from substrat.agent.tools import AGENT_TOOLS
 from substrat.orchestrator import Orchestrator
 from substrat.provider.base import AgentProvider
 from substrat.provider.cursor_agent import CursorAgentProvider
@@ -115,13 +116,23 @@ class Daemon:
             return
         try:
             pid = int(self._pid_path.read_text().strip())
-            os.kill(pid, 0)
-        except (ValueError, ProcessLookupError, PermissionError):
-            # PID file is garbage or process is dead.
+        except ValueError:
+            # PID file is garbage.
             if self._sock_path.exists():
                 self._sock_path.unlink()
             self._pid_path.unlink()
             return
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            # Process is dead.
+            if self._sock_path.exists():
+                self._sock_path.unlink()
+            self._pid_path.unlink()
+            return
+        except PermissionError:
+            pass  # Different user but alive — fall through.
+        # Process exists (PermissionError means different user but alive).
         raise RuntimeError(
             f"daemon already running (pid {pid}, socket {self._sock_path})"
         )
@@ -138,7 +149,15 @@ class Daemon:
             data = await reader.read()
             if not data:
                 return
-            req = json.loads(data)
+
+            try:
+                req = json.loads(data)
+            except json.JSONDecodeError as exc:
+                resp = _error_envelope(None, ERR_INVALID, f"malformed JSON: {exc}")
+                writer.write(json.dumps(resp).encode() + b"\n")
+                await writer.drain()
+                return
+
             req_id = req.get("id")
             method = req.get("method", "")
             params = req.get("params", {})
@@ -215,14 +234,16 @@ class Daemon:
         await self._orch.terminate_agent(agent_id)
         return {"status": "terminated", "agent_id": agent_id.hex}
 
+    _TOOL_NAMES: frozenset[str] = frozenset(t.name for t in AGENT_TOOLS)
+
     async def _h_tool_call(self, params: dict[str, Any]) -> dict[str, Any]:
         agent_id = UUID(params["agent_id"])
         tool_name = params["tool"]
         arguments = params.get("arguments", {})
-        handler = self._orch.get_handler(agent_id)
-        method = getattr(handler, tool_name, None)
-        if method is None:
+        if tool_name not in self._TOOL_NAMES:
             raise ValueError(f"unknown tool: {tool_name}")
+        handler = self._orch.get_handler(agent_id)
+        method = getattr(handler, tool_name)
         return method(**arguments)  # type: ignore[no-any-return]
 
     # -- Helpers ---------------------------------------------------------------

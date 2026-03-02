@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -43,6 +44,9 @@ def _call(root: Path, method: str, params: dict[str, Any]) -> dict[str, Any]:
     except RpcError as exc:
         typer.echo(f"error: {exc.message}", err=True)
         raise typer.Exit(1) from exc
+    except json.JSONDecodeError:
+        typer.echo("error: invalid response from daemon", err=True)
+        raise typer.Exit(1) from None
     except OSError:
         typer.echo("error: daemon not running", err=True)
         raise typer.Exit(1) from None
@@ -74,10 +78,15 @@ def start(
         try:
             pid = int(pid_file.read_text().strip())
             os.kill(pid, 0)
+        except (ValueError, ProcessLookupError):
+            pass  # PID garbage or dead — proceed to start.
+        except PermissionError:
+            # Process exists but different user — treat as running.
             typer.echo(f"daemon already running (pid {pid})")
             return
-        except (ValueError, ProcessLookupError, PermissionError):
-            pass
+        else:
+            typer.echo(f"daemon already running (pid {pid})")
+            return
 
     # Spawn daemon as background process.
     cmd = [

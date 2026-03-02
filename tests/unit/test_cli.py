@@ -210,3 +210,29 @@ def test_daemon_status_running(tmp_path: Path) -> None:
     result = runner.invoke(app, ["daemon", "status", "--root", str(tmp_path)])
     assert result.exit_code == 0
     assert "running" in result.output
+
+
+# -- Bug regression tests ------------------------------------------------------
+
+
+def test_json_decode_error_displayed() -> None:
+    """JSONDecodeError prints 'invalid response' and exits 1."""
+    import json
+
+    with patch("substrat.cli.app.sync_call") as mock:
+        mock.side_effect = json.JSONDecodeError("bad", "", 0)
+        result = runner.invoke(app, ["agent", "list"])
+    assert result.exit_code == 1
+    assert "invalid response" in result.output
+
+
+def test_daemon_start_permission_error(tmp_path: Path) -> None:
+    """PID owned by another user — PermissionError means 'already running'."""
+    from unittest.mock import patch as _patch
+
+    pid_file = tmp_path / "daemon.pid"
+    pid_file.write_text("12345")
+    with _patch("substrat.cli.app.os.kill", side_effect=PermissionError("nope")):
+        result = runner.invoke(app, ["daemon", "start", "--root", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "already running" in result.output

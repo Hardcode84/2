@@ -185,7 +185,7 @@ class ToolHandler:
         name: str,
         instructions: str,
         *,
-        workspace_subdir: str | None = None,
+        workspace: str | None = None,
     ) -> dict[str, Any]:
         """Create a child agent. Actual session creation is deferred."""
         child = AgentNode(

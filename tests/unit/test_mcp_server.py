@@ -33,27 +33,12 @@ from substrat.provider.mcp_server import (
 
 
 def _handler_methods(handler: ToolHandler) -> dict[str, Any]:
-    """Build a name→callable dict from a ToolHandler.
-
-    Wraps spawn_agent to rename workspace → workspace_subdir.
-    """
-
-    def _spawn(
-        name: str,
-        instructions: str,
-        workspace: str | None = None,
-    ) -> dict[str, Any]:
-        return handler.spawn_agent(
-            name,
-            instructions,
-            workspace_subdir=workspace,
-        )
-
+    """Build a name→callable dict from a ToolHandler."""
     return {
         "send_message": handler.send_message,
         "broadcast": handler.broadcast,
         "check_inbox": handler.check_inbox,
-        "spawn_agent": _spawn,
+        "spawn_agent": handler.spawn_agent,
         "inspect_agent": handler.inspect_agent,
     }
 
@@ -239,8 +224,8 @@ def test_call_inspect_agent_error(server: McpServer) -> None:
     assert "error" in payload
 
 
-def test_spawn_workspace_renamed(server: McpServer) -> None:
-    """workspace arg should be renamed to workspace_subdir for ToolHandler."""
+def test_spawn_workspace_accepted(server: McpServer) -> None:
+    """spawn_agent accepts optional workspace parameter."""
     resp = server.handle(
         {
             "jsonrpc": "2.0",
@@ -257,7 +242,6 @@ def test_spawn_workspace_renamed(server: McpServer) -> None:
         }
     )
     assert resp is not None
-    # Should not blow up — workspace_subdir is accepted by ToolHandler.
     payload = json.loads(resp["result"]["content"][0]["text"])
     assert payload["status"] == "accepted"
 
