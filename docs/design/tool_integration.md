@@ -167,6 +167,45 @@ TODO: define what "recent activity" actually means.
 These are provider-native tools — no need to reimplement. They operate within
 the agent's workspace naturally.
 
+## MCP Server Implementation
+
+The MCP server lives in `src/substrat/provider/mcp_server.py`. It speaks
+JSON-RPC 2.0 over stdio — one request per line, one response per line.
+
+### Dispatch architecture
+
+`McpServer` takes a `ToolDispatch` callable (`(str, dict) -> dict`). Two
+factories exist:
+
+- **`direct_dispatch(handler)`** — wraps a `ToolHandler` in-process. Used by
+  tests. Renames `workspace` → `workspace_subdir` for `spawn_agent`.
+- **`daemon_dispatch(socket, agent_id)`** — stub. Will speak UDS to the
+  daemon once it exists.
+
+### Error surfacing
+
+| Condition | Response | Code |
+|-----------|----------|------|
+| Malformed JSON | Silently skipped | — |
+| Notification (no `id`) | No response | — |
+| Unknown method | JSON-RPC error | -32601 |
+| Unknown tool name | JSON-RPC error | -32602 |
+| Bad argument types | JSON-RPC error | -32602 |
+| Unexpected dispatch exception | JSON-RPC error | -32603 |
+| ToolHandler returns `{"error": ...}` | MCP tool result (success envelope) | — |
+
+The last row matters: tool-level errors are application semantics, not protocol
+failures. The LLM sees them as tool results and can adjust.
+
+### Entry point
+
+```
+python -m substrat.provider.mcp_server --agent-id <uuid>
+```
+
+Requires `SUBSTRAT_SOCKET` in the environment. Without it, exits immediately —
+no silent fallback.
+
 ## Open Questions
 
 - How replies are injected — provider-specific mechanism (e.g. new subprocess
