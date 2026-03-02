@@ -43,7 +43,7 @@ class AgentNode:
     parent_id: UUID | None = None
     children: list[UUID] = field(default_factory=list)
     instructions: str = ""
-    workspace_id: UUID | None = None
+    workspace: tuple[UUID, str] | None = None  # (scope, name).
     state: AgentState = AgentState.IDLE
     created_at: str = field(default_factory=now_iso)
 
