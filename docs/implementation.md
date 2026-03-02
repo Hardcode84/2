@@ -33,6 +33,14 @@ routing. Blocking operations (bwrap, subprocess spawning) run in a
         └── <name>/
 ```
 
+### Key Files
+
+- `daemon.py` — `Daemon` class. Composes `SessionStore`, `SessionMultiplexer`,
+  `TurnScheduler`, and `Orchestrator`. Runs `asyncio.start_unix_server`.
+- `rpc.py` — Wire protocol. `sync_call` (blocking), `async_call` (asyncio).
+  Shared by CLI, MCP server, and integration tests.
+- `cli/app.py` — Typer CLI. Thin client calling `sync_call`.
+
 ### Request Dispatch
 
 CLI ↔ daemon wire format is newline-delimited JSON:
@@ -41,6 +49,23 @@ CLI ↔ daemon wire format is newline-delimited JSON:
 {"id": "req-1", "method": "agent.create", "params": {...}}
 {"id": "req-1", "result": {...}}
 ```
+
+One connection per request. Each connection spawns an asyncio task.
+
+### RPC Methods
+
+| Method | Params | Delegates to |
+|--------|--------|-------------|
+| `agent.create` | `name`, `instructions`, `provider?`, `model?` | `Orchestrator.create_root_agent()` |
+| `agent.list` | — | Walk `Orchestrator.tree` |
+| `agent.send` | `agent_id`, `message` | `Orchestrator.run_turn()` |
+| `agent.inspect` | `agent_id` | Tree + inbox queries |
+| `agent.terminate` | `agent_id` | `Orchestrator.terminate_agent()` |
+| `tool.call` | `agent_id`, `tool`, `arguments` | `ToolHandler.<method>()` |
+
+Error codes: `ERR_NOT_FOUND=1`, `ERR_INVALID=2`, `ERR_INTERNAL=3`, `ERR_METHOD=4`.
+
+See [design/daemon.md](design/daemon.md) for details.
 
 ---
 
