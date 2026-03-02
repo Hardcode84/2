@@ -11,7 +11,7 @@ from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from pathlib import Path
 
 from substrat.logging import EventLog, log_method
-from substrat.model import LinkSpec
+from substrat.model import LinkSpec, ToolDef
 
 type CommandWrapper = Callable[
     [Sequence[str], Sequence[LinkSpec], Mapping[str, str]],
@@ -41,12 +41,14 @@ class CursorSession:
         workspace: Path,
         log: EventLog | None = None,
         wrap_command: CommandWrapper | None = None,
+        tools: Sequence[ToolDef] = (),
     ) -> None:
         self._session_id = session_id
         self._model = model
         self._workspace = workspace
         self._log = log
         self._wrap_command = wrap_command
+        self._tools = tuple(tools)
 
     @property
     def session_id(self) -> str:
@@ -122,8 +124,13 @@ class CursorAgentProvider:
     The caller owns the EventLog — this provider just writes events to it.
     """
 
-    def __init__(self, wrap_command: CommandWrapper | None = None) -> None:
+    def __init__(
+        self,
+        wrap_command: CommandWrapper | None = None,
+        tools: Sequence[ToolDef] = (),
+    ) -> None:
         self._wrap_command = wrap_command
+        self._tools = tuple(tools)
 
     @property
     def name(self) -> str:
@@ -154,6 +161,7 @@ class CursorAgentProvider:
             workspace=Path("/tmp"),
             log=log,
             wrap_command=self._wrap_command,
+            tools=self._tools,
         )
         if system_prompt:
             async for _ in session.send(system_prompt):
@@ -184,6 +192,7 @@ class CursorAgentProvider:
             workspace=Path(data["workspace"]),
             log=log,
             wrap_command=self._wrap_command,
+            tools=self._tools,
         )
 
     async def _create_chat(self) -> str:
