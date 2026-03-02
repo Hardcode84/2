@@ -2,8 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Build bwrap command lines from workspace specs. Pure function, no I/O."""
+"""Build bwrap command lines from workspace specs and check availability."""
 
+import shutil
+import subprocess
 from collections.abc import Sequence
 
 from substrat.workspace.model import LinkSpec, Workspace
@@ -16,6 +18,46 @@ SYSTEM_RO_BINDS: tuple[str, ...] = (
     "/sbin",
     "/etc",
 )
+
+
+def check_available() -> str | None:
+    """Return bwrap version string, or None if unusable.
+
+    Runs /usr/bin/true inside a minimal sandbox to verify namespace
+    creation actually works — catches missing suid bits, broken
+    installs, and kernels that refuse unprivileged namespaces.
+    """
+    if shutil.which("bwrap") is None:
+        return None
+    try:
+        # Smoke-test real sandboxing, not just the binary.
+        probe = subprocess.run(
+            [
+                "bwrap",
+                "--unshare-pid",
+                "--ro-bind",
+                "/usr",
+                "/usr",
+                "--",
+                "/usr/bin/true",
+            ],
+            capture_output=True,
+            timeout=5,
+        )
+        if probe.returncode != 0:
+            return None
+        # Sandbox works — grab version for callers who want to log it.
+        version = subprocess.run(
+            ["bwrap", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if version.returncode != 0:
+        return None
+    return version.stdout.strip()
 
 
 def build_command(

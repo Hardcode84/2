@@ -4,10 +4,12 @@
 
 """Tests for the bwrap command builder."""
 
+import subprocess
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
-from substrat.workspace import LinkSpec, Workspace, build_command
+from substrat.workspace import LinkSpec, Workspace, build_command, check_available
 
 
 def _make_workspace(**overrides: object) -> Workspace:
@@ -129,3 +131,57 @@ def test_command_after_separator() -> None:
     cmd = build_command(ws, command=["python", "-c", "print(1)"], system_ro_binds=())
     sep_idx = cmd.index("--")
     assert cmd[sep_idx + 1 :] == ["python", "-c", "print(1)"]
+
+
+# --- availability check ---
+
+
+def _ok_probe() -> subprocess.CompletedProcess[bytes]:
+    return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"", stderr=b"")
+
+
+def _ok_version() -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(
+        args=[], returncode=0, stdout="bubblewrap 0.8.0\n", stderr=""
+    )
+
+
+def test_check_available_found() -> None:
+    with (
+        patch("substrat.workspace.bwrap.shutil.which", return_value="/usr/bin/bwrap"),
+        patch(
+            "substrat.workspace.bwrap.subprocess.run",
+            side_effect=[_ok_probe(), _ok_version()],
+        ),
+    ):
+        assert check_available() == "bubblewrap 0.8.0"
+
+
+def test_check_available_not_on_path() -> None:
+    with patch("substrat.workspace.bwrap.shutil.which", return_value=None):
+        assert check_available() is None
+
+
+def test_check_available_sandbox_fails() -> None:
+    failed_probe = subprocess.CompletedProcess(
+        args=[], returncode=1, stdout=b"", stderr=b"nope"
+    )
+    with (
+        patch("substrat.workspace.bwrap.shutil.which", return_value="/usr/bin/bwrap"),
+        patch(
+            "substrat.workspace.bwrap.subprocess.run",
+            return_value=failed_probe,
+        ),
+    ):
+        assert check_available() is None
+
+
+def test_check_available_timeout() -> None:
+    with (
+        patch("substrat.workspace.bwrap.shutil.which", return_value="/usr/bin/bwrap"),
+        patch(
+            "substrat.workspace.bwrap.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="bwrap", timeout=5),
+        ),
+    ):
+        assert check_available() is None
