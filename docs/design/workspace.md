@@ -185,16 +185,13 @@ their own session management. These requirements are per-provider-type, not
 per-session — the provider stores its own sessions in subdirectories keyed by
 workspace hash or session UUID.
 
-```python
-class AgentProvider(Protocol):
-    name: str
-    bind_mounts: Sequence[LinkSpec]        # Host dirs needed inside sandbox.
-    async def create(self, ...) -> ProviderSession: ...
-    async def restore(self, ...) -> ProviderSession: ...
-```
+The daemon passes a `wrap_command` callback to subprocess-based providers.
+The provider passes its required bind mounts and env vars to the callback
+at each subprocess invocation. The daemon's closure merges these with
+workspace config inside `build_command`. See [provider.md](provider.md)
+for the callback signature.
 
-`bind_mounts` is a class-level constant. The daemon queries all registered
-providers at startup and caches the results. Examples:
+Typical provider bind mounts:
 
 | Provider       | Host path              | Mount path             | Mode |
 |----------------|------------------------|------------------------|------|
@@ -204,9 +201,7 @@ providers at startup and caches the results. Examples:
 | claude-cli     | `~/.claude/`           | `~/.claude/`           | rw   |
 
 See `docs/design/providers/cursor_agent.md` for the full breakdown of why
-cursor-agent needs these paths. The provider manages its own subdirectory
-structure internally. Substrat mounts the parent directory and stays out of
-the way.
+cursor-agent needs these paths.
 
 ## Agent-Workspace Mapping
 

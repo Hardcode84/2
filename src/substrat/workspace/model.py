@@ -6,19 +6,12 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
 from uuid import UUID
 
 from substrat import now_iso
+from substrat.model import LinkSpec
 
-
-@dataclass
-class LinkSpec:
-    """A bind mount mapping a host directory into a workspace."""
-
-    host_path: Path
-    mount_path: Path  # Relative to workspace root.
-    mode: Literal["ro", "rw"] = "ro"
+__all__ = ["LinkSpec", "Workspace"]
 
 
 @dataclass

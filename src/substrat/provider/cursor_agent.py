@@ -7,10 +7,16 @@
 import asyncio
 import json
 import shutil
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from pathlib import Path
 
 from substrat.logging import EventLog, log_method
+from substrat.model import LinkSpec
+
+type CommandWrapper = Callable[
+    [Sequence[str], Sequence[LinkSpec], Mapping[str, str]],
+    Sequence[str],
+]
 
 
 def _cursor_binary() -> str:
@@ -34,11 +40,13 @@ class CursorSession:
         model: str,
         workspace: Path,
         log: EventLog | None = None,
+        wrap_command: CommandWrapper | None = None,
     ) -> None:
         self._session_id = session_id
         self._model = model
         self._workspace = workspace
         self._log = log
+        self._wrap_command = wrap_command
 
     @property
     def session_id(self) -> str:
@@ -47,8 +55,11 @@ class CursorSession:
     @log_method(before=True, after=True)
     async def send(self, message: str) -> AsyncGenerator[str, None]:
         """Send a message, yield the final response text."""
+        cmd = self._build_cmd(message)
+        if self._wrap_command is not None:
+            cmd = list(self._wrap_command(cmd, (), {}))
         proc = await asyncio.create_subprocess_exec(
-            *self._build_cmd(message),
+            *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -111,6 +122,9 @@ class CursorAgentProvider:
     The caller owns the EventLog — this provider just writes events to it.
     """
 
+    def __init__(self, wrap_command: CommandWrapper | None = None) -> None:
+        self._wrap_command = wrap_command
+
     @property
     def name(self) -> str:
         return "cursor-agent"
@@ -139,6 +153,7 @@ class CursorAgentProvider:
             model=model,
             workspace=Path("/tmp"),
             log=log,
+            wrap_command=self._wrap_command,
         )
         if system_prompt:
             async for _ in session.send(system_prompt):
@@ -168,14 +183,16 @@ class CursorAgentProvider:
             model=data["model"],
             workspace=Path(data["workspace"]),
             log=log,
+            wrap_command=self._wrap_command,
         )
 
-    @staticmethod
-    async def _create_chat() -> str:
+    async def _create_chat(self) -> str:
         """Pre-create a chat via cursor-agent create-chat."""
+        cmd: Sequence[str] = [_cursor_binary(), "create-chat"]
+        if self._wrap_command is not None:
+            cmd = self._wrap_command(cmd, (), {})
         proc = await asyncio.create_subprocess_exec(
-            _cursor_binary(),
-            "create-chat",
+            *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

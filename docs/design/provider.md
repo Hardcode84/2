@@ -13,7 +13,6 @@ class ProviderSession(Protocol):
 
 class AgentProvider(Protocol):
     name: str
-    bind_mounts: Sequence[LinkSpec]    # Host dirs needed inside sandbox.
     async def create(self, model: str, system_prompt: str) -> ProviderSession: ...
     async def restore(self, state: bytes) -> ProviderSession: ...
 ```
@@ -22,13 +21,28 @@ class AgentProvider(Protocol):
 suspended ones from opaque state blobs. `ProviderSession` is the per-agent
 conversation handle — send messages, suspend, stop.
 
-`bind_mounts` is a class-level constant — host directories the provider needs
-inside the bwrap sandbox (session storage, config dirs, etc.). The daemon
-queries this at startup and merges with workspace links when building bwrap
-commands. See [workspace.md](workspace.md) for details.
-
 The split keeps session identity (UUIDs, state machines) out of the provider.
 Providers don't know about Substrat's session model.
+
+## Command wrapping
+
+Subprocess-based providers (`CursorAgentProvider`, future Claude CLI) accept an
+optional `wrap_command` callback on `__init__`. The callback receives the raw
+argv plus provider-declared bind mounts and env vars, and returns the final
+argv to exec. The daemon builds a closure from `build_command` + workspace
+config; the provider passes its own needs (session storage dirs, etc.) at
+call time. No `bind_mounts` attribute on the protocol — the provider tells
+the wrapper what it needs per invocation.
+
+```python
+CommandWrapper = Callable[
+    [Sequence[str], Sequence[LinkSpec], Mapping[str, str]],
+    Sequence[str],
+]
+```
+
+One wrapper per provider instance, applied to both `create-chat` and `send`
+subprocesses.
 
 ## Providers
 
