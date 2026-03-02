@@ -315,7 +315,69 @@ workspace path under `~/.cursor/chats/<hash>/`. This means the bind mount for
 Both parameters are propagated to `CursorSession` instances created by
 `create()` and `restore()`.
 
+## System Prompt and Context Compaction
+
+### The problem
+
+cursor-agent has no `--system-prompt` flag. Substrat currently sends the
+system prompt as the first user message via `send()`. This works for short
+sessions but is fragile: cursor periodically summarizes (compacts) the
+conversation to free context window space. Summarization is lossy — the
+system prompt gets compressed along with everything else. For long-running
+agents, the instructions degrade or vanish entirely.
+
+There is no hook or callback for compaction events. No stream-json event,
+no MCP extension, no way to detect it happened programmatically.
+
+### Persistent rules (`.cursor/rules/*.mdc`)
+
+cursor-agent reads rule files from `.cursor/rules/` in the workspace. Files
+with `alwaysApply: true` in YAML frontmatter are re-injected at the start
+of the model context on every API call — they are not part of the
+conversation history and survive summarization.
+
+```
+---
+description: Substrat agent instructions
+alwaysApply: true
+---
+You are agent "alice" in a Substrat hierarchy. Your tools are ...
+```
+
+Caveats:
+
+- Only `alwaysApply: true` is reliable in agent/headless mode. Community
+  testing showed 0/3 compliance for `alwaysApply: false` (agent-decided)
+  rules.
+- There is a known bug where rules in project `.cursor/` directories may
+  fail to load in headless CLI mode due to globbing issues. Needs
+  verification with our bwrap setup.
+- Legacy `.cursorrules` (single file in workspace root) still works but is
+  deprecated when `.mdc` files exist.
+
+### Recommended approach
+
+Generate a `.cursor/rules/substrat.mdc` file into the workspace alongside
+the existing `.cursor/mcp.json`. The daemon already owns this pattern — MCP
+config is a read-only bind mount from `~/.substrat/agents/<uuid>/`. The
+rules file follows the same model:
+
+```
+~/.substrat/agents/<uuid>/rules/substrat.mdc  →  <workspace>/.cursor/rules/substrat.mdc (RO)
+```
+
+This keeps the system prompt persistent across compaction without wasting
+tokens on every `send()` call. The current send-as-first-message approach
+remains as a fallback for providers that lack a rules mechanism.
+
+### Current status
+
+Not implemented. The system prompt is still sent as a regular message.
+Short-lived sessions are unaffected; long-running orchestration sessions
+will lose instructions after compaction.
+
 ## Open Questions
 
 - MCP server process lifecycle inside bwrap — does seccomp affect the daemon
   socket connection?
+- Verify `.cursor/rules/` loading works in headless CLI mode inside bwrap.
