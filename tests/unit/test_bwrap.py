@@ -123,6 +123,33 @@ def test_no_system_binds() -> None:
     assert "--ro-bind" not in cmd
 
 
+# --- setenv ---
+
+
+def test_setenv_single() -> None:
+    ws = _make_workspace()
+    cmd = build_command(
+        ws, command=["true"], env={"HOME": "/sandbox"}, system_ro_binds=()
+    )
+    idx = cmd.index("--setenv")
+    assert cmd[idx + 1 : idx + 3] == ["HOME", "/sandbox"]
+
+
+def test_setenv_sorted() -> None:
+    ws = _make_workspace()
+    cmd = build_command(
+        ws, command=["true"], env={"ZZZ": "last", "AAA": "first"}, system_ro_binds=()
+    )
+    joined = " ".join(cmd)
+    assert joined.index("--setenv AAA first") < joined.index("--setenv ZZZ last")
+
+
+def test_setenv_empty() -> None:
+    ws = _make_workspace()
+    cmd = build_command(ws, command=["true"], system_ro_binds=())
+    assert "--setenv" not in cmd
+
+
 # --- command ---
 
 

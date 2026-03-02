@@ -51,8 +51,6 @@ async def test_send_inside_bwrap(tmp_path: Path) -> None:
 
     binds = _cursor_binds(tmp_path / ".cache")
     inner_cmd = [
-        "env",
-        f"HOME={home}",
         "cursor-agent",
         "--print",
         "--output-format",
@@ -64,7 +62,7 @@ async def test_send_inside_bwrap(tmp_path: Path) -> None:
         str(workspace.root_path),
         "Say exactly: sandboxed",
     ]
-    cmd = build_command(workspace, binds, command=inner_cmd)
+    cmd = build_command(workspace, binds, command=inner_cmd, env={"HOME": str(home)})
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,

@@ -6,7 +6,7 @@
 
 import shutil
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from substrat.workspace.model import LinkSpec, Workspace
 
@@ -66,6 +66,7 @@ def build_command(
     binds: Sequence[LinkSpec] = (),
     *,
     command: Sequence[str],
+    env: Mapping[str, str] = {},
     system_ro_binds: Sequence[str] = SYSTEM_RO_BINDS,
 ) -> list[str]:
     """Translate workspace + extra binds into a bwrap argv.
@@ -101,6 +102,10 @@ def build_command(
     for link in binds:
         flag = "--bind" if link.mode == "rw" else "--ro-bind"
         cmd += [flag, str(link.host_path), str(link.mount_path)]
+
+    # Environment variables inside the sandbox.
+    for key in sorted(env):
+        cmd += ["--setenv", key, env[key]]
 
     # Working directory and command.
     cmd += ["--chdir", root, "--"]
