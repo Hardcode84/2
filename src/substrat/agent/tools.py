@@ -2,9 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tool definitions and logic layer.
+"""Tool catalog and logic layer.
 
-ToolParam / ToolDef are plain dataclasses describing tool schemas.
 AGENT_TOOLS is the catalog of Substrat's five agent-facing tools.
 ToolHandler implements them as pure operations on the agent tree and
 inboxes — no wire protocol, no I/O, no daemon.
@@ -13,7 +12,6 @@ inboxes — no wire protocol, no I/O, no daemon.
 from __future__ import annotations
 
 from collections.abc import Callable, Coroutine
-from dataclasses import dataclass
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -26,38 +24,7 @@ from substrat.agent.message import (
 from substrat.agent.node import AgentNode
 from substrat.agent.router import RoutingError, resolve_broadcast, validate_route
 from substrat.agent.tree import AgentTree
-
-# Sentinel for "no default value".
-_MISSING: Any = object()
-
-
-# -- Tool schema dataclasses ---------------------------------------------
-
-
-@dataclass(frozen=True)
-class ToolParam:
-    """One parameter in a tool's input schema."""
-
-    name: str
-    type: str
-    description: str
-    required: bool = True
-    default: Any = _MISSING
-
-    @property
-    def has_default(self) -> bool:
-        """True if an explicit default was provided."""
-        return self.default is not _MISSING
-
-
-@dataclass(frozen=True)
-class ToolDef:
-    """Structured tool definition. Transport layers convert to wire format."""
-
-    name: str
-    description: str
-    parameters: tuple[ToolParam, ...] = ()
-
+from substrat.model import ToolDef, ToolParam
 
 # -- Substrat agent tool catalog -----------------------------------------
 

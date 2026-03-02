@@ -21,12 +21,11 @@ from substrat.agent.tools import (
     AGENT_TOOLS,
     InboxRegistry,
     LogCallback,
-    ToolDef,
     ToolError,
     ToolHandler,
-    ToolParam,
 )
 from substrat.agent.tree import AgentTree
+from substrat.model import ToolDef, ToolParam
 
 __all__ = [
     "AGENT_TOOLS",

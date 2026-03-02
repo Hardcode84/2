@@ -18,7 +18,8 @@ import sys
 from collections.abc import Callable, Sequence
 from typing import Any, TextIO
 
-from substrat.agent.tools import AGENT_TOOLS, ToolDef, ToolHandler
+from substrat.agent.tools import AGENT_TOOLS, ToolHandler
+from substrat.model import ToolDef
 
 # -- Type alias for the dispatch callable --------------------------------
 
