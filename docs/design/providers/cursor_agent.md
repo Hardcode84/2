@@ -134,6 +134,24 @@ The MCP server process runs inside the sandbox (spawned by cursor-agent as a
 child) but connects back to the daemon socket, which is bind-mounted into the
 sandbox. This is the only network-like hole in the sandbox wall.
 
+### MCP inside bwrap
+
+Running MCP servers inside a bwrap sandbox requires:
+
+- **`--approve-mcps`** — mandatory for headless bwrap. Without it, cursor-agent
+  blocks on interactive approval and the session hangs forever.
+- **Interpreter visibility** — the MCP server's interpreter (e.g. `python3`)
+  must be on a path visible inside the sandbox. System read-only binds cover
+  `/usr/bin/python3`. The server script itself must be either in the workspace
+  root (rw bind) or bind-mounted separately.
+- **`.cursor/mcp.json` injection** — in production, a read-only bind from
+  `~/.substrat/agents/<uuid>/mcp.json` into `<workspace>/.cursor/mcp.json`.
+  For testing, writing directly into the workspace root works (it's the rw
+  bind anyway).
+- **Daemon socket** — the only hole in the sandbox wall. Bind-mounted UDS from
+  the host. The MCP server process (child of cursor-agent) connects back to
+  the daemon through this socket.
+
 ### Limits
 
 cursor-agent caps tools at 40 across all MCP servers combined.
@@ -255,6 +273,7 @@ The fix is a read-only bind of `/run` (part of the system bind set).
 | `~/.local` | `~/.local` | ro | Installation: node binary, JS bundles, wrapper script. |
 | `~/.cursor` | `~/.cursor` | rw | Session storage (chats), project config, MCP approvals. |
 | `~/.config/cursor` | `~/.config/cursor` | ro | Auth tokens (`auth.json`). |
+| `~/.substrat/agents/<uuid>/mcp.json` | `<workspace>/.cursor/mcp.json` | ro | MCP server config. |
 
 The design doc for workspace.md originally listed `~/.cursor/chats/` and
 `~/.cursor/projects/` as separate rw binds. In practice, cursor-agent touches
