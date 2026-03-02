@@ -29,6 +29,35 @@ from substrat.provider.mcp_server import (
     direct_dispatch,
 )
 
+# -- Helpers -------------------------------------------------------------
+
+
+def _handler_methods(handler: ToolHandler) -> dict[str, Any]:
+    """Build a name→callable dict from a ToolHandler.
+
+    Wraps spawn_agent to rename workspace → workspace_subdir.
+    """
+
+    def _spawn(
+        name: str,
+        instructions: str,
+        workspace: str | None = None,
+    ) -> dict[str, Any]:
+        return handler.spawn_agent(
+            name,
+            instructions,
+            workspace_subdir=workspace,
+        )
+
+    return {
+        "send_message": handler.send_message,
+        "broadcast": handler.broadcast,
+        "check_inbox": handler.check_inbox,
+        "spawn_agent": _spawn,
+        "inspect_agent": handler.inspect_agent,
+    }
+
+
 # -- Fixtures ------------------------------------------------------------
 
 
@@ -44,7 +73,7 @@ def server() -> McpServer:
         tree.add(n)
         inboxes[n.id] = Inbox()
     handler = ToolHandler(tree, inboxes, alice.id)
-    return McpServer(AGENT_TOOLS, direct_dispatch(handler))
+    return McpServer(AGENT_TOOLS, direct_dispatch(_handler_methods(handler)))
 
 
 @pytest.fixture()
@@ -408,7 +437,7 @@ def test_direct_dispatch_routes_all_tools() -> None:
         tree.add(n)
         inboxes[n.id] = Inbox()
     handler = ToolHandler(tree, inboxes, agent.id)
-    dispatch = direct_dispatch(handler)
+    dispatch = direct_dispatch(_handler_methods(handler))
 
     # Each tool should return a dict without raising.
     assert "status" in dispatch("send_message", {"recipient": "peer", "text": "hi"})
@@ -420,13 +449,7 @@ def test_direct_dispatch_routes_all_tools() -> None:
 
 
 def test_direct_dispatch_unknown_tool() -> None:
-    tree = AgentTree()
-    inboxes: InboxRegistry = {}
-    root = AgentNode(session_id=uuid4(), name="root")
-    tree.add(root)
-    inboxes[root.id] = Inbox()
-    handler = ToolHandler(tree, inboxes, root.id)
-    dispatch = direct_dispatch(handler)
+    dispatch = direct_dispatch({"ping": lambda: {"pong": True}})
 
     with pytest.raises(ValueError, match="Unknown tool"):
         dispatch("nope", {})

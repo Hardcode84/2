@@ -15,10 +15,9 @@ import argparse
 import json
 import os
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, TextIO
 
-from substrat.agent.tools import ToolHandler
 from substrat.model import ToolDef
 
 # -- Type alias for the dispatch callable --------------------------------
@@ -180,24 +179,15 @@ class McpServer:
 # -- Dispatch factories --------------------------------------------------
 
 
-def direct_dispatch(handler: ToolHandler) -> ToolDispatch:
-    """In-process dispatch wrapping a ToolHandler. For testing."""
-    _methods: dict[str, Callable[..., dict[str, Any]]] = {
-        "send_message": handler.send_message,
-        "broadcast": handler.broadcast,
-        "check_inbox": handler.check_inbox,
-        "spawn_agent": handler.spawn_agent,
-        "inspect_agent": handler.inspect_agent,
-    }
+def direct_dispatch(
+    methods: Mapping[str, Callable[..., dict[str, Any]]],
+) -> ToolDispatch:
+    """In-process dispatch from a name→callable mapping."""
 
     def dispatch(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        method = _methods.get(tool_name)
+        method = methods.get(tool_name)
         if method is None:
             raise ValueError(f"Unknown tool: {tool_name}")
-        # Rename workspace -> workspace_subdir for spawn_agent.
-        if tool_name == "spawn_agent" and "workspace" in arguments:
-            arguments = dict(arguments)
-            arguments["workspace_subdir"] = arguments.pop("workspace")
         return method(**arguments)
 
     return dispatch
