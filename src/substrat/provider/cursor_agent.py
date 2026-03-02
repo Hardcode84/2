@@ -19,6 +19,29 @@ type CommandWrapper = Callable[
 ]
 
 
+_MDC_TEMPLATE = """\
+---
+description: Substrat agent instructions
+alwaysApply: true
+---
+{body}
+"""
+
+
+def _write_rules(workspace: Path, system_prompt: str) -> Path | None:
+    """Write system prompt as a persistent .mdc rule file.
+
+    Returns the file path on success, None if prompt is empty.
+    """
+    if not system_prompt:
+        return None
+    rules_dir = workspace / ".cursor" / "rules"
+    rules_dir.mkdir(parents=True, exist_ok=True)
+    mdc_path = rules_dir / "substrat.mdc"
+    mdc_path.write_text(_MDC_TEMPLATE.format(body=system_prompt))
+    return mdc_path
+
+
 def _cursor_binary() -> str:
     """Find the cursor-agent binary."""
     path = shutil.which("cursor-agent")
@@ -143,30 +166,28 @@ class CursorAgentProvider:
         log: EventLog | None = None,
     ) -> CursorSession:
         """Create a new cursor-agent session."""
+        workspace = Path("/tmp")
+        rules_path = _write_rules(workspace, system_prompt)
         session_id = await self._create_chat()
+        log_payload: dict[str, object] = {
+            "provider": self.name,
+            "model": model,
+            "session_id": session_id,
+            "system_prompt": system_prompt,
+            "workspace": str(workspace),
+        }
+        if rules_path is not None:
+            log_payload["rules_path"] = str(rules_path)
         if log is not None:
-            log.log(
-                "session.created",
-                {
-                    "provider": self.name,
-                    "model": model,
-                    "session_id": session_id,
-                    "system_prompt": system_prompt,
-                    "workspace": "/tmp",
-                },
-            )
-        session = CursorSession(
+            log.log("session.created", log_payload)
+        return CursorSession(
             session_id=session_id,
             model=model,
-            workspace=Path("/tmp"),
+            workspace=workspace,
             log=log,
             wrap_command=self._wrap_command,
             tools=self._tools,
         )
-        if system_prompt:
-            async for _ in session.send(system_prompt):
-                pass
-        return session
 
     async def restore(
         self,

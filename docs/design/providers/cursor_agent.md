@@ -372,9 +372,11 @@ remains as a fallback for providers that lack a rules mechanism.
 
 ### Current status
 
-Not implemented. The system prompt is still sent as a regular message.
-Short-lived sessions are unaffected; long-running orchestration sessions
-will lose instructions after compaction.
+Implemented. `create()` writes `.cursor/rules/substrat.mdc` into the
+workspace with `alwaysApply: true` frontmatter. The system prompt is no
+longer sent as a first message. The bind-mount pattern
+(`~/.substrat/agents/<uuid>/rules/` → workspace) is daemon-layer work
+and not yet wired.
 
 ## Open Questions
 

@@ -13,7 +13,11 @@ import pytest
 
 from substrat.model import LinkSpec
 from substrat.provider.base import AgentProvider, ProviderSession
-from substrat.provider.cursor_agent import CursorAgentProvider, CursorSession
+from substrat.provider.cursor_agent import (
+    CursorAgentProvider,
+    CursorSession,
+    _write_rules,
+)
 
 FAKE_BINARY = "/usr/bin/cursor-agent"
 
@@ -131,7 +135,7 @@ async def test_send_no_wrapper(mock_exec: AsyncMock, _mock_bin: MagicMock) -> No
 @patch("substrat.provider.cursor_agent._cursor_binary", return_value=FAKE_BINARY)
 @patch("asyncio.create_subprocess_exec")
 async def test_create_chat_applies_wrapper(
-    mock_exec: AsyncMock, _mock_bin: MagicMock
+    mock_exec: AsyncMock, _mock_bin: MagicMock, tmp_path: Path
 ) -> None:
     """Wrapper is applied to the create-chat subprocess."""
     captured: list[tuple[Sequence[str], Sequence[LinkSpec], Mapping[str, str]]] = []
@@ -144,40 +148,63 @@ async def test_create_chat_applies_wrapper(
         captured.append((cmd, binds, env))
         return ["bwrap", "--", *cmd]
 
-    # First call: _create_chat. Second call: system prompt send.
-    mock_exec.side_effect = [
-        _mock_process(b"chat-id-123\n"),
-        _mock_process(_fake_assistant_output("ack")),
-    ]
+    # Only create-chat — system prompt is written as .mdc, not sent.
+    mock_exec.return_value = _mock_process(b"chat-id-123\n")
 
-    provider = CursorAgentProvider(wrap_command=spy_wrapper)
-    session = await provider.create(model="test-model", system_prompt="be cool")
+    with patch("substrat.provider.cursor_agent.Path") as mock_path_cls:
+        mock_path_cls.return_value = tmp_path
+        provider = CursorAgentProvider(wrap_command=spy_wrapper)
+        session = await provider.create(model="test-model", system_prompt="be cool")
 
     # create-chat call was wrapped.
     assert list(captured[0][0]) == [FAKE_BINARY, "create-chat"]
     create_cmd = mock_exec.call_args_list[0][0]
     assert create_cmd[0] == "bwrap"
     assert session.session_id == "chat-id-123"
+    # Only one subprocess call (no system prompt send).
+    assert mock_exec.call_count == 1
 
 
 @pytest.mark.asyncio
 @patch("substrat.provider.cursor_agent._cursor_binary", return_value=FAKE_BINARY)
 @patch("asyncio.create_subprocess_exec")
 async def test_create_chat_no_wrapper(
-    mock_exec: AsyncMock, _mock_bin: MagicMock
+    mock_exec: AsyncMock, _mock_bin: MagicMock, tmp_path: Path
 ) -> None:
     """Without wrapper, create-chat uses raw command."""
-    mock_exec.side_effect = [
-        _mock_process(b"chat-id-456\n"),
-        _mock_process(_fake_assistant_output("ack")),
-    ]
+    mock_exec.return_value = _mock_process(b"chat-id-456\n")
 
-    provider = CursorAgentProvider()
-    session = await provider.create(model="test-model", system_prompt="hey")
+    with patch("substrat.provider.cursor_agent.Path") as mock_path_cls:
+        mock_path_cls.return_value = tmp_path
+        provider = CursorAgentProvider()
+        session = await provider.create(model="test-model", system_prompt="hey")
 
     create_cmd = mock_exec.call_args_list[0][0]
     assert create_cmd == (FAKE_BINARY, "create-chat")
     assert session.session_id == "chat-id-456"
+    # Only one subprocess call (no system prompt send).
+    assert mock_exec.call_count == 1
+
+
+# --- rules generation ---
+
+
+def test_write_rules_creates_mdc(tmp_path: Path) -> None:
+    """_write_rules writes .cursor/rules/substrat.mdc with correct content."""
+    result = _write_rules(tmp_path, "You are agent alice.")
+    mdc = tmp_path / ".cursor" / "rules" / "substrat.mdc"
+    assert result == mdc
+    assert mdc.exists()
+    content = mdc.read_text()
+    assert "alwaysApply: true" in content
+    assert "You are agent alice." in content
+
+
+def test_write_rules_skipped_when_empty(tmp_path: Path) -> None:
+    """Empty prompt produces no file."""
+    result = _write_rules(tmp_path, "")
+    assert result is None
+    assert not (tmp_path / ".cursor" / "rules" / "substrat.mdc").exists()
 
 
 # --- protocol compliance ---
