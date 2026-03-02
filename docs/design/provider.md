@@ -13,8 +13,10 @@ class ProviderSession(Protocol):
 
 class AgentProvider(Protocol):
     name: str
-    async def create(self, model: str, system_prompt: str) -> ProviderSession: ...
-    async def restore(self, state: bytes) -> ProviderSession: ...
+    async def create(self, model: str, system_prompt: str,
+                     log: EventLog | None = None) -> ProviderSession: ...
+    async def restore(self, state: bytes,
+                      log: EventLog | None = None) -> ProviderSession: ...
 ```
 
 `AgentProvider` is a factory. It knows how to create new sessions and restore
@@ -43,6 +45,14 @@ CommandWrapper = Callable[
 
 One wrapper per provider instance, applied to both `create-chat` and `send`
 subprocesses.
+
+## Tool injection
+
+Subprocess-based providers accept `tools: Sequence[ToolDef]` at construction.
+Tools are forwarded to every session the provider creates. The MCP server
+uses these definitions to build its tool catalog; `model.py` owns the
+`ToolDef`/`ToolParam` types so neither the provider nor the MCP server
+depends on the agent layer.
 
 ## Providers
 

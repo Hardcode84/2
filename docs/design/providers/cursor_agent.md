@@ -298,6 +298,23 @@ Not strictly required — node falls back gracefully if the cache dir is missing
 workspace path under `~/.cursor/chats/<hash>/`. This means the bind mount for
 `~/.cursor/chats/` is always needed regardless of `--workspace` value.
 
+## Provider Constructor
+
+`CursorAgentProvider` accepts two optional constructor parameters:
+
+- **`wrap_command: CommandWrapper | None`** — callback that wraps subprocess
+  argv before exec. Applied to both `create-chat` and `send` subprocesses.
+  The daemon builds this closure from `build_command` + workspace config;
+  the provider passes its own bind requirements (session storage dirs, etc.)
+  at call time. See `provider.md` for the `CommandWrapper` signature.
+
+- **`tools: Sequence[ToolDef]`** — tool definitions forwarded to every
+  `CursorSession` the provider creates. The MCP server uses these to build
+  its tool catalog. Defaults to empty (no Substrat tools exposed).
+
+Both parameters are propagated to `CursorSession` instances created by
+`create()` and `restore()`.
+
 ## Open Questions
 
 - MCP server process lifecycle inside bwrap — does seccomp affect the daemon

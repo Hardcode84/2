@@ -133,7 +133,7 @@ Parameters:
   workspace: str | WorkspaceSpec | null   # Name or inline spec. See workspace.md.
 
 Returns:
-  {"status": "accepted", "agent_id": "uuid", "name": "str", "workspace": "str" | null}
+  {"status": "accepted", "agent_id": "uuid", "name": "str"}
 ```
 
 The workspace must exist (or be created inline). See
@@ -174,13 +174,18 @@ JSON-RPC 2.0 over stdio — one request per line, one response per line.
 
 ### Dispatch architecture
 
-`McpServer` takes a `ToolDispatch` callable (`(str, dict) -> dict`). Two
-factories exist:
+`McpServer` takes a `Sequence[ToolDef]` (from `substrat.model`) and a
+`ToolDispatch` callable (`(str, dict) -> dict`). Tool schemas are structured
+dataclasses (`ToolDef`, `ToolParam` in `model.py`); the server serializes
+them to MCP JSON internally via `_tool_to_schema()`.
 
-- **`direct_dispatch(handler)`** — wraps a `ToolHandler` in-process. Used by
-  tests. Renames `workspace` → `workspace_subdir` for `spawn_agent`.
-- **`daemon_dispatch(socket, agent_id)`** — stub. Will speak UDS to the
-  daemon once it exists.
+Two dispatch factories exist:
+
+- **`direct_dispatch(methods)`** — takes a `Mapping[str, Callable]`
+  (name → callable). Used by tests. The caller is responsible for any
+  parameter renaming (e.g. `workspace` → `workspace_subdir`).
+- **`daemon_dispatch(socket, agent_id)`** — **stub** (`NotImplementedError`).
+  Will speak UDS to the daemon once it exists.
 
 ### Error surfacing
 
@@ -205,6 +210,20 @@ python -m substrat.provider.mcp_server --agent-id <uuid>
 
 Requires `SUBSTRAT_SOCKET` in the environment. Without it, exits immediately —
 no silent fallback.
+
+### Data model
+
+Tool definitions are layer-neutral frozen dataclasses in `src/substrat/model.py`:
+
+- **`ToolParam`** — name, JSON type, description, required flag, optional
+  default. Uses a `_MISSING` sentinel internally; `has_default` property
+  hides it from callers.
+- **`ToolDef`** — name, description, tuple of `ToolParam`. No serialization
+  logic — that lives in the MCP server.
+
+The agent tool catalog (`AGENT_TOOLS`) lives in `src/substrat/agent/tools.py`
+and is a tuple of `ToolDef` objects. Providers accept tools at construction
+via `tools: Sequence[ToolDef]`.
 
 ## Open Questions
 
