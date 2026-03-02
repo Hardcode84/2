@@ -194,17 +194,20 @@ def direct_dispatch(
 
 
 def daemon_dispatch(socket_path: str, agent_id: str) -> ToolDispatch:
-    """UDS dispatch to the Substrat daemon. Stub until daemon RPC exists.
+    """UDS dispatch to the Substrat daemon.
 
-    Intended wire format::
-
-        → {"method": "tool.call", "params": {"agent_id": "...",
-           "tool": "...", "arguments": {...}}}
-        ← {"result": {...}}
+    Called from a synchronous MCP server process — uses sync_call.
     """
-    raise NotImplementedError(
-        f"daemon_dispatch not yet implemented (socket={socket_path}, agent={agent_id})"
-    )
+    from substrat.rpc import sync_call
+
+    def dispatch(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        return sync_call(
+            socket_path,
+            "tool.call",
+            {"agent_id": agent_id, "tool": tool_name, "arguments": arguments},
+        )
+
+    return dispatch
 
 
 # -- Entry point ---------------------------------------------------------
