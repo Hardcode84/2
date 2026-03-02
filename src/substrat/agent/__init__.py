@@ -17,10 +17,19 @@ from substrat.agent.router import (
     resolve_broadcast,
     validate_route,
 )
-from substrat.agent.tools import InboxRegistry, LogCallback, ToolError, ToolHandler
+from substrat.agent.tools import (
+    AGENT_TOOLS,
+    InboxRegistry,
+    LogCallback,
+    ToolDef,
+    ToolError,
+    ToolHandler,
+    ToolParam,
+)
 from substrat.agent.tree import AgentTree
 
 __all__ = [
+    "AGENT_TOOLS",
     "AgentNode",
     "AgentState",
     "AgentStateError",
@@ -32,8 +41,10 @@ __all__ = [
     "MessageKind",
     "RoutingError",
     "SYSTEM",
+    "ToolDef",
     "ToolError",
     "ToolHandler",
+    "ToolParam",
     "USER",
     "is_sentinel",
     "reachable_set",

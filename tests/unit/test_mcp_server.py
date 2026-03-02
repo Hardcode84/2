@@ -13,16 +13,21 @@ from uuid import uuid4
 
 import pytest
 
-from substrat.agent import AgentNode, AgentTree, Inbox, InboxRegistry, ToolHandler
+from substrat.agent import (
+    AGENT_TOOLS,
+    AgentNode,
+    AgentTree,
+    Inbox,
+    InboxRegistry,
+    ToolHandler,
+)
 from substrat.provider.mcp_server import (
-    McpServer,
     _PROTOCOL_VERSION,
     _SERVER_NAME,
     _SERVER_VERSION,
-    _TOOL_NAMES,
+    McpServer,
     direct_dispatch,
 )
-
 
 # -- Fixtures ------------------------------------------------------------
 
@@ -39,15 +44,17 @@ def server() -> McpServer:
         tree.add(n)
         inboxes[n.id] = Inbox()
     handler = ToolHandler(tree, inboxes, alice.id)
-    return McpServer(direct_dispatch(handler))
+    return McpServer(AGENT_TOOLS, direct_dispatch(handler))
 
 
 @pytest.fixture()
 def echo_server() -> McpServer:
     """McpServer with trivial echo dispatch — returns arguments as-is."""
+
     def echo(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return {"tool": tool_name, **arguments}
-    return McpServer(echo)
+
+    return McpServer(AGENT_TOOLS, echo)
 
 
 # -- initialize ----------------------------------------------------------
@@ -106,13 +113,17 @@ def test_tools_list_schema_fields(echo_server: McpServer) -> None:
 
 
 def test_call_send_message(server: McpServer) -> None:
-    resp = server.handle({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {
-            "name": "send_message",
-            "arguments": {"recipient": "bob", "text": "hello"},
-        },
-    })
+    resp = server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "send_message",
+                "arguments": {"recipient": "bob", "text": "hello"},
+            },
+        }
+    )
     assert resp is not None
     content = resp["result"]["content"]
     payload = json.loads(content[0]["text"])
@@ -120,10 +131,14 @@ def test_call_send_message(server: McpServer) -> None:
 
 
 def test_call_broadcast(server: McpServer) -> None:
-    resp = server.handle({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "broadcast", "arguments": {"text": "all hands"}},
-    })
+    resp = server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "broadcast", "arguments": {"text": "all hands"}},
+        }
+    )
     assert resp is not None
     payload = json.loads(resp["result"]["content"][0]["text"])
     assert payload["status"] == "sent"
@@ -131,10 +146,14 @@ def test_call_broadcast(server: McpServer) -> None:
 
 
 def test_call_check_inbox_empty(server: McpServer) -> None:
-    resp = server.handle({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "check_inbox", "arguments": {}},
-    })
+    resp = server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "check_inbox", "arguments": {}},
+        }
+    )
     assert resp is not None
     payload = json.loads(resp["result"]["content"][0]["text"])
     assert payload == {"messages": []}
@@ -142,23 +161,31 @@ def test_call_check_inbox_empty(server: McpServer) -> None:
 
 def test_call_check_inbox_no_arguments_key(server: McpServer) -> None:
     """params without arguments key — check_inbox takes none, should work."""
-    resp = server.handle({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "check_inbox"},
-    })
+    resp = server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "check_inbox"},
+        }
+    )
     assert resp is not None
     payload = json.loads(resp["result"]["content"][0]["text"])
     assert payload == {"messages": []}
 
 
 def test_call_spawn_agent(server: McpServer) -> None:
-    resp = server.handle({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {
-            "name": "spawn_agent",
-            "arguments": {"name": "child1", "instructions": "do stuff"},
-        },
-    })
+    resp = server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "spawn_agent",
+                "arguments": {"name": "child1", "instructions": "do stuff"},
+            },
+        }
+    )
     assert resp is not None
     payload = json.loads(resp["result"]["content"][0]["text"])
     assert payload["status"] == "accepted"
@@ -167,13 +194,17 @@ def test_call_spawn_agent(server: McpServer) -> None:
 
 def test_call_inspect_agent_error(server: McpServer) -> None:
     """inspect_agent on a non-existent child — returns tool-level error."""
-    resp = server.handle({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {
-            "name": "inspect_agent",
-            "arguments": {"name": "ghost"},
-        },
-    })
+    resp = server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "inspect_agent",
+                "arguments": {"name": "ghost"},
+            },
+        }
+    )
     assert resp is not None
     payload = json.loads(resp["result"]["content"][0]["text"])
     assert "error" in payload
@@ -181,17 +212,21 @@ def test_call_inspect_agent_error(server: McpServer) -> None:
 
 def test_spawn_workspace_renamed(server: McpServer) -> None:
     """workspace arg should be renamed to workspace_subdir for ToolHandler."""
-    resp = server.handle({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {
-            "name": "spawn_agent",
-            "arguments": {
-                "name": "child_ws",
-                "instructions": "go",
-                "workspace": "shared",
+    resp = server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "spawn_agent",
+                "arguments": {
+                    "name": "child_ws",
+                    "instructions": "go",
+                    "workspace": "shared",
+                },
             },
-        },
-    })
+        }
+    )
     assert resp is not None
     # Should not blow up — workspace_subdir is accepted by ToolHandler.
     payload = json.loads(resp["result"]["content"][0]["text"])
@@ -202,10 +237,14 @@ def test_spawn_workspace_renamed(server: McpServer) -> None:
 
 
 def test_result_is_mcp_content_format(echo_server: McpServer) -> None:
-    resp = echo_server.handle({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "check_inbox", "arguments": {}},
-    })
+    resp = echo_server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "check_inbox", "arguments": {}},
+        }
+    )
     assert resp is not None
     content = resp["result"]["content"]
     assert isinstance(content, list)
@@ -214,14 +253,18 @@ def test_result_is_mcp_content_format(echo_server: McpServer) -> None:
 
 
 def test_tool_error_is_result_not_rpc_error(server: McpServer) -> None:
-    """ToolHandler returning {error: ...} is wrapped as a tool result, not JSON-RPC error."""
-    resp = server.handle({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {
-            "name": "inspect_agent",
-            "arguments": {"name": "nonexistent"},
-        },
-    })
+    """ToolHandler {error: ...} is a tool result, not JSON-RPC error."""
+    resp = server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "inspect_agent",
+                "arguments": {"name": "nonexistent"},
+            },
+        }
+    )
     assert resp is not None
     # It's a result, not a protocol error.
     assert "result" in resp
@@ -234,10 +277,14 @@ def test_tool_error_is_result_not_rpc_error(server: McpServer) -> None:
 
 
 def test_unknown_tool_rpc_error(echo_server: McpServer) -> None:
-    resp = echo_server.handle({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "nonexistent_tool", "arguments": {}},
-    })
+    resp = echo_server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "nonexistent_tool", "arguments": {}},
+        }
+    )
     assert resp is not None
     assert resp["error"]["code"] == -32602
     assert "nonexistent_tool" in resp["error"]["message"]
@@ -245,28 +292,37 @@ def test_unknown_tool_rpc_error(echo_server: McpServer) -> None:
 
 def test_bad_arguments_rpc_error(server: McpServer) -> None:
     """Passing wrong argument types should produce a -32602 error."""
-    resp = server.handle({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {
-            "name": "send_message",
-            # Missing required 'text' arg, passing unexpected kwarg.
-            "arguments": {"recipient": "bob", "bogus": 42},
-        },
-    })
+    resp = server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "send_message",
+                # Missing required 'text' arg, passing unexpected kwarg.
+                "arguments": {"recipient": "bob", "bogus": 42},
+            },
+        }
+    )
     assert resp is not None
     assert resp["error"]["code"] == -32602
 
 
 def test_dispatch_exception_internal_error() -> None:
     """Generic exception in dispatch → -32603."""
+
     def boom(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("kaboom")
 
-    srv = McpServer(boom)
-    resp = srv.handle({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "check_inbox", "arguments": {}},
-    })
+    srv = McpServer(AGENT_TOOLS, boom)
+    resp = srv.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "check_inbox", "arguments": {}},
+        }
+    )
     assert resp is not None
     assert resp["error"]["code"] == -32603
     assert "kaboom" in resp["error"]["message"]
@@ -276,9 +332,13 @@ def test_dispatch_exception_internal_error() -> None:
 
 
 def test_unknown_method_rpc_error(echo_server: McpServer) -> None:
-    resp = echo_server.handle({
-        "jsonrpc": "2.0", "id": 1, "method": "completions/complete",
-    })
+    resp = echo_server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "completions/complete",
+        }
+    )
     assert resp is not None
     assert resp["error"]["code"] == -32601
 
@@ -301,7 +361,11 @@ def test_run_stdio_loop(echo_server: McpServer) -> None:
 
 
 def test_run_malformed_json_skipped(echo_server: McpServer) -> None:
-    inp = io.StringIO("not json\n" + json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize"}) + "\n")
+    inp = io.StringIO(
+        "not json\n"
+        + json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+        + "\n"
+    )
     out = io.StringIO()
     echo_server.run(input=inp, output=out)
     lines = out.getvalue().strip().split("\n")
@@ -310,15 +374,21 @@ def test_run_malformed_json_skipped(echo_server: McpServer) -> None:
 
 
 def test_run_empty_lines_skipped(echo_server: McpServer) -> None:
-    inp = io.StringIO("\n\n" + json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize"}) + "\n\n")
+    inp = io.StringIO(
+        "\n\n"
+        + json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+        + "\n\n"
+    )
     out = io.StringIO()
     echo_server.run(input=inp, output=out)
-    lines = [l for l in out.getvalue().split("\n") if l.strip()]
+    lines = [x for x in out.getvalue().split("\n") if x.strip()]
     assert len(lines) == 1
 
 
 def test_run_notification_no_output(echo_server: McpServer) -> None:
-    inp = io.StringIO(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
+    inp = io.StringIO(
+        json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n"
+    )
     out = io.StringIO()
     echo_server.run(input=inp, output=out)
     assert out.getvalue() == ""

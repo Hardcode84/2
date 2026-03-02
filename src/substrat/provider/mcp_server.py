@@ -2,14 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""MCP stdio server — JSON-RPC 2.0 bridge between agent providers and Substrat tools.
+"""MCP stdio server — generic JSON-RPC 2.0 over stdio.
 
-Cursor-agent (or any MCP-aware provider) spawns this as a subprocess.
-The server reads JSON-RPC requests from stdin, dispatches tool calls
-through a pluggable callable, and writes responses to stdout.
-
-Sync, single-threaded, stdlib only. Logging belongs in ToolHandler,
-not here.
+Tool-agnostic: callers pass ToolDef objects and a dispatch callable at
+construction. The server serializes schemas to MCP JSON internally,
+handles protocol framing, error surfacing, and the readline loop.
 """
 
 from __future__ import annotations
@@ -18,10 +15,10 @@ import argparse
 import json
 import os
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, TextIO
 
-from substrat.agent.tools import ToolHandler
+from substrat.agent.tools import AGENT_TOOLS, ToolDef, ToolHandler
 
 # -- Type alias for the dispatch callable --------------------------------
 
@@ -38,78 +35,33 @@ _METHOD_NOT_FOUND = -32601
 _INVALID_PARAMS = -32602
 _INTERNAL_ERROR = -32603
 
-# -- Tool catalog --------------------------------------------------------
 
-_TOOLS: list[dict[str, Any]] = [
-    {
-        "name": "send_message",
-        "description": "Send a message to a reachable agent (parent, child, or sibling).",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "recipient": {"type": "string", "description": "Agent name."},
-                "text": {"type": "string", "description": "Message body."},
-                "sync": {
-                    "type": "boolean",
-                    "description": "Request synchronous reply delivery.",
-                    "default": True,
-                },
-            },
-            "required": ["recipient", "text"],
-        },
-    },
-    {
-        "name": "broadcast",
-        "description": "Multicast a message to all siblings in the team.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "text": {"type": "string", "description": "Message body."},
-            },
-            "required": ["text"],
-        },
-    },
-    {
-        "name": "check_inbox",
-        "description": "Retrieve pending async messages.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {},
-        },
-    },
-    {
-        "name": "spawn_agent",
-        "description": "Create a child agent. Returns immediately; actual session creation is deferred.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "Child agent name."},
-                "instructions": {
-                    "type": "string",
-                    "description": "System prompt / task description.",
-                },
-                "workspace": {
-                    "type": "string",
-                    "description": "Workspace name or spec.",
-                },
-            },
-            "required": ["name", "instructions"],
-        },
-    },
-    {
-        "name": "inspect_agent",
-        "description": "View a subordinate's state and recent activity.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "Child agent name."},
-            },
-            "required": ["name"],
-        },
-    },
-]
+# -- Schema serialization ------------------------------------------------
 
-_TOOL_NAMES: frozenset[str] = frozenset(t["name"] for t in _TOOLS)
+
+def _tool_to_schema(tool: ToolDef) -> dict[str, Any]:
+    """Convert a ToolDef to MCP tool JSON schema."""
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+    for p in tool.parameters:
+        prop: dict[str, Any] = {"type": p.type, "description": p.description}
+        if p.has_default:
+            prop["default"] = p.default
+        properties[p.name] = prop
+        if p.required:
+            required.append(p.name)
+    schema: dict[str, Any] = {
+        "name": tool.name,
+        "description": tool.description,
+        "inputSchema": {
+            "type": "object",
+            "properties": properties,
+        },
+    }
+    if required:
+        schema["inputSchema"]["required"] = required
+    return schema
+
 
 # -- JSON-RPC helpers ----------------------------------------------------
 
@@ -130,10 +82,21 @@ def _rpc_error(req_id: Any, code: int, message: str) -> dict[str, Any]:
 
 
 class McpServer:
-    """MCP stdio server. Stateless beyond the dispatch callable."""
+    """Generic MCP stdio server. Knows nothing about specific tools."""
 
-    def __init__(self, dispatch: ToolDispatch) -> None:
+    def __init__(
+        self,
+        tools: Sequence[ToolDef],
+        dispatch: ToolDispatch,
+        *,
+        name: str = _SERVER_NAME,
+        version: str = _SERVER_VERSION,
+    ) -> None:
+        self._tools = [_tool_to_schema(t) for t in tools]
+        self._tool_names: frozenset[str] = frozenset(t.name for t in tools)
         self._dispatch = dispatch
+        self._name = name
+        self._version = version
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any] | None:
         """Process a single JSON-RPC request. Returns None for notifications."""
@@ -144,14 +107,17 @@ class McpServer:
         method = request.get("method", "")
 
         if method == "initialize":
-            return _rpc_result(req_id, {
-                "protocolVersion": _PROTOCOL_VERSION,
-                "capabilities": {"tools": {}},
-                "serverInfo": {"name": _SERVER_NAME, "version": _SERVER_VERSION},
-            })
+            return _rpc_result(
+                req_id,
+                {
+                    "protocolVersion": _PROTOCOL_VERSION,
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": self._name, "version": self._version},
+                },
+            )
 
         if method == "tools/list":
-            return _rpc_result(req_id, {"tools": _TOOLS})
+            return _rpc_result(req_id, {"tools": self._tools})
 
         if method == "tools/call":
             return self._handle_tool_call(req_id, request.get("params", {}))
@@ -187,7 +153,7 @@ class McpServer:
     ) -> dict[str, Any]:
         """Dispatch a tools/call request."""
         tool_name = params.get("name", "")
-        if tool_name not in _TOOL_NAMES:
+        if tool_name not in self._tool_names:
             return _rpc_error(
                 req_id,
                 _INVALID_PARAMS,
@@ -202,9 +168,12 @@ class McpServer:
             return _rpc_error(req_id, _INTERNAL_ERROR, str(exc))
         # Tool results use MCP content format — even tool-level errors.
         text = json.dumps(result)
-        return _rpc_result(req_id, {
-            "content": [{"type": "text", "text": text}],
-        })
+        return _rpc_result(
+            req_id,
+            {
+                "content": [{"type": "text", "text": text}],
+            },
+        )
 
 
 # -- Dispatch factories --------------------------------------------------
@@ -238,7 +207,8 @@ def daemon_dispatch(socket_path: str, agent_id: str) -> ToolDispatch:
 
     Intended wire format::
 
-        → {"method": "tool.call", "params": {"agent_id": "...", "tool": "...", "arguments": {...}}}
+        → {"method": "tool.call", "params": {"agent_id": "...",
+           "tool": "...", "arguments": {...}}}
         ← {"result": {...}}
     """
     raise NotImplementedError(
@@ -260,7 +230,7 @@ def main() -> None:
         raise SystemExit("SUBSTRAT_SOCKET not set — cannot connect to daemon")
 
     dispatch = daemon_dispatch(socket_path, parser.parse_args().agent_id)
-    McpServer(dispatch).run()
+    McpServer(AGENT_TOOLS, dispatch).run()
 
 
 if __name__ == "__main__":
