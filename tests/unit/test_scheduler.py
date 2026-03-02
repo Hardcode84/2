@@ -7,7 +7,6 @@
 import json
 from collections.abc import AsyncGenerator
 from pathlib import Path
-from uuid import UUID
 
 import pytest
 
@@ -154,41 +153,6 @@ async def test_send_turn_multi_chunk(
     assert response == "one two three"
 
 
-async def test_send_turn_drains_deferred(scheduler: TurnScheduler) -> None:
-    session = await scheduler.create_session("fake", "m", "p")
-    called: list[bool] = []
-
-    async def cb() -> None:
-        called.append(True)
-
-    scheduler.defer(cb)
-    await scheduler.send_turn(session.id, "hello")
-    assert called == [True]
-
-
-async def test_deferred_runs_after_release(
-    scheduler: TurnScheduler,
-    mux: SessionMultiplexer,
-) -> None:
-    session = await scheduler.create_session("fake", "m", "p")
-    order: list[str] = []
-
-    original_release = mux.release
-
-    async def tracked_release(sid: UUID) -> None:
-        order.append("release")
-        await original_release(sid)
-
-    mux.release = tracked_release  # type: ignore[assignment]
-
-    async def cb() -> None:
-        order.append("deferred")
-
-    scheduler.defer(cb)
-    await scheduler.send_turn(session.id, "hello")
-    assert order == ["release", "deferred"]
-
-
 # -- terminate_session ------------------------------------------------------
 
 
@@ -276,20 +240,11 @@ async def test_send_turn_error_releases_slot(
     )
     session = await sched.create_session("fake", "m", "p")
 
-    deferred_called: list[bool] = []
-
-    async def cb() -> None:
-        deferred_called.append(True)
-
-    sched.defer(cb)
-
     with pytest.raises(RuntimeError, match="send failed"):
         await sched.send_turn(session.id, "hello")
 
     # Slot released despite the error (session still in mux, just evictable).
     assert mux.contains(session.id)
-    # Deferred was NOT drained.
-    assert deferred_called == []
 
 
 # -- suspend/restore event logging -----------------------------------------

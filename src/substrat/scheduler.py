@@ -4,8 +4,6 @@
 
 """Turn scheduler — orchestrates session lifecycle and turn execution."""
 
-from collections import deque
-from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -15,8 +13,6 @@ from substrat.provider.base import AgentProvider
 from substrat.session.model import Session
 from substrat.session.multiplexer import SessionMultiplexer
 from substrat.session.store import SessionStore
-
-DeferredCallback = Callable[[], Coroutine[Any, Any, None]]
 
 
 class TurnScheduler:
@@ -40,7 +36,6 @@ class TurnScheduler:
         self._log_root = log_root
         self._sessions: dict[UUID, Session] = {}
         self._logs: dict[UUID, EventLog] = {}
-        self._deferred: deque[DeferredCallback] = deque()
         self._mux.on_evict = self._on_session_evicted
 
     @property
@@ -143,9 +138,6 @@ class TurnScheduler:
         if log is not None:
             log.log("turn.complete", {"response": response})
 
-        while self._deferred:
-            await self._deferred.popleft()()
-
         return response
 
     async def terminate_session(self, session_id: UUID) -> None:
@@ -159,7 +151,3 @@ class TurnScheduler:
         if log is not None:
             log.close()
         del self._sessions[session_id]
-
-    def defer(self, callback: DeferredCallback) -> None:
-        """Enqueue work to run after the current turn releases its slot."""
-        self._deferred.append(callback)

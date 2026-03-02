@@ -322,3 +322,25 @@ async def test_cleanup_stale_permission_error(
         pytest.raises(RuntimeError, match="already running"),
     ):
         await d.start()
+
+
+async def test_agent_state_error_returns_invalid(daemon: Daemon) -> None:
+    """AgentStateError from concurrent send maps to ERR_INVALID, not ERR_INTERNAL."""
+    await daemon.start()
+    try:
+        created = await daemon._h_agent_create({"name": "a", "instructions": "i"})
+        aid = created["agent_id"]
+        # First send puts agent into BUSY; node.begin_turn() on second would fail.
+        # Simulate by calling begin_turn directly before sending via UDS.
+        node = daemon.orchestrator.tree.get(__import__("uuid").UUID(aid))
+        node.begin_turn()  # IDLE → BUSY.
+        with pytest.raises(RpcError) as exc_info:
+            await async_call(
+                str(daemon.socket_path),
+                "agent.send",
+                {"agent_id": aid, "message": "hi"},
+            )
+        assert exc_info.value.code == ERR_INVALID
+        node.end_turn()  # Cleanup.
+    finally:
+        await daemon.stop()

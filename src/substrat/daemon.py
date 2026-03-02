@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from substrat.agent.node import AgentStateError
 from substrat.agent.tools import AGENT_TOOLS
 from substrat.orchestrator import Orchestrator
 from substrat.provider.base import AgentProvider
@@ -171,7 +172,7 @@ class Daemon:
                     resp = {"id": req_id, "result": result}
                 except KeyError as exc:
                     resp = _error_envelope(req_id, ERR_NOT_FOUND, str(exc))
-                except (ValueError, TypeError) as exc:
+                except (ValueError, TypeError, AgentStateError) as exc:
                     resp = _error_envelope(req_id, ERR_INVALID, str(exc))
                 except Exception as exc:
                     _log.exception("handler %s failed", method)

@@ -126,7 +126,6 @@ class TurnScheduler:
     async def create_session(self, provider_name: str, model: str, system_prompt: str) -> Session: ...
     async def send_turn(self, session_id: UUID, prompt: str) -> str: ...
     async def terminate_session(self, session_id: UUID) -> None: ...
-    def defer(self, callback: DeferredCallback) -> None: ...
 ```
 
 ### In-memory session cache
@@ -148,16 +147,13 @@ calling `acquire`.
 4. Collect streamed chunks from `ps.send(prompt)`.
 5. `mux.release(session_id)` — always runs (finally block).
 6. Log `turn.complete`.
-7. Drain deferred queue.
 
-On error in step 4, the slot is released (finally) but steps 6–7 are skipped.
+On error in step 4, the slot is released (finally) but step 6 is skipped.
 Failed turns should not trigger side effects like child spawns.
 
-### Deferred work
-
-`deque[Callable[[], Coroutine]]`. Synchronously filled during a turn (by MCP
-handlers, `spawn_agent`, etc.), drained after slot release. Not `asyncio.Queue`
-— no async await on enqueue, single consumer, simpler.
+Deferred spawn work lives in `ToolHandler._deferred` (per-agent), drained by
+`Orchestrator._drain_deferred()` after the turn completes — not by the
+scheduler.
 
 ### Known gaps
 

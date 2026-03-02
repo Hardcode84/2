@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from uuid import uuid4
 
@@ -22,7 +23,7 @@ from tests.unit.test_orchestrator import FakeProvider
 
 
 @pytest.fixture()
-async def daemon_sock(tmp_path: Path) -> asyncio.AsyncGenerator[str, None]:
+async def daemon_sock(tmp_path: Path) -> AsyncGenerator[str, None]:
     """Start a daemon with FakeProvider, yield socket path, stop on teardown."""
     provider = FakeProvider()
     daemon = Daemon(
