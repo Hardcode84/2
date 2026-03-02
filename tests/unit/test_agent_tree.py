@@ -45,12 +45,12 @@ def test_terminated_is_absorbing() -> None:
 
 def test_convenience_methods() -> None:
     node = AgentNode(session_id=uuid4())
-    node.activate()
+    node.begin_turn()
     assert node.state == AgentState.BUSY
     node.wait()
     assert node.state == AgentState.WAITING
-    node.activate()  # WAITING → BUSY via transition.
-    node.finish()
+    node.begin_turn()  # WAITING → BUSY via transition.
+    node.end_turn()
     assert node.state == AgentState.IDLE
     node.terminate()
     assert node.state == AgentState.TERMINATED

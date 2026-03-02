@@ -272,7 +272,7 @@ def test_inspect_nonexistent_error(fix: ToolFixture) -> None:
 
 
 def test_inspect_state_matches(fix: ToolFixture) -> None:
-    fix.dave.activate()
+    fix.dave.begin_turn()
     result = fix.h_carol.inspect_agent("dave")
     assert result["state"] == "busy"
 

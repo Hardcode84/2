@@ -107,15 +107,15 @@ class Orchestrator:
         work after the turn completes.
         """
         node = self._tree.get(agent_id)
-        node.activate()
+        node.begin_turn()
         try:
             response = await self._scheduler.send_turn(node.session_id, prompt)
         except Exception:
-            # Reset state if still BUSY (activate succeeded but send blew up).
+            # Reset state if still BUSY (begin_turn succeeded but send blew up).
             if node.state == AgentState.BUSY:
-                node.finish()
+                node.end_turn()
             raise
-        node.finish()
+        node.end_turn()
         await self._drain_deferred(agent_id)
         return response
 

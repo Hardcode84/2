@@ -55,11 +55,11 @@ class AgentNode:
             raise AgentStateError(msg)
         self.state = target
 
-    def activate(self) -> None:
+    def begin_turn(self) -> None:
         """IDLE → BUSY."""
         self.transition(AgentState.BUSY)
 
-    def finish(self) -> None:
+    def end_turn(self) -> None:
         """BUSY → IDLE."""
         self.transition(AgentState.IDLE)
 

@@ -215,7 +215,7 @@ async def test_run_turn_error_resets_state(
 async def test_run_turn_not_idle(orch: Orchestrator) -> None:
     """Agent not IDLE raises AgentStateError."""
     node = await orch.create_root_agent("a", "p")
-    node.activate()  # Force BUSY.
+    node.begin_turn()  # Force BUSY.
     with pytest.raises(AgentStateError):
         await orch.run_turn(node.id, "go")
 
