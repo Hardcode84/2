@@ -17,6 +17,7 @@ SYSTEM_RO_BINDS: tuple[str, ...] = (
     "/lib64",
     "/sbin",
     "/etc",
+    "/run",
 )
 
 
