@@ -99,6 +99,7 @@ class Orchestrator:
                 "name": node.name,
                 "parent_session_id": None,
                 "instructions": node.instructions,
+                "workspace": None,
             },
         )
 
@@ -200,6 +201,11 @@ class Orchestrator:
                 # Log after session created so the event goes to the real log.
                 parent_node = self._tree.parent(child.id)
                 parent_sid = parent_node.session_id.hex if parent_node else None
+                ws_data = (
+                    [child.workspace[0].hex, child.workspace[1]]
+                    if child.workspace
+                    else None
+                )
                 self._log_lifecycle(
                     session.id,
                     "agent.created",
@@ -208,6 +214,7 @@ class Orchestrator:
                         "name": child.name,
                         "parent_session_id": parent_sid,
                         "instructions": child.instructions,
+                        "workspace": ws_data,
                     },
                 )
                 self._handlers[child.id] = self._make_handler(
@@ -272,6 +279,7 @@ class Orchestrator:
                 "name": created_data.get("name", ""),
                 "parent_session_id": created_data.get("parent_session_id"),
                 "instructions": created_data.get("instructions", ""),
+                "workspace": created_data.get("workspace"),
                 "session": session,
                 "entries": entries,
             }
@@ -318,12 +326,15 @@ class Orchestrator:
                     if parent_agent_id not in placed:
                         continue
 
+                ws_raw = info.get("workspace")
+                ws_tuple = (UUID(ws_raw[0]), ws_raw[1]) if ws_raw is not None else None
                 node = AgentNode(
                     id=info["agent_id"],
                     session_id=info["session"].id,
                     name=info["name"],
                     parent_id=parent_agent_id,
                     instructions=info["instructions"],
+                    workspace=ws_tuple,
                 )
                 self._tree.add(node)
                 self._inboxes[node.id] = Inbox()

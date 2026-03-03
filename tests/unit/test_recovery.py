@@ -19,6 +19,8 @@ from substrat.scheduler import TurnScheduler
 from substrat.session import SessionStore
 from substrat.session.model import SessionState
 from substrat.session.multiplexer import SessionMultiplexer
+from substrat.workspace.mapping import WorkspaceMapping
+from substrat.workspace.store import WorkspaceStore
 
 # -- Fakes -----------------------------------------------------------------
 
@@ -122,6 +124,31 @@ def _fresh_orch(tmp_path: Path, provider: FakeProvider) -> Orchestrator:
         log_root=tmp_path / "sessions",
     )
     return Orchestrator(sched, default_provider="fake", default_model="test-model")
+
+
+def _fresh_orch_ws(
+    tmp_path: Path,
+    provider: FakeProvider,
+) -> tuple[Orchestrator, WorkspaceStore, WorkspaceMapping]:
+    """Brand-new orchestrator with workspace deps against the same store dir."""
+    store = SessionStore(tmp_path / "sessions")
+    mux = SessionMultiplexer(store, max_slots=4)
+    sched = TurnScheduler(
+        providers={"fake": provider},
+        mux=mux,
+        store=store,
+        log_root=tmp_path / "sessions",
+    )
+    ws_store = WorkspaceStore(tmp_path / "workspaces")
+    ws_mapping = WorkspaceMapping()
+    orch = Orchestrator(
+        sched,
+        default_provider="fake",
+        default_model="test-model",
+        ws_store=ws_store,
+        ws_mapping=ws_mapping,
+    )
+    return orch, ws_store, ws_mapping
 
 
 # -- Event logging ----------------------------------------------------------
@@ -678,3 +705,104 @@ async def test_recover_sender_terminated(
 
     assert len(orch2.inboxes[receiver_id]) == 1
     assert orch2.inboxes[receiver_id].peek()[0].payload == "farewell"
+
+
+# -- Workspace recovery -----------------------------------------------------
+
+
+async def test_recover_workspace_assignment(
+    tmp_path: Path,
+    provider: FakeProvider,
+) -> None:
+    """Workspace assignment on spawned child survives recovery."""
+    orch, ws_store, ws_mapping = _fresh_orch_ws(tmp_path, provider)
+
+    root = await orch.create_root_agent("root", "r")
+    h_root = orch.get_handler(root.id)
+
+    # Create a workspace and spawn a child into it.
+    h_root.create_workspace("work-env")
+    result = h_root.spawn_agent("worker", "do work", workspace="work-env")
+    child_id = UUID(result["agent_id"])
+    await orch.run_turn(root.id, "go")
+
+    # Verify pre-recovery state.
+    child = orch.tree.get(child_id)
+    assert child.workspace is not None
+    original_ws = child.workspace
+
+    # Recover into a fresh orchestrator.
+    orch2, ws_store2, ws_mapping2 = _fresh_orch_ws(tmp_path, provider)
+    await orch2.recover()
+
+    recovered = orch2.tree.get(child_id)
+    assert recovered.workspace == original_ws
+    assert ws_mapping2.get(child_id) == original_ws
+
+
+async def test_recover_workspace_none_by_default(
+    tmp_path: Path,
+    provider: FakeProvider,
+) -> None:
+    """Agent without workspace recovers with workspace=None."""
+    orch, ws_store, ws_mapping = _fresh_orch_ws(tmp_path, provider)
+    root = await orch.create_root_agent("root", "r")
+
+    orch2, _, ws_mapping2 = _fresh_orch_ws(tmp_path, provider)
+    await orch2.recover()
+
+    recovered = orch2.tree.get(root.id)
+    assert recovered.workspace is None
+    assert ws_mapping2.get(root.id) is None
+
+
+async def test_recover_workspace_event_log_field(
+    tmp_path: Path,
+    provider: FakeProvider,
+) -> None:
+    """agent.created event contains workspace field in event log."""
+    orch, ws_store, _ = _fresh_orch_ws(tmp_path, provider)
+    store = SessionStore(tmp_path / "sessions")
+
+    root = await orch.create_root_agent("root", "r")
+    h_root = orch.get_handler(root.id)
+    h_root.create_workspace("env")
+    result = h_root.spawn_agent("child", "ci", workspace="env")
+    child_id = UUID(result["agent_id"])
+    await orch.run_turn(root.id, "go")
+
+    # Read child's event log and verify workspace field.
+    child = orch.tree.get(child_id)
+    log_path = store.agent_dir(child.session_id) / "events.jsonl"
+    entries = read_log(log_path)
+    created = [e for e in entries if e["event"] == "agent.created"]
+    assert len(created) == 1
+    ws_data = created[0]["data"]["workspace"]
+    assert ws_data is not None
+    assert ws_data[0] == root.id.hex  # Scope is parent (workspace creator).
+    assert ws_data[1] == "env"
+
+
+async def test_recover_workspace_old_event_no_field(
+    tmp_path: Path,
+    provider: FakeProvider,
+) -> None:
+    """Recovery handles old event logs without workspace field (backward compat)."""
+    orch, _, _ = _fresh_orch_ws(tmp_path, provider)
+    store = SessionStore(tmp_path / "sessions")
+
+    root = await orch.create_root_agent("root", "r")
+
+    # Manually rewrite the event log to remove the workspace field.
+    log_path = store.agent_dir(root.session_id) / "events.jsonl"
+    entries = read_log(log_path)
+    for entry in entries:
+        if entry["event"] == "agent.created":
+            entry["data"].pop("workspace", None)
+    log_path.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+
+    orch2, _, ws_mapping2 = _fresh_orch_ws(tmp_path, provider)
+    await orch2.recover()
+
+    recovered = orch2.tree.get(root.id)
+    assert recovered.workspace is None
