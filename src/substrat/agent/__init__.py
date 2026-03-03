@@ -11,6 +11,7 @@ from substrat.agent.message import (
     is_sentinel,
 )
 from substrat.agent.node import AgentNode, AgentState, AgentStateError
+from substrat.agent.prompt import BASE_PROMPT, build_prompt
 from substrat.agent.router import (
     RoutingError,
     reachable_set,
@@ -33,6 +34,7 @@ __all__ = [
     "AGENT_TOOLS",
     "ALL_TOOLS",
     "AgentNode",
+    "BASE_PROMPT",
     "AgentState",
     "AgentStateError",
     "AgentTree",
@@ -49,6 +51,7 @@ __all__ = [
     "ToolParam",
     "WORKSPACE_TOOLS",
     "USER",
+    "build_prompt",
     "is_sentinel",
     "reachable_set",
     "resolve_broadcast",

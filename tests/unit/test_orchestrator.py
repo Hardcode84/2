@@ -151,8 +151,10 @@ async def test_create_root_agent_custom_provider(
         provider="alt",
         model="special-m",
     )
-    # Alt provider was called with the override model.
-    assert alt.created[-1] == ("special-m", "instructions")
+    # Alt provider was called with the override model. Prompt wraps instructions.
+    model, prompt = alt.created[-1]
+    assert model == "special-m"
+    assert "instructions" in prompt
     assert node.name == "beta"
 
 
@@ -282,8 +284,11 @@ async def test_spawn_child_inherits_provider(
 
     provider.created.clear()
     await orch.run_turn(parent.id, "go")
-    # Child session was created with same provider/model as parent.
-    assert ("test-model", "child instructions") in provider.created
+    # Child session was created with same provider/model. Prompt wraps instructions.
+    assert len(provider.created) >= 1
+    model, prompt = provider.created[-1]
+    assert model == "test-model"
+    assert "child instructions" in prompt
 
 
 async def test_spawn_multiple_children(orch: Orchestrator) -> None:

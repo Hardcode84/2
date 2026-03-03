@@ -14,6 +14,7 @@ from uuid import UUID
 from substrat.agent.inbox import Inbox
 from substrat.agent.message import MessageEnvelope, MessageKind
 from substrat.agent.node import AgentNode, AgentState
+from substrat.agent.prompt import build_prompt
 from substrat.agent.tools import (
     DeferredWork,
     InboxRegistry,
@@ -82,7 +83,8 @@ class Orchestrator:
         prov = provider or self._default_provider
         mdl = model or self._default_model
 
-        session = await self._scheduler.create_session(prov, mdl, instructions)
+        prompt = build_prompt(instructions)
+        session = await self._scheduler.create_session(prov, mdl, prompt)
         node = AgentNode(session_id=session.id, name=name, instructions=instructions)
 
         try:
@@ -192,10 +194,11 @@ class Orchestrator:
 
         def callback(child: AgentNode) -> DeferredWork:
             async def do_spawn() -> None:
+                prompt = build_prompt(child.instructions)
                 session = await self._scheduler.create_session(
                     provider,
                     model,
-                    child.instructions,
+                    prompt,
                 )
                 child.session_id = session.id
                 # Log after session created so the event goes to the real log.
