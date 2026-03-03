@@ -497,6 +497,77 @@ async def test_wake_skips_busy_agent(
         await orch.stop_wake_loop()
 
 
+async def test_rewake_after_busy_turn(
+    provider: FakeProvider,
+    orch: Orchestrator,
+) -> None:
+    """Message arriving mid-turn triggers re-wake after turn ends."""
+    orch.start_wake_loop()
+    try:
+        parent = await orch.create_root_agent("parent", "p")
+        handler = orch.get_handler(parent.id)
+        handler.spawn_agent("child", "ci")
+        await orch.run_turn(parent.id, "go")
+        child = orch.tree.children(parent.id)[0]
+
+        # Deliver a message directly to child's inbox (simulating mid-turn
+        # delivery where the wake was skipped because child was BUSY).
+        from substrat.agent.message import MessageEnvelope, MessageKind
+
+        env = MessageEnvelope(
+            sender=parent.id,
+            recipient=child.id,
+            kind=MessageKind.REQUEST,
+            payload="catch me",
+        )
+        orch.inboxes[child.id].deliver(env)
+        # No wake enqueued — simulates the lost-wake scenario.
+
+        provider.prompts.clear()
+        # Run a turn on child — _execute_turn will call _rewake_if_pending.
+        await orch.run_turn(child.id, "working")
+
+        # Let wake loop process the re-enqueued wake.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert any("catch me" in p for p in provider.prompts)
+    finally:
+        await orch.stop_wake_loop()
+
+
+async def test_wake_skips_pending_spawn(
+    provider: FakeProvider,
+    orch: Orchestrator,
+) -> None:
+    """Wake for a child with no handler yet (pre-spawn) is skipped safely."""
+    orch.start_wake_loop()
+    try:
+        parent = await orch.create_root_agent("parent", "p")
+        handler = orch.get_handler(parent.id)
+        result = handler.spawn_agent("child", "ci")
+        child_id = UUID(result["agent_id"])
+
+        # Child is in tree with inbox but no handler (spawn not drained).
+        assert child_id not in orch._handlers
+
+        # Manually enqueue a wake — simulates the race.
+        orch._notify_wake(child_id)
+        provider.prompts.clear()
+
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        # No turn sent — child has no session.
+        assert not provider.prompts
+
+        # Inbox untouched — message still there for post-spawn wake.
+        handler.send_message("child", "queued")
+        assert orch.inboxes[child_id]
+    finally:
+        await orch.stop_wake_loop()
+
+
 async def test_wake_skips_terminated_agent(
     provider: FakeProvider,
     orch: Orchestrator,

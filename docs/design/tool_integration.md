@@ -70,8 +70,7 @@ Agents are told in their system prompt:
 - Tool calls return immediately with a status.
 - Replies to sync messages arrive as your next message.
 - Spawned agents start working after your current turn ends.
-- Do not loop/poll waiting for replies.
-- Messages from other agents wake you automatically.
+- Messages from other agents wake you automatically — no need to poll.
 - Call `complete(result)` when your work is done.
 
 ## Tool Catalog

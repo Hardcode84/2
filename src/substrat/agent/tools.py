@@ -4,7 +4,7 @@
 
 """Tool catalog and logic layer.
 
-AGENT_TOOLS is the catalog of Substrat's five agent-facing tools.
+AGENT_TOOLS is the catalog of Substrat's six agent-facing tools.
 WORKSPACE_TOOLS adds the five workspace management tools.
 ALL_TOOLS is the union for daemon/MCP consumption.
 

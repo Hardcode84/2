@@ -40,6 +40,7 @@ def _handler_methods(handler: ToolHandler) -> dict[str, Any]:
         "check_inbox": handler.check_inbox,
         "spawn_agent": handler.spawn_agent,
         "inspect_agent": handler.inspect_agent,
+        "complete": handler.complete,
     }
 
 
@@ -430,6 +431,8 @@ def test_direct_dispatch_routes_all_tools() -> None:
     assert "status" in dispatch("spawn_agent", {"name": "kid", "instructions": "go"})
     # inspect_agent on nonexistent returns error dict, not exception.
     assert "error" in dispatch("inspect_agent", {"name": "ghost"})
+    # complete from agent with children — returns error, not exception.
+    assert "error" in dispatch("complete", {"result": "done"})
 
 
 def test_direct_dispatch_unknown_tool() -> None:

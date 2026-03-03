@@ -175,8 +175,8 @@ Can you review the analysis?
 ```
 
 Sender names resolve through `_sender_display_name()`: sentinel UUIDs
-(system, daemon) get their symbolic names, tree nodes get their agent name,
-unknown senders fall back to raw UUID hex.
+(SYSTEM, USER) get their symbolic names, tree nodes get their agent name,
+unknown senders fall back to raw UUID string.
 
 Each delivered message is logged as `message.delivered` with its envelope ID.
 
@@ -218,11 +218,19 @@ same recipient produce two `_notify_wake` calls.
 `_process_wake` skips the agent if any of:
 - Agent not in tree (terminated between enqueue and processing).
 - Agent not IDLE (already mid-turn from RPC or another wake).
-- Inbox empty (drained by concurrent `check_inbox`).
+- Inbox empty (pre-`begin_turn` check via `Inbox.__bool__`).
+- No handler registered (session not ready — pending spawn).
 - `begin_turn()` raises `AgentStateError` (defensive).
+- Inbox empty after drain (post-`begin_turn` check via `collect()`).
 
-No wake is "lost" — if the agent has messages when it returns to IDLE, the
-next delivery or the post-turn `_drain_deferred` will re-trigger.
+No wake is "lost". Two mechanisms ensure pending messages get processed:
+
+1. **Post-spawn wake.** `_drain_deferred` scans children for non-empty
+   inboxes after creating their sessions. Catches messages queued before
+   the child's session existed.
+2. **Post-turn re-wake.** `_execute_turn` calls `_rewake_if_pending` after
+   the turn ends and deferred work drains. Catches messages delivered
+   mid-turn whose original wake was skipped because the agent was BUSY.
 
 ---
 

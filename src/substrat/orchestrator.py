@@ -231,6 +231,8 @@ class Orchestrator:
         inbox = self._inboxes.get(agent_id)
         if not inbox:
             return
+        if agent_id not in self._handlers:
+            return  # Session not ready yet (pending spawn).
         try:
             node.begin_turn()
         except AgentStateError:
@@ -305,7 +307,24 @@ class Orchestrator:
             raise
         node.end_turn()
         await self._drain_deferred(node.id)
+        # Re-wake if messages arrived during the turn.
+        self._rewake_if_pending(node.id)
         return response
+
+    def _rewake_if_pending(self, agent_id: UUID) -> None:
+        """Re-enqueue wake if agent is IDLE with a non-empty inbox.
+
+        Catches messages delivered mid-turn whose wake was skipped
+        because the agent was BUSY at notification time.
+        """
+        if agent_id not in self._tree:
+            return
+        node = self._tree.get(agent_id)
+        if node.state != AgentState.IDLE:
+            return
+        inbox = self._inboxes.get(agent_id)
+        if inbox:
+            self._notify_wake(agent_id)
 
     def _resolve_workspace(
         self,
