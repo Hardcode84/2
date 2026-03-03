@@ -27,7 +27,7 @@ app.add_typer(daemon_app, name="daemon")
 app.add_typer(agent_app, name="agent")
 app.add_typer(workspace_app, name="workspace")
 
-_DEFAULT_ROOT = Path.home() / ".substrat"
+_DEFAULT_ROOT = Path(os.environ.get("SUBSTRAT_ROOT", Path.home() / ".substrat"))
 _ROOT_OPT = typer.Option(_DEFAULT_ROOT, help="Substrat root directory.")
 
 

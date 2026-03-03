@@ -417,7 +417,8 @@ async def _run(daemon: Daemon) -> None:
 def main() -> None:
     """``python -m substrat.daemon``."""
     parser = argparse.ArgumentParser(description="Substrat daemon")
-    parser.add_argument("--root", type=Path, default=Path.home() / ".substrat")
+    _default_root = os.environ.get("SUBSTRAT_ROOT", str(Path.home() / ".substrat"))
+    parser.add_argument("--root", type=Path, default=_default_root)
     parser.add_argument("--model", default="claude-sonnet-4-6")
     parser.add_argument("--max-slots", type=int, default=4)
     args = parser.parse_args()
