@@ -226,6 +226,94 @@ def test_json_decode_error_displayed() -> None:
     assert "invalid response" in result.output
 
 
+def test_agent_create_with_workspace() -> None:
+    """agent create passes workspace option."""
+    with patch("substrat.cli.app.sync_call") as mock:
+        mock.return_value = {"agent_id": "abc", "name": "w"}
+        result = runner.invoke(
+            app,
+            ["agent", "create", "w", "--workspace", "my-ws"],
+        )
+    assert result.exit_code == 0
+    call_params = mock.call_args[0][2]
+    assert call_params["workspace"] == "my-ws"
+
+
+# -- workspace commands --------------------------------------------------------
+
+
+def test_workspace_create() -> None:
+    """workspace create calls workspace.create and prints scope/name."""
+    with patch("substrat.cli.app.sync_call") as mock:
+        mock.return_value = {"scope": "aabbccdd", "name": "dev"}
+        result = runner.invoke(app, ["workspace", "create", "dev"])
+    assert result.exit_code == 0
+    assert "aabbccdd/dev" in result.output
+
+
+def test_workspace_create_with_scope() -> None:
+    """workspace create passes scope option."""
+    with patch("substrat.cli.app.sync_call") as mock:
+        mock.return_value = {"scope": "deadbeef", "name": "env"}
+        result = runner.invoke(
+            app,
+            ["workspace", "create", "env", "--scope", "deadbeef"],
+        )
+    assert result.exit_code == 0
+    call_params = mock.call_args[0][2]
+    assert call_params["scope"] == "deadbeef"
+
+
+def test_workspace_create_with_network() -> None:
+    """workspace create passes network option."""
+    with patch("substrat.cli.app.sync_call") as mock:
+        mock.return_value = {"scope": "aabb", "name": "net"}
+        result = runner.invoke(
+            app,
+            ["workspace", "create", "net", "--network"],
+        )
+    assert result.exit_code == 0
+    call_params = mock.call_args[0][2]
+    assert call_params["network_access"] is True
+
+
+def test_workspace_list_empty() -> None:
+    """workspace list prints 'no workspaces' when empty."""
+    with patch("substrat.cli.app.sync_call") as mock:
+        mock.return_value = {"workspaces": []}
+        result = runner.invoke(app, ["workspace", "list"])
+    assert result.exit_code == 0
+    assert "no workspaces" in result.output
+
+
+def test_workspace_list_with_workspaces() -> None:
+    """workspace list prints scope/name lines."""
+    with patch("substrat.cli.app.sync_call") as mock:
+        mock.return_value = {
+            "workspaces": [
+                {"scope": "aaa", "name": "dev", "network_access": False},
+                {"scope": "bbb", "name": "prod", "network_access": True},
+            ]
+        }
+        result = runner.invoke(app, ["workspace", "list"])
+    assert result.exit_code == 0
+    assert "aaa/dev" in result.output
+    assert "bbb/prod" in result.output
+    assert "[net]" in result.output
+
+
+def test_workspace_delete() -> None:
+    """workspace delete calls workspace.delete and prints confirmation."""
+    with patch("substrat.cli.app.sync_call") as mock:
+        mock.return_value = {"status": "deleted", "scope": "aaa", "name": "dev"}
+        result = runner.invoke(app, ["workspace", "delete", "dev", "aaa"])
+    assert result.exit_code == 0
+    assert "deleted aaa/dev" in result.output
+
+
+# -- Bug regression tests ------------------------------------------------------
+
+
 def test_daemon_start_permission_error(tmp_path: Path) -> None:
     """PID owned by another user — PermissionError means 'already running'."""
     from unittest.mock import patch as _patch

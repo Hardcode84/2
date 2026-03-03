@@ -22,8 +22,10 @@ from substrat.rpc import RpcError, sync_call
 app = typer.Typer(name="substrat", no_args_is_help=True)
 daemon_app = typer.Typer(help="Daemon lifecycle commands.")
 agent_app = typer.Typer(help="Agent management commands.")
+workspace_app = typer.Typer(help="Workspace management commands.")
 app.add_typer(daemon_app, name="daemon")
 app.add_typer(agent_app, name="agent")
+app.add_typer(workspace_app, name="workspace")
 
 _DEFAULT_ROOT = Path.home() / ".substrat"
 _ROOT_OPT = typer.Option(_DEFAULT_ROOT, help="Substrat root directory.")
@@ -178,6 +180,7 @@ def agent_create(
     instructions: str = typer.Option("", help="System prompt / task description."),
     provider: str | None = typer.Option(None, help="Provider override."),
     model: str | None = typer.Option(None, help="Model override."),
+    workspace: str | None = typer.Option(None, help="Workspace name."),
     root: Path = _ROOT_OPT,
 ) -> None:
     """Create a root agent."""
@@ -186,6 +189,8 @@ def agent_create(
         params["provider"] = provider
     if model is not None:
         params["model"] = model
+    if workspace is not None:
+        params["workspace"] = workspace
     result = _call(root, "agent.create", params)
     typer.echo(f"{result['agent_id']}  {result['name']}")
 
@@ -245,6 +250,52 @@ def agent_terminate(
     """Terminate an agent."""
     result = _call(root, "agent.terminate", {"agent_id": agent_id})
     typer.echo(f"terminated {result.get('agent_id', agent_id)}")
+
+
+# -- workspace commands --------------------------------------------------------
+
+
+@workspace_app.command("create")
+def workspace_create(
+    name: str = typer.Argument(help="Workspace name."),
+    scope: str | None = typer.Option(
+        None, help="Scope UUID (hex). Auto-generated if omitted."
+    ),
+    network: bool = typer.Option(False, help="Allow network access."),
+    root: Path = _ROOT_OPT,
+) -> None:
+    """Create a workspace."""
+    params: dict[str, Any] = {"name": name, "network_access": network}
+    if scope is not None:
+        params["scope"] = scope
+    result = _call(root, "workspace.create", params)
+    typer.echo(f"{result['scope']}/{result['name']}")
+
+
+@workspace_app.command("list")
+def workspace_list(
+    root: Path = _ROOT_OPT,
+) -> None:
+    """List all workspaces."""
+    result = _call(root, "workspace.list", {})
+    workspaces = result.get("workspaces", [])
+    if not workspaces:
+        typer.echo("no workspaces")
+        return
+    for ws in workspaces:
+        net = "  [net]" if ws.get("network_access") else ""
+        typer.echo(f"{ws['scope']}/{ws['name']}{net}")
+
+
+@workspace_app.command("delete")
+def workspace_delete(
+    name: str = typer.Argument(help="Workspace name."),
+    scope: str = typer.Argument(help="Scope UUID (hex)."),
+    root: Path = _ROOT_OPT,
+) -> None:
+    """Delete a workspace."""
+    _call(root, "workspace.delete", {"scope": scope, "name": name})
+    typer.echo(f"deleted {scope}/{name}")
 
 
 def main() -> None:

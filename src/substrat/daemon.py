@@ -83,6 +83,9 @@ class Daemon:
             "agent.inspect": self._h_agent_inspect,
             "agent.terminate": self._h_agent_terminate,
             "tool.call": self._h_tool_call,
+            "workspace.create": self._h_workspace_create,
+            "workspace.list": self._h_workspace_list,
+            "workspace.delete": self._h_workspace_delete,
         }
 
     @property
@@ -314,6 +317,44 @@ class Daemon:
         handler = self._orch.get_handler(agent_id)
         method = getattr(handler, tool_name)
         return method(**arguments)  # type: ignore[no-any-return]
+
+    # -- Workspace RPC handlers ------------------------------------------------
+
+    async def _h_workspace_create(self, params: dict[str, Any]) -> dict[str, Any]:
+        from uuid import uuid4
+
+        ws_name = params["name"]
+        scope_hex = params.get("scope")
+        scope = UUID(scope_hex) if scope_hex else uuid4()
+        network = params.get("network_access", False)
+        ws = Workspace(
+            name=ws_name,
+            scope=scope,
+            root_path=self._ws_store.workspace_dir(scope, ws_name) / "root",
+            network_access=network,
+        )
+        self._ws_store.save(ws)
+        return {"scope": scope.hex, "name": ws_name}
+
+    async def _h_workspace_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        workspaces = self._ws_store.scan()
+        return {
+            "workspaces": [
+                {
+                    "scope": ws.scope.hex,
+                    "name": ws.name,
+                    "network_access": ws.network_access,
+                    "root_path": str(ws.root_path),
+                }
+                for ws in workspaces
+            ]
+        }
+
+    async def _h_workspace_delete(self, params: dict[str, Any]) -> dict[str, Any]:
+        scope = UUID(params["scope"])
+        ws_name = params["name"]
+        self._ws_store.delete(scope, ws_name)
+        return {"status": "deleted", "scope": scope.hex, "name": ws_name}
 
     # -- Helpers ---------------------------------------------------------------
 

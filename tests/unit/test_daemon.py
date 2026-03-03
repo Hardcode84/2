@@ -415,3 +415,94 @@ def test_make_wrap_command_merges_extra_binds(
         if tok == "--setenv":
             env_pairs[result[i + 1]] = result[i + 2]
     assert env_pairs["MY_VAR"] == "val"
+
+
+# -- Workspace RPC handlers ---------------------------------------------------
+
+
+async def test_workspace_create(daemon: Daemon) -> None:
+    """workspace.create persists workspace and returns scope/name."""
+    await daemon.start()
+    try:
+        result = await daemon._h_workspace_create({"name": "dev"})
+        assert result["name"] == "dev"
+        assert "scope" in result
+        # Workspace appears in list.
+        listed = await daemon._h_workspace_list({})
+        names = [ws["name"] for ws in listed["workspaces"]]
+        assert "dev" in names
+    finally:
+        await daemon.stop()
+
+
+async def test_workspace_create_with_scope(daemon: Daemon) -> None:
+    """workspace.create accepts explicit scope."""
+    await daemon.start()
+    try:
+        scope = uuid4().hex
+        result = await daemon._h_workspace_create({"name": "env", "scope": scope})
+        assert result["scope"] == scope
+        assert result["name"] == "env"
+    finally:
+        await daemon.stop()
+
+
+async def test_workspace_list_empty(daemon: Daemon) -> None:
+    """workspace.list returns empty when no workspaces exist."""
+    await daemon.start()
+    try:
+        result = await daemon._h_workspace_list({})
+        assert result == {"workspaces": []}
+    finally:
+        await daemon.stop()
+
+
+async def test_workspace_delete(daemon: Daemon) -> None:
+    """workspace.delete removes workspace from store."""
+    await daemon.start()
+    try:
+        created = await daemon._h_workspace_create({"name": "doomed"})
+        result = await daemon._h_workspace_delete(
+            {"scope": created["scope"], "name": "doomed"}
+        )
+        assert result["status"] == "deleted"
+        # Verify it's gone.
+        listed = await daemon._h_workspace_list({})
+        assert listed["workspaces"] == []
+    finally:
+        await daemon.stop()
+
+
+async def test_workspace_create_over_uds(daemon: Daemon) -> None:
+    """workspace.create works through full UDS path."""
+    await daemon.start()
+    try:
+        result = await async_call(
+            str(daemon.socket_path),
+            "workspace.create",
+            {"name": "uds-ws"},
+        )
+        assert result["name"] == "uds-ws"
+        assert "scope" in result
+    finally:
+        await daemon.stop()
+
+
+async def test_workspace_list_over_uds(daemon: Daemon) -> None:
+    """workspace.list works through full UDS path."""
+    await daemon.start()
+    try:
+        await async_call(
+            str(daemon.socket_path),
+            "workspace.create",
+            {"name": "ws1"},
+        )
+        result = await async_call(
+            str(daemon.socket_path),
+            "workspace.list",
+            {},
+        )
+        names = [ws["name"] for ws in result["workspaces"]]
+        assert "ws1" in names
+    finally:
+        await daemon.stop()
