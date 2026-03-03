@@ -22,8 +22,12 @@ from typing import Any, BinaryIO
 from unittest.mock import patch
 
 
-class CrashError(Exception):
-    """Simulated power loss."""
+class CrashError(BaseException):
+    """Simulated power loss.
+
+    BaseException so ``except Exception`` can't swallow it — a kill -9
+    doesn't care about your cleanup code.
+    """
 
 
 @dataclass
