@@ -62,6 +62,7 @@ class CursorSession:
         session_id: str,
         model: str,
         workspace: Path,
+        system_prompt: str = "",
         log: EventLog | None = None,
         wrap_command: CommandWrapper | None = None,
         tools: Sequence[ToolDef] = (),
@@ -69,6 +70,7 @@ class CursorSession:
         self._session_id = session_id
         self._model = model
         self._workspace = workspace
+        self._system_prompt = system_prompt
         self._log = log
         self._wrap_command = wrap_command
         self._tools = tuple(tools)
@@ -110,11 +112,12 @@ class CursorSession:
 
     @log_method(after=True)
     async def suspend(self) -> bytes:
-        """Serialize state — session ID, model, workspace path."""
+        """Serialize state — session ID, model, workspace, system prompt."""
         state = {
             "session_id": self._session_id,
             "model": self._model,
             "workspace": str(self._workspace),
+            "system_prompt": self._system_prompt,
         }
         return json.dumps(state).encode()
 
@@ -184,6 +187,7 @@ class CursorAgentProvider:
             session_id=session_id,
             model=model,
             workspace=workspace,
+            system_prompt=system_prompt,
             log=log,
             wrap_command=self._wrap_command,
             tools=self._tools,
@@ -197,6 +201,10 @@ class CursorAgentProvider:
         """Restore from a suspended state blob."""
         data = json.loads(state.decode())
         session_id = data["session_id"]
+        system_prompt = data.get("system_prompt", "")
+        workspace = Path(data["workspace"])
+        # Re-write rules file in case workspace was cleaned up.
+        _write_rules(workspace, system_prompt)
         if log is not None:
             log.log(
                 "session.restored",
@@ -210,7 +218,8 @@ class CursorAgentProvider:
         return CursorSession(
             session_id=session_id,
             model=data["model"],
-            workspace=Path(data["workspace"]),
+            workspace=workspace,
+            system_prompt=system_prompt,
             log=log,
             wrap_command=self._wrap_command,
             tools=self._tools,
