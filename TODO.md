@@ -114,14 +114,14 @@
 - [ ] EventLog: double open (leaks first fd), double close, empty pending file, large entry (>page size), log after close
 - [ ] Decorator: keyword-only args, default values omitted, empty generator (yields nothing), before=True/after=False, before=False/after=False
 - [ ] Daemon: malformed JSON over UDS, empty request body, missing required fields, invalid UUID strings
-- [ ] Daemon: concurrent tool.call during run_turn (FakeProvider is instant, no interleaving window)
+- [x] Daemon: concurrent tool.call during run_turn — ScriptedProvider + test_tool_callbacks.py (a2998ea)
 - [ ] Daemon: _cleanup_stale branch with no PID file + orphaned socket
 - [ ] Daemon: handler raising unexpected Exception → ERR_INTERNAL mapping
 - [ ] CLI: daemon stop with a live process (actual SIGTERM + socket disappear flow)
 - [ ] CLI: daemon start socket wait timeout warning path
 - [ ] CLI: daemon status with stale PID, status with live PID but missing socket
 - [ ] CLI: weak assertions — agent list parent display, Popen args in daemon start, inspect inbox formatting
-- [ ] FakeProvider hides streaming latency — need variant that yields control between chunks for real concurrency tests
+- [x] FakeProvider hides streaming latency — ScriptedProvider in tests/helpers.py yields control mid-turn (a2998ea)
 - [x] Session store, multiplexer, agent tree, messaging
 - [x] test_session_store.py
 - [x] test_persistence.py
@@ -140,6 +140,7 @@
 - [x] test_daemon.py — daemon handler dispatch, lifecycle, workspace tool dispatch, wake loop lifecycle
 - [x] test_cli.py — CLI commands with mocked RPC
 - [x] test_daemon_rpc.py — integration tests: full lifecycle, tool.call, concurrency, recovery over real UDS
+- [x] test_tool_callbacks.py — integration tests: tool callbacks mid-turn over real UDS (spawn, message, complete, inspect)
 
 ## E2E — Blockers
 Code bugs that prevent the full stack from working end-to-end.
@@ -153,7 +154,7 @@ Every existing integration test exercises one half of the stack. No test bridges
 - [ ] Daemon + real cursor-agent (no bwrap) — daemon.start, agent.create, agent.send with CursorAgentProvider, verify real response
 - [ ] Daemon + workspace + bwrap — workspace.create, agent.create(workspace=...), agent.send triggers bwrap sandbox
 - [ ] Daemon + bwrap + substrat MCP tools — agent inside bwrap discovers .cursor/mcp.json, MCP server connects back to daemon via SUBSTRAT_SOCKET, tool.call round-trip verified
-- [ ] Multi-agent live coordination — parent spawns child via MCP tool, child sends message back, parent auto-wakes, verify full roundtrip
+- [ ] Multi-agent live coordination — parent spawns child via MCP tool, child sends message back, parent auto-wakes, verify full roundtrip (daemon-layer coordination proven in test_tool_callbacks.py; MCP→daemon chain still untested)
 - [ ] Session suspend/restore under daemon — daemon evicts session (LRU), next send restores from state blob, verify context survives
 
 ## Task Coordination
