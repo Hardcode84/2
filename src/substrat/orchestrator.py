@@ -54,7 +54,7 @@ class Orchestrator:
         scheduler: TurnScheduler,
         *,
         default_provider: str,
-        default_model: str,
+        default_model: str | None = None,
         ws_store: WorkspaceStore | None = None,
         ws_mapping: WorkspaceMapping | None = None,
         wrap_command_factory: WrapCommandFactory | None = None,
@@ -352,7 +352,7 @@ class Orchestrator:
         self,
         agent_id: UUID,
         provider: str,
-        model: str,
+        model: str | None,
     ) -> ToolHandler:
         """Build a ToolHandler with spawn, log, wake, and terminate callbacks."""
         validate_ws_ref = None
@@ -435,7 +435,7 @@ class Orchestrator:
     def _make_spawn_callback(
         self,
         provider: str,
-        model: str,
+        model: str | None,
     ) -> SpawnCallback:
         """Return a callback that defers child session creation.
 

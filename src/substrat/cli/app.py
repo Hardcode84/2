@@ -60,7 +60,7 @@ def _call(root: Path, method: str, params: dict[str, Any]) -> dict[str, Any]:
 @daemon_app.command()
 def start(
     root: Path = _ROOT_OPT,
-    model: str = typer.Option("claude-sonnet-4-6", help="Default model."),
+    model: str | None = typer.Option(None, help="Default model."),
     max_slots: int = typer.Option(4, help="Max concurrent sessions."),
     foreground: bool = typer.Option(False, help="Run in foreground."),
 ) -> None:
@@ -97,11 +97,11 @@ def start(
         "substrat.daemon",
         "--root",
         str(root),
-        "--model",
-        model,
         "--max-slots",
         str(max_slots),
     ]
+    if model is not None:
+        cmd.extend(["--model", model])
     subprocess.Popen(
         cmd,
         start_new_session=True,

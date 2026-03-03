@@ -34,8 +34,11 @@ class FakeProvider:
     def name(self) -> str:
         return "fake"
 
-    async def create(self, model: str, system_prompt: str) -> FakeSession:
+    async def create(self, model: str | None, system_prompt: str) -> FakeSession:
         return FakeSession(system_prompt)
+
+    def models(self) -> list[str]:
+        return ["test-model"]
 
     async def restore(self, state: bytes) -> FakeSession:
         return FakeSession(state.decode())

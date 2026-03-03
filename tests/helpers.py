@@ -80,7 +80,7 @@ class ScriptedProvider:
 
     async def create(
         self,
-        model: str,
+        model: str | None,
         system_prompt: str,
         log: EventLog | None = None,
         *,
@@ -96,6 +96,9 @@ class ScriptedProvider:
             self._socket_path,
             self._on_turn_complete,
         )
+
+    def models(self) -> list[str]:
+        return ["test-model"]
 
     async def restore(
         self,

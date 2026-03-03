@@ -54,7 +54,7 @@ class Daemon:
         root: Path,
         *,
         default_provider: str = "cursor-agent",
-        default_model: str = "claude-sonnet-4-6",
+        default_model: str | None = None,
         max_slots: int = 4,
         providers: dict[str, AgentProvider] | None = None,
     ) -> None:
@@ -478,7 +478,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Substrat daemon")
     _default_root = os.environ.get("SUBSTRAT_ROOT", str(Path.home() / ".substrat"))
     parser.add_argument("--root", type=Path, default=_default_root)
-    parser.add_argument("--model", default="claude-sonnet-4-6")
+    parser.add_argument("--model", default=None)
     parser.add_argument("--max-slots", type=int, default=4)
     args = parser.parse_args()
 

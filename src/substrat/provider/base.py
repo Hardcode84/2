@@ -46,7 +46,7 @@ class AgentProvider(Protocol):
 
     async def create(
         self,
-        model: str,
+        model: str | None,
         system_prompt: str,
         log: EventLog | None = None,
         *,
@@ -55,6 +55,10 @@ class AgentProvider(Protocol):
         agent_id: UUID | None = None,
     ) -> ProviderSession:
         """Start a new conversation with the given model and instructions."""
+        ...
+
+    def models(self) -> list[str]:
+        """Return list of supported model identifiers."""
         ...
 
     async def restore(

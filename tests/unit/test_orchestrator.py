@@ -74,7 +74,7 @@ class FakeProvider:
 
     async def create(
         self,
-        model: str,
+        model: str | None,
         system_prompt: str,
         log: EventLog | None = None,
         **kwargs: object,
@@ -83,6 +83,9 @@ class FakeProvider:
         if self._error_on_send:
             return ErrorProviderSession()
         return FakeProviderSession(self._chunks, self.prompts)
+
+    def models(self) -> list[str]:
+        return ["test-model"]
 
     async def restore(
         self,

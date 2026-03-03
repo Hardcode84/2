@@ -6,7 +6,9 @@
 
 import asyncio
 import json
+import re
 import shutil
+import subprocess
 import tempfile
 from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
@@ -44,6 +46,9 @@ def _cursor_binary() -> str:
     if path is None:
         raise RuntimeError("cursor-agent not found in PATH")
     return path
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 # Host directories cursor-agent needs access to inside the sandbox.
@@ -88,7 +93,7 @@ class CursorSession:
     def __init__(
         self,
         session_id: str,
-        model: str,
+        model: str | None,
         workspace: Path,
         system_prompt: str = "",
         log: EventLog | None = None,
@@ -122,6 +127,7 @@ class CursorSession:
             stderr=asyncio.subprocess.PIPE,
         )
         assert proc.stdout is not None
+        chunks: list[str] = []
         async for line in proc.stdout:
             decoded = line.decode().strip()
             if not decoded:
@@ -135,11 +141,16 @@ class CursorSession:
             if etype == "assistant" and "timestamp_ms" not in event:
                 for block in event.get("message", {}).get("content", []):
                     if block.get("type") == "text":
+                        chunks.append(block["text"])
                         yield block["text"]
             # Error check.
             if etype == "result" and event.get("is_error"):
                 raise RuntimeError(event.get("result", "cursor-agent error"))
         await proc.wait()
+        if proc.returncode != 0 and not chunks:
+            assert proc.stderr is not None
+            stderr = (await proc.stderr.read()).decode().strip()
+            raise RuntimeError(f"cursor-agent exited {proc.returncode}: {stderr}")
 
     @log_method(after=True)
     async def suspend(self) -> bytes:
@@ -173,10 +184,10 @@ class CursorSession:
         ]
         if self._tools:
             cmd.append("--approve-mcps")
+        if self._model is not None:
+            cmd.extend(["--model", self._model])
         cmd.extend(
             [
-                "--model",
-                self._model,
                 "--workspace",
                 str(self._workspace),
                 "--resume",
@@ -205,7 +216,7 @@ class CursorAgentProvider:
 
     async def create(
         self,
-        model: str,
+        model: str | None,
         system_prompt: str,
         log: EventLog | None = None,
         *,
@@ -284,6 +295,19 @@ class CursorAgentProvider:
             private_workspace=private,
         )
 
+    def models(self) -> list[str]:
+        """Return model identifiers supported by cursor-agent."""
+        proc = subprocess.run(
+            [_cursor_binary(), "--list-models"],
+            capture_output=True,
+        )
+        result: list[str] = []
+        for raw_line in proc.stdout.decode().splitlines():
+            line = _ANSI_RE.sub("", raw_line).strip()
+            if " - " in line:
+                result.append(line.split(" - ", 1)[0].strip())
+        return result
+
     async def _create_chat(self, wrap_command: CommandWrapper | None = None) -> str:
         """Pre-create a chat via cursor-agent create-chat."""
         cmd: Sequence[str] = [_cursor_binary(), "create-chat"]
@@ -294,8 +318,9 @@ class CursorAgentProvider:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await proc.communicate()
+        stdout, stderr = await proc.communicate()
         session_id = stdout.decode().strip()
         if not session_id:
-            raise RuntimeError("cursor-agent create-chat returned empty ID")
+            err = stderr.decode().strip()
+            raise RuntimeError(f"cursor-agent create-chat failed: {err}")
         return session_id

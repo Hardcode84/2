@@ -84,7 +84,7 @@ class TurnScheduler:
     async def create_session(
         self,
         provider_name: str,
-        model: str,
+        model: str | None,
         system_prompt: str,
         *,
         workspace: Path | None = None,
@@ -96,7 +96,7 @@ class TurnScheduler:
             raise ValueError(f"unknown provider: {provider_name}")
         provider = self._providers[provider_name]
 
-        session = Session(provider_name=provider_name, model=model)
+        session = Session(provider_name=provider_name, model=model or "")
 
         log: EventLog | None = None
         if self._log_root is not None:
