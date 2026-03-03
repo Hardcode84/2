@@ -266,46 +266,12 @@ When a message arrives in an IDLE agent's inbox, the daemon automatically
 starts a new turn on that agent. This replaces the need for external polling
 or explicit `agent.send` RPC calls to drive message flow.
 
-### Triggers
+Full design: [wake.md](wake.md). Key points:
 
-Auto-wake fires when `_deliver()` appends to an inbox. Three sources:
-
-1. **`send_message`** / **`broadcast`** — the sender's ToolHandler calls
-   `_deliver()`, which fires `wake_callback(recipient_id)`.
-2. **Post-spawn** — after `_drain_deferred()` creates child sessions, the
-   orchestrator scans children for non-empty inboxes and enqueues wakes.
-3. **Recovery** — at the end of `recover()`, all placed agents with pending
-   messages get wake notifications.
-
-### Processing
-
-The orchestrator runs a background `asyncio.Task` (`_wake_loop`) that
-consumes from an `asyncio.Queue`. Processing per agent:
-
-1. Guard: agent still in tree? IDLE? Inbox non-empty? No → skip.
-2. `begin_turn()` — transitions to BUSY, preventing concurrent RPC sends.
-3. `_format_wake_prompt()` — drains inbox, logs `message.delivered`, builds
-   a prompt string.
-4. `_execute_turn()` — sends the prompt via the provider, drains deferred
-   work, transitions back to IDLE.
-
-### Safety limits
-
-- **100 wakes per drain cycle.** If the queue has more than 100 pending
-  entries, only 100 are processed and a warning is logged. This prevents
-  runaway A↔B ping-pong from starving the event loop.
-- **Deduplication.** Multiple wake notifications for the same agent in one
-  batch are collapsed — only the first is processed.
-- **begin_turn as lock.** The IDLE→BUSY transition prevents concurrent
-  RPC sends from racing with wake processing. No mutex needed — asyncio
-  is single-threaded.
-
-### Lifecycle
-
-- `Orchestrator.start_wake_loop()` — called by daemon after `recover()`,
-  before the UDS server starts.
-- `Orchestrator.stop_wake_loop()` — called by daemon during shutdown, before
-  closing the server.
+- **Triggers**: message delivery, post-spawn inbox scan, crash recovery.
+- **Processing**: background `asyncio.Task` drains a queue, deduplicates,
+  guards on state, formats inbox contents as prompt, runs `_execute_turn`.
+- **Safety**: 100 wakes/batch cap, `begin_turn` as concurrency guard.
 
 ## MCP Server Implementation
 
