@@ -7,11 +7,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
 from substrat.daemon import ERR_INVALID, ERR_METHOD, ERR_NOT_FOUND, Daemon
+from substrat.model import LinkSpec
 from substrat.rpc import RpcError, async_call
+from substrat.workspace.model import Workspace
 
 # Reuse FakeProvider from test_orchestrator.
 from tests.unit.test_orchestrator import FakeProvider
@@ -361,3 +364,54 @@ async def test_agent_state_error_returns_invalid(daemon: Daemon) -> None:
         node.end_turn()  # Cleanup.
     finally:
         await daemon.stop()
+
+
+# -- Wrap-command factory ------------------------------------------------------
+
+
+def test_make_wrap_command_produces_bwrap(
+    tmp_path: Path, provider: FakeProvider
+) -> None:
+    """_make_wrap_command closure produces valid bwrap argv."""
+    d = Daemon(tmp_path, providers={"fake": provider}, default_provider="fake")
+    ws = Workspace(
+        name="test",
+        scope=uuid4(),
+        root_path=tmp_path / "ws-root",
+    )
+    (tmp_path / "ws-root").mkdir()
+    wrapper = d._make_wrap_command(ws)
+    result = list(wrapper(["echo", "hi"], [], {}))
+
+    # Should start with bwrap.
+    assert result[0] == "bwrap"
+    # Socket bind should be present.
+    sock_str = str(d.socket_path)
+    assert sock_str in result
+    # SUBSTRAT_SOCKET env var set.
+    env_pairs = []
+    for i, tok in enumerate(result):
+        if tok == "--setenv":
+            env_pairs.append((result[i + 1], result[i + 2]))
+    env_dict = dict(env_pairs)
+    assert env_dict["SUBSTRAT_SOCKET"] == sock_str
+    # Command at the end.
+    assert result[-2:] == ["echo", "hi"]
+
+
+def test_make_wrap_command_merges_extra_binds(
+    tmp_path: Path, provider: FakeProvider
+) -> None:
+    """Extra binds from caller are included in the bwrap command."""
+    d = Daemon(tmp_path, providers={"fake": provider}, default_provider="fake")
+    ws = Workspace(name="t", scope=uuid4(), root_path=tmp_path / "r")
+    (tmp_path / "r").mkdir()
+    wrapper = d._make_wrap_command(ws)
+    extra = [LinkSpec(Path("/opt/foo"), Path("/opt/foo"), "ro")]
+    result = list(wrapper(["cmd"], extra, {"MY_VAR": "val"}))
+    assert "/opt/foo" in result
+    env_pairs = {}
+    for i, tok in enumerate(result):
+        if tok == "--setenv":
+            env_pairs[result[i + 1]] = result[i + 2]
+    assert env_pairs["MY_VAR"] == "val"

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
@@ -24,10 +25,15 @@ from substrat.agent.tools import (
 )
 from substrat.agent.tree import AgentTree
 from substrat.logging.event_log import read_log
+from substrat.model import CommandWrapper
 from substrat.scheduler import TurnScheduler
 from substrat.session.model import Session, SessionState
 from substrat.workspace.mapping import WorkspaceMapping
+from substrat.workspace.model import Workspace
 from substrat.workspace.store import WorkspaceStore
+
+# Factory that builds a CommandWrapper from a Workspace.
+WrapCommandFactory = Callable[[Workspace], CommandWrapper]
 
 _log = logging.getLogger(__name__)
 
@@ -47,6 +53,7 @@ class Orchestrator:
         default_model: str,
         ws_store: WorkspaceStore | None = None,
         ws_mapping: WorkspaceMapping | None = None,
+        wrap_command_factory: WrapCommandFactory | None = None,
     ) -> None:
         self._scheduler = scheduler
         self._default_provider = default_provider
@@ -56,6 +63,7 @@ class Orchestrator:
         self._handlers: dict[UUID, ToolHandler] = {}
         self._ws_store = ws_store
         self._ws_mapping = ws_mapping
+        self._wrap_factory = wrap_command_factory
 
     @property
     def tree(self) -> AgentTree:
@@ -74,6 +82,7 @@ class Orchestrator:
         *,
         provider: str | None = None,
         model: str | None = None,
+        workspace: str | None = None,
     ) -> AgentNode:
         """Create a root agent with a backing session.
 

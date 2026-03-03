@@ -12,19 +12,24 @@ import json
 import logging
 import os
 import signal
+import sys
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
 from substrat.agent.node import AgentStateError
 from substrat.agent.tools import ALL_TOOLS
+from substrat.model import CommandWrapper, LinkSpec
 from substrat.orchestrator import Orchestrator
 from substrat.provider.base import AgentProvider
 from substrat.provider.cursor_agent import CursorAgentProvider
 from substrat.scheduler import TurnScheduler
 from substrat.session.multiplexer import SessionMultiplexer
 from substrat.session.store import SessionStore
+from substrat.workspace import bwrap
 from substrat.workspace.mapping import WorkspaceMapping
+from substrat.workspace.model import Workspace
 from substrat.workspace.store import WorkspaceStore
 
 _log = logging.getLogger(__name__)
@@ -58,16 +63,17 @@ class Daemon:
         store = SessionStore(root / "agents")
         mux = SessionMultiplexer(store, max_slots=max_slots)
         if providers is None:
-            providers = {"cursor-agent": CursorAgentProvider()}
+            providers = {"cursor-agent": CursorAgentProvider(tools=ALL_TOOLS)}
         scheduler = TurnScheduler(providers, mux, store, log_root=root / "agents")
-        ws_store = WorkspaceStore(root / "workspaces")
+        self._ws_store = WorkspaceStore(root / "workspaces")
         ws_mapping = WorkspaceMapping()
         self._orch = Orchestrator(
             scheduler,
             default_provider=default_provider,
             default_model=default_model,
-            ws_store=ws_store,
+            ws_store=self._ws_store,
             ws_mapping=ws_mapping,
+            wrap_command_factory=self._make_wrap_command,
         )
 
         self._handlers: dict[str, Any] = {
@@ -192,6 +198,40 @@ class Daemon:
             writer.close()
             await writer.wait_closed()
 
+    # -- Wrap-command factory --------------------------------------------------
+
+    def _make_wrap_command(self, workspace: Workspace) -> CommandWrapper:
+        """Build a per-agent closure that sandboxes commands via bwrap."""
+        sock = self._sock_path
+
+        # Collect python prefix binds so the MCP server can import substrat.
+        py_binds: list[LinkSpec] = []
+        prefix = Path(sys.prefix)
+        py_binds.append(LinkSpec(prefix, prefix, "ro"))
+        if sys.prefix != sys.base_prefix:
+            base = Path(sys.base_prefix)
+            py_binds.append(LinkSpec(base, base, "ro"))
+
+        def wrapper(
+            cmd: Sequence[str],
+            binds: Sequence[LinkSpec],
+            env: Mapping[str, str],
+        ) -> Sequence[str]:
+            all_binds = [
+                *binds,
+                *py_binds,
+                LinkSpec(sock, sock, "ro"),
+            ]
+            all_env = {**env, "SUBSTRAT_SOCKET": str(sock)}
+            return bwrap.build_command(
+                workspace,
+                all_binds,
+                command=cmd,
+                env=all_env,
+            )
+
+        return wrapper
+
     # -- RPC handlers ----------------------------------------------------------
 
     async def _h_agent_create(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -199,8 +239,13 @@ class Daemon:
         instructions = params.get("instructions") or ""
         provider = params.get("provider")
         model = params.get("model")
+        ws_name = params.get("workspace")
         node = await self._orch.create_root_agent(
-            name, instructions, provider=provider, model=model
+            name,
+            instructions,
+            provider=provider,
+            model=model,
+            workspace=ws_name,
         )
         return {"agent_id": node.id.hex, "name": node.name}
 
