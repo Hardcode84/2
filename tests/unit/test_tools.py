@@ -856,3 +856,57 @@ def test_unlink_dir_no_link_at_path(ws_fix: WsFixture) -> None:
     result = ws_fix.h_alice.unlink_dir("ws", "/nonexistent")
     assert "error" in result
     assert "no link" in result["error"]
+
+
+# --- spawn_agent with workspace ---
+
+
+def test_spawn_with_workspace_assigns(ws_fix: WsFixture) -> None:
+    """Spawn with workspace assigns the child and sets AgentNode.workspace."""
+    ws_fix.h_root.create_workspace("child-env")
+    result = ws_fix.h_root.spawn_agent("eve", "work", workspace="child-env")
+    assert result["status"] == "accepted"
+    assert result["workspace"] == "child-env"
+    child_id = UUID(result["agent_id"])
+    child = ws_fix.tree.get(child_id)
+    assert child.workspace == (ws_fix.root.id, "child-env")
+    assert child_id in ws_fix.ws_mapping
+
+
+def test_spawn_with_workspace_mapping_entry(ws_fix: WsFixture) -> None:
+    """Mapping tracks the assignment after spawn."""
+    ws_fix.h_root.create_workspace("env")
+    result = ws_fix.h_root.spawn_agent("fred", "go", workspace="env")
+    child_id = UUID(result["agent_id"])
+    agents = ws_fix.ws_mapping.agents_in(ws_fix.root.id, "env")
+    assert child_id in agents
+
+
+def test_spawn_with_nonexistent_workspace(ws_fix: WsFixture) -> None:
+    """Spawn with nonexistent workspace fails before tree mutation."""
+    result = ws_fix.h_root.spawn_agent("ghost-child", "go", workspace="nope")
+    assert "error" in result
+    assert "not found" in result["error"]
+    # No child added to tree.
+    children = ws_fix.tree.children(ws_fix.root.id)
+    child_names = [c.name for c in children]
+    assert "ghost-child" not in child_names
+
+
+def test_spawn_with_invisible_workspace(ws_fix: WsFixture) -> None:
+    """Spawn with workspace in invisible scope fails."""
+    # Create workspace in bob's scope — root can see it (child scope).
+    ws_fix.h_bob.create_workspace("secret")
+    # Alice can't see bob's scope.
+    result = ws_fix.h_alice.spawn_agent("spy", "go", workspace="bob/secret")
+    assert "error" in result
+
+
+def test_spawn_without_workspace_no_key(ws_fix: WsFixture) -> None:
+    """Spawn without workspace doesn't set workspace or return key."""
+    result = ws_fix.h_root.spawn_agent("plain", "go")
+    assert result["status"] == "accepted"
+    assert "workspace" not in result
+    child_id = UUID(result["agent_id"])
+    child = ws_fix.tree.get(child_id)
+    assert child.workspace is None

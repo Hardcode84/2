@@ -17,13 +17,15 @@ from typing import Any
 from uuid import UUID
 
 from substrat.agent.node import AgentStateError
-from substrat.agent.tools import AGENT_TOOLS
+from substrat.agent.tools import ALL_TOOLS
 from substrat.orchestrator import Orchestrator
 from substrat.provider.base import AgentProvider
 from substrat.provider.cursor_agent import CursorAgentProvider
 from substrat.scheduler import TurnScheduler
 from substrat.session.multiplexer import SessionMultiplexer
 from substrat.session.store import SessionStore
+from substrat.workspace.mapping import WorkspaceMapping
+from substrat.workspace.store import WorkspaceStore
 
 _log = logging.getLogger(__name__)
 
@@ -58,10 +60,14 @@ class Daemon:
         if providers is None:
             providers = {"cursor-agent": CursorAgentProvider()}
         scheduler = TurnScheduler(providers, mux, store, log_root=root / "agents")
+        ws_store = WorkspaceStore(root / "workspaces")
+        ws_mapping = WorkspaceMapping()
         self._orch = Orchestrator(
             scheduler,
             default_provider=default_provider,
             default_model=default_model,
+            ws_store=ws_store,
+            ws_mapping=ws_mapping,
         )
 
         self._handlers: dict[str, Any] = {
@@ -235,7 +241,7 @@ class Daemon:
         await self._orch.terminate_agent(agent_id)
         return {"status": "terminated", "agent_id": agent_id.hex}
 
-    _TOOL_NAMES: frozenset[str] = frozenset(t.name for t in AGENT_TOOLS)
+    _TOOL_NAMES: frozenset[str] = frozenset(t.name for t in ALL_TOOLS)
 
     async def _h_tool_call(self, params: dict[str, Any]) -> dict[str, Any]:
         agent_id = UUID(params["agent_id"])

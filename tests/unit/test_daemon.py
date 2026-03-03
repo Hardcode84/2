@@ -269,8 +269,25 @@ async def test_already_running_raises(tmp_path: Path, provider: FakeProvider) ->
 # -- Bug regression tests ------------------------------------------------------
 
 
+async def test_workspace_tool_dispatch(daemon: Daemon) -> None:
+    """Workspace tools are callable through tool.call dispatch."""
+    await daemon.start()
+    try:
+        created = await daemon._h_agent_create({"name": "a", "instructions": "i"})
+        result = await daemon._h_tool_call(
+            {
+                "agent_id": created["agent_id"],
+                "tool": "list_workspaces",
+                "arguments": {},
+            }
+        )
+        assert "workspaces" in result
+    finally:
+        await daemon.stop()
+
+
 async def test_tool_call_rejects_non_tool_method(daemon: Daemon) -> None:
-    """tool.call must reject methods not in AGENT_TOOLS (e.g. drain_deferred)."""
+    """tool.call must reject methods not in ALL_TOOLS (e.g. drain_deferred)."""
     await daemon.start()
     try:
         created = await daemon._h_agent_create({"name": "a", "instructions": "i"})

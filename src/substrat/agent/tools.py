@@ -273,6 +273,25 @@ class ToolHandler:
         workspace: str | None = None,
     ) -> dict[str, Any]:
         """Create a child agent. Actual session creation is deferred."""
+        # Validate workspace ref before mutating the tree.
+        ws_key: tuple[UUID, str] | None = None
+        if workspace is not None:
+            from substrat.workspace.resolve import resolve, visible_scopes
+
+            if self._ws_store is None or self._ws_mapping is None:
+                return {"error": "workspace tools not available"}
+            caller = self._tree.get(self._caller_id)
+            try:
+                scope, ws_name = resolve(caller, workspace, self._tree)
+            except (ValueError, KeyError) as exc:
+                return {"error": str(exc)}
+            vis = visible_scopes(caller, self._tree)
+            if scope not in vis:
+                return {"error": f"workspace {workspace!r} not visible"}
+            if not self._ws_store.exists(scope, ws_name):
+                return {"error": f"workspace {workspace!r} not found"}
+            ws_key = (scope, ws_name)
+
         child = AgentNode(
             session_id=uuid4(),
             name=name,
@@ -283,15 +302,22 @@ class ToolHandler:
             self._tree.add(child)
         except ValueError as exc:
             return {"error": str(exc)}
+        # Assign workspace if requested.
+        if ws_key is not None and self._ws_mapping is not None:
+            child.workspace = ws_key
+            self._ws_mapping.assign(child.id, ws_key[0], ws_key[1])
         # Eager inbox so messages sent before provider starts are queued.
         self._inboxes[child.id] = Inbox()
         if self._spawn_callback is not None:
             self._deferred.append(self._spawn_callback(child))
-        return {
+        result: dict[str, Any] = {
             "status": "accepted",
             "agent_id": str(child.id),
             "name": child.name,
         }
+        if ws_key is not None:
+            result["workspace"] = workspace
+        return result
 
     def inspect_agent(self, name: str) -> dict[str, Any]:
         """View a subordinate's state and recent messages."""

@@ -25,6 +25,8 @@ from substrat.agent.tree import AgentTree
 from substrat.logging.event_log import read_log
 from substrat.scheduler import TurnScheduler
 from substrat.session.model import Session, SessionState
+from substrat.workspace.mapping import WorkspaceMapping
+from substrat.workspace.store import WorkspaceStore
 
 _log = logging.getLogger(__name__)
 
@@ -42,6 +44,8 @@ class Orchestrator:
         *,
         default_provider: str,
         default_model: str,
+        ws_store: WorkspaceStore | None = None,
+        ws_mapping: WorkspaceMapping | None = None,
     ) -> None:
         self._scheduler = scheduler
         self._default_provider = default_provider
@@ -49,6 +53,8 @@ class Orchestrator:
         self._tree = AgentTree()
         self._inboxes: InboxRegistry = {}
         self._handlers: dict[UUID, ToolHandler] = {}
+        self._ws_store = ws_store
+        self._ws_mapping = ws_mapping
 
     @property
     def tree(self) -> AgentTree:
@@ -156,6 +162,8 @@ class Orchestrator:
             agent_id,
             spawn_callback=self._make_spawn_callback(provider, model),
             log_callback=self._make_log_callback(),
+            ws_store=self._ws_store,
+            ws_mapping=self._ws_mapping,
         )
 
     def _make_log_callback(self) -> LogCallback:
@@ -380,6 +388,14 @@ class Orchestrator:
                 inbox = self._inboxes.get(recipient_id)
                 if inbox is not None:
                     inbox.deliver(envelope)
+
+        # -- Workspace mapping recovery: reconstruct from AgentNode.workspace. --
+        if self._ws_mapping is not None:
+            for nid in placed:
+                node = self._tree.get(nid)
+                if node.workspace is not None:
+                    scope, ws_name = node.workspace
+                    self._ws_mapping.assign(nid, scope, ws_name)
 
     async def _drain_deferred(self, agent_id: UUID) -> None:
         """Drain and execute deferred work from the agent's tool handler."""

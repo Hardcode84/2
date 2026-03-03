@@ -224,8 +224,8 @@ def test_call_inspect_agent_error(server: McpServer) -> None:
     assert "error" in payload
 
 
-def test_spawn_workspace_accepted(server: McpServer) -> None:
-    """spawn_agent accepts optional workspace parameter."""
+def test_spawn_workspace_validated(server: McpServer) -> None:
+    """spawn_agent validates workspace ref — returns error when deps missing."""
     resp = server.handle(
         {
             "jsonrpc": "2.0",
@@ -243,7 +243,7 @@ def test_spawn_workspace_accepted(server: McpServer) -> None:
     )
     assert resp is not None
     payload = json.loads(resp["result"]["content"][0]["text"])
-    assert payload["status"] == "accepted"
+    assert "error" in payload
 
 
 # -- tools/call: result format -------------------------------------------
