@@ -31,7 +31,8 @@ if shutil.which("cursor-agent") is None:
 @pytest.fixture()
 async def daemon_sock(tmp_path: Path) -> AsyncGenerator[str, None]:
     """Start a real daemon with default CursorAgentProvider, yield socket path."""
-    daemon = Daemon(tmp_path)
+    # Daemon defaults to "claude-sonnet-4-6" but cursor-agent expects "sonnet-4.6".
+    daemon = Daemon(tmp_path, default_model="sonnet-4.6")
     await daemon.start()
     yield str(daemon.socket_path)
     await daemon.stop()
