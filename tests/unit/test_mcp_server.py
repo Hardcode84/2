@@ -106,11 +106,11 @@ def test_any_request_without_id_returns_none(echo_server: McpServer) -> None:
 # -- tools/list ----------------------------------------------------------
 
 
-def test_tools_list_returns_five_tools(echo_server: McpServer) -> None:
+def test_tools_list_returns_agent_tools(echo_server: McpServer) -> None:
     resp = echo_server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
     assert resp is not None
     tools = resp["result"]["tools"]
-    assert len(tools) == 5
+    assert len(tools) == len(AGENT_TOOLS)
 
 
 def test_tools_list_schema_fields(echo_server: McpServer) -> None:

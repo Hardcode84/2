@@ -23,6 +23,7 @@ from substrat.agent.tools import (
     InboxRegistry,
     LogCallback,
     SpawnCallback,
+    TerminateCallback,
     ToolHandler,
 )
 from substrat.agent.tree import AgentTree
@@ -328,7 +329,7 @@ class Orchestrator:
         provider: str,
         model: str,
     ) -> ToolHandler:
-        """Build a ToolHandler with spawn, log, and wake callbacks."""
+        """Build a ToolHandler with spawn, log, wake, and terminate callbacks."""
         return ToolHandler(
             self._tree,
             self._inboxes,
@@ -336,6 +337,7 @@ class Orchestrator:
             spawn_callback=self._make_spawn_callback(provider, model),
             log_callback=self._make_log_callback(),
             wake_callback=self._notify_wake,
+            terminate_callback=self._make_terminate_callback(),
             ws_store=self._ws_store,
             ws_mapping=self._ws_mapping,
         )
@@ -349,6 +351,17 @@ class Orchestrator:
             except KeyError:
                 return
             self._log_lifecycle(node.session_id, event, data)
+
+        return callback
+
+    def _make_terminate_callback(self) -> TerminateCallback:
+        """Return a callback that defers agent termination."""
+
+        def callback(agent_id: UUID) -> DeferredWork:
+            async def do_terminate() -> None:
+                await self.terminate_agent(agent_id)
+
+            return do_terminate
 
         return callback
 

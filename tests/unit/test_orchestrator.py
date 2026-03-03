@@ -620,3 +620,42 @@ async def test_wake_loop_double_start(orch: Orchestrator) -> None:
 async def test_wake_loop_stop_without_start(orch: Orchestrator) -> None:
     """Stopping without starting is a no-op."""
     await orch.stop_wake_loop()  # Should not crash.
+
+
+# -- complete lifecycle -----------------------------------------------------
+
+
+async def test_complete_lifecycle(
+    provider: FakeProvider,
+    orch: Orchestrator,
+) -> None:
+    """spawn child → child calls complete → child terminates → parent wakes."""
+    orch.start_wake_loop()
+    try:
+        parent = await orch.create_root_agent("parent", "p")
+        handler = orch.get_handler(parent.id)
+        result = handler.spawn_agent("child", "ci")
+        child_id = UUID(result["agent_id"])
+        await orch.run_turn(parent.id, "go")
+
+        # Child calls complete — sends RESPONSE + defers termination.
+        h_child = orch.get_handler(child_id)
+        c_result = h_child.complete("task done")
+        assert c_result["status"] == "completing"
+
+        # Run a turn on child to drain deferred (terminate).
+        await orch.run_turn(child_id, "finishing")
+
+        # Child should be terminated.
+        assert child_id not in orch.tree
+
+        # Parent should have the RESPONSE in its inbox (or wake delivered it).
+        # Give the wake loop a chance.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        # At minimum the message was in the inbox before wake.
+        # Check that the parent got woken with the result.
+        assert any("task done" in p for p in provider.prompts)
+    finally:
+        await orch.stop_wake_loop()

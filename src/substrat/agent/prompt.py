@@ -21,7 +21,12 @@ your siblings (other agents with the same parent). One hop only — you cannot
 reach agents two levels away.
 
 All tool calls return immediately. Side effects (spawned agents, workspace
-changes) take effect after your current turn ends.
+changes) take effect after your current turn ends. If another agent sends you
+a message while you are idle, you will be woken automatically — no need to
+poll check_inbox.
+
+When your work is done, call complete(result) to deliver your output to your
+parent and self-terminate.
 
 ## Tools
 
@@ -32,7 +37,9 @@ changes) take effect after your current turn ends.
   messages (sync=false) go to the recipient's inbox for later pickup.
 - **broadcast**(text): Send a message to all siblings. Replies arrive
   asynchronously via check_inbox.
-- **check_inbox**(): Retrieve pending async messages. Returns a list.
+- **check_inbox**(sender=null, kind=null): Retrieve pending async messages.
+  Optional filters narrow by sender name or message kind. Unmatched messages
+  stay in the inbox.
 
 ### Delegation
 
@@ -41,6 +48,8 @@ changes) take effect after your current turn ends.
   instructions — the child cannot read your conversation history. Optionally
   assign a workspace by name.
 - **inspect_agent**(name): Check a child's state and recent activity.
+- **complete**(result): Send your result to your parent and terminate. Use
+  this when your work is done. Only available if you have no active children.
 
 ### Workspaces
 

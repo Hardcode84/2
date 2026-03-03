@@ -525,6 +525,69 @@ def test_enqueue_logged_before_inbox_delivery(fix: ToolFixture) -> None:
     assert inbox_lengths == [0]
 
 
+# --- complete ---
+
+
+def test_complete_sends_response_to_parent(fix: ToolFixture) -> None:
+    """complete() delivers a RESPONSE to the caller's parent."""
+    from substrat.agent.message import MessageKind
+
+    result = fix.h_alice.complete("done")
+    assert result["status"] == "completing"
+    assert "message_id" in result
+    inbox = fix.inboxes[fix.root.id]
+    assert len(inbox) == 1
+    msg = inbox.peek()[0]
+    assert msg.kind == MessageKind.RESPONSE
+    assert msg.payload == "done"
+    assert msg.sender == fix.alice.id
+
+
+def test_complete_defers_termination(fix: ToolFixture) -> None:
+    """complete() queues deferred self-termination."""
+    terminated: list[UUID] = []
+
+    def term_cb(agent_id: UUID) -> Any:
+        async def do_term() -> None:
+            terminated.append(agent_id)
+
+        return do_term
+
+    handler = ToolHandler(
+        fix.tree,
+        fix.inboxes,
+        fix.alice.id,
+        terminate_callback=term_cb,
+    )
+    handler.complete("bye")
+    deferred = handler.drain_deferred()
+    assert len(deferred) == 1
+
+
+def test_complete_root_agent_error(fix: ToolFixture) -> None:
+    """Root agent cannot complete — no parent."""
+    result = fix.h_root.complete("i am root")
+    assert "error" in result
+    assert "root" in result["error"]
+
+
+def test_complete_with_children_error(fix: ToolFixture) -> None:
+    """Agent with children cannot complete."""
+    result = fix.h_carol.complete("still have dave")
+    assert "error" in result
+    assert "children" in result["error"]
+
+
+def test_complete_fires_wake_on_parent(fix: ToolFixture) -> None:
+    """complete() fires wake callback for parent."""
+    woken: list[UUID] = []
+    handler = ToolHandler(
+        fix.tree, fix.inboxes, fix.alice.id, wake_callback=woken.append
+    )
+    handler.complete("result")
+    assert fix.root.id in woken
+
+
 # --- wake callback ---
 
 

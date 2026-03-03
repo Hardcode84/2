@@ -89,6 +89,11 @@ AGENT_TOOLS: tuple[ToolDef, ...] = (
         "View a subordinate's state and recent activity.",
         (ToolParam("name", "string", "Child agent name."),),
     ),
+    ToolDef(
+        "complete",
+        "Send result to parent and self-terminate. Leaf agents only.",
+        (ToolParam("result", "string", "Final result to deliver."),),
+    ),
 )
 
 
@@ -173,6 +178,7 @@ DeferredWork = Callable[[], Coroutine[Any, Any, None]]
 SpawnCallback = Callable[[AgentNode], DeferredWork]
 LogCallback = Callable[[UUID, str, dict[str, Any]], None]
 WakeCallback = Callable[[UUID], None]
+TerminateCallback = Callable[[UUID], DeferredWork]
 InboxRegistry = dict[UUID, Inbox]
 
 
@@ -192,6 +198,7 @@ class ToolHandler:
         spawn_callback: SpawnCallback | None = None,
         log_callback: LogCallback | None = None,
         wake_callback: WakeCallback | None = None,
+        terminate_callback: TerminateCallback | None = None,
         ws_store: WorkspaceStore | None = None,
         ws_mapping: WorkspaceMapping | None = None,
     ) -> None:
@@ -201,6 +208,7 @@ class ToolHandler:
         self._spawn_callback = spawn_callback
         self._log_callback = log_callback
         self._wake_callback = wake_callback
+        self._terminate_callback = terminate_callback
         self._ws_store = ws_store
         self._ws_mapping = ws_mapping
         self._deferred: list[DeferredWork] = []
@@ -376,6 +384,32 @@ class ToolHandler:
                 }
                 for m in recent
             ],
+        }
+
+    def complete(self, result: str) -> dict[str, Any]:
+        """Send RESPONSE to parent and defer self-termination.
+
+        Only valid for leaf agents (no children) with a parent.
+        """
+        node = self._tree.get(self._caller_id)
+        if node.parent_id is None:
+            return {"error": "root agent cannot complete — no parent"}
+        if node.children:
+            return {"error": "agent has children; terminate them first"}
+        # Send RESPONSE to parent.
+        envelope = MessageEnvelope(
+            sender=self._caller_id,
+            recipient=node.parent_id,
+            kind=MessageKind.RESPONSE,
+            payload=result,
+        )
+        self._deliver(node.parent_id, envelope)
+        # Defer self-termination.
+        if self._terminate_callback is not None:
+            self._deferred.append(self._terminate_callback(self._caller_id))
+        return {
+            "status": "completing",
+            "message_id": str(envelope.id),
         }
 
     def list_workspaces(self) -> dict[str, Any]:
