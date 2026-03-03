@@ -71,6 +71,8 @@ Agents are told in their system prompt:
 - Replies to sync messages arrive as your next message.
 - Spawned agents start working after your current turn ends.
 - Do not loop/poll waiting for replies.
+- Messages from other agents wake you automatically.
+- Call `complete(result)` when your work is done.
 
 ## Tool Catalog
 
@@ -107,9 +109,14 @@ Replies arrive as separate messages, one per respondent.
 ### `check_inbox`
 
 Retrieve pending async messages (notifications, unsolicited messages).
+Optional filters narrow which messages are collected; unmatched messages
+remain in the inbox for later retrieval.
 
 ```
-Parameters: (none)
+Parameters:
+  sender: str | null    # Only return messages from this agent name.
+  kind: str | null      # Only return messages of this kind
+                        # (request, response, notification, multicast).
 
 Returns:
   {"messages": [{"from": "name", "text": "...", "message_id": "uuid"}, ...]}
@@ -161,6 +168,24 @@ Returns:
 ```
 
 TODO: define what "recent activity" actually means.
+
+### `complete`
+
+Send a result to the calling agent's parent and self-terminate. Sugar for
+the two-step "send RESPONSE + terminate" pattern. Only valid for leaf agents
+(no active children) that have a parent.
+
+```
+Parameters:
+  result: str           # Final result to deliver to parent.
+
+Returns:
+  {"status": "completing", "message_id": "uuid"}
+```
+
+The RESPONSE message fires auto-wake on the parent. Self-termination is
+deferred until the agent's current turn ends, following the same pattern as
+`spawn_agent`.
 
 ### `list_workspaces`
 
@@ -234,6 +259,53 @@ Returns:
 
 These are provider-native tools — no need to reimplement. They operate within
 the agent's workspace naturally.
+
+## Auto-Wake Mechanism
+
+When a message arrives in an IDLE agent's inbox, the daemon automatically
+starts a new turn on that agent. This replaces the need for external polling
+or explicit `agent.send` RPC calls to drive message flow.
+
+### Triggers
+
+Auto-wake fires when `_deliver()` appends to an inbox. Three sources:
+
+1. **`send_message`** / **`broadcast`** — the sender's ToolHandler calls
+   `_deliver()`, which fires `wake_callback(recipient_id)`.
+2. **Post-spawn** — after `_drain_deferred()` creates child sessions, the
+   orchestrator scans children for non-empty inboxes and enqueues wakes.
+3. **Recovery** — at the end of `recover()`, all placed agents with pending
+   messages get wake notifications.
+
+### Processing
+
+The orchestrator runs a background `asyncio.Task` (`_wake_loop`) that
+consumes from an `asyncio.Queue`. Processing per agent:
+
+1. Guard: agent still in tree? IDLE? Inbox non-empty? No → skip.
+2. `begin_turn()` — transitions to BUSY, preventing concurrent RPC sends.
+3. `_format_wake_prompt()` — drains inbox, logs `message.delivered`, builds
+   a prompt string.
+4. `_execute_turn()` — sends the prompt via the provider, drains deferred
+   work, transitions back to IDLE.
+
+### Safety limits
+
+- **100 wakes per drain cycle.** If the queue has more than 100 pending
+  entries, only 100 are processed and a warning is logged. This prevents
+  runaway A↔B ping-pong from starving the event loop.
+- **Deduplication.** Multiple wake notifications for the same agent in one
+  batch are collapsed — only the first is processed.
+- **begin_turn as lock.** The IDLE→BUSY transition prevents concurrent
+  RPC sends from racing with wake processing. No mutex needed — asyncio
+  is single-threaded.
+
+### Lifecycle
+
+- `Orchestrator.start_wake_loop()` — called by daemon after `recover()`,
+  before the UDS server starts.
+- `Orchestrator.stop_wake_loop()` — called by daemon during shutdown, before
+  closing the server.
 
 ## MCP Server Implementation
 
