@@ -41,19 +41,25 @@ class FakeProvider:
     """Records restore calls so tests can inspect them."""
 
     def __init__(self) -> None:
-        self.restore_calls: list[tuple[bytes, EventLog | None]] = []
+        self.restore_calls: list[tuple[bytes, EventLog | None, object]] = []
 
     @property
     def name(self) -> str:
         return "fake"
 
-    async def create(self, model: str, system_prompt: str) -> FakeProviderSession:
+    async def create(
+        self, model: str, system_prompt: str, **kwargs: object
+    ) -> FakeProviderSession:
         return FakeProviderSession()
 
     async def restore(
-        self, state: bytes, log: EventLog | None = None
+        self,
+        state: bytes,
+        log: EventLog | None = None,
+        *,
+        wrap_command: object = None,
     ) -> FakeProviderSession:
-        self.restore_calls.append((state, log))
+        self.restore_calls.append((state, log, wrap_command))
         return FakeProviderSession(state)
 
 
@@ -155,7 +161,7 @@ async def test_acquire_restores_suspended_session(
     s = _suspended_session(store)
     ps = await mux.acquire(s, provider)
     assert isinstance(ps, ProviderSession)
-    assert provider.restore_calls == [(b"saved-state", None)]
+    assert provider.restore_calls == [(b"saved-state", None, None)]
     assert mux.contains(s.id)
 
 
@@ -373,6 +379,19 @@ async def test_evict_callback_not_set(
     assert not mux.contains(s.id)
 
 
+async def test_acquire_passes_wrap_command_to_restore(
+    mux: SessionMultiplexer,
+    store: SessionStore,
+    provider: FakeProvider,
+) -> None:
+    """acquire() forwards wrap_command to provider.restore()."""
+    s = _suspended_session(store)
+    sentinel = lambda cmd, binds, env: cmd  # noqa: E731
+    await mux.acquire(s, provider, wrap_command=sentinel)
+    assert len(provider.restore_calls) == 1
+    assert provider.restore_calls[0][2] is sentinel
+
+
 async def test_acquire_passes_log_to_restore(
     mux: SessionMultiplexer,
     store: SessionStore,
@@ -388,5 +407,5 @@ async def test_acquire_passes_log_to_restore(
     log.open()
     await mux.acquire(s, provider, log=log)
     assert len(provider.restore_calls) == 1
-    assert provider.restore_calls[0] == (b"saved-state", log)
+    assert provider.restore_calls[0] == (b"saved-state", log, None)
     log.close()

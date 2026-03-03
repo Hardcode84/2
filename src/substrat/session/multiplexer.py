@@ -8,6 +8,7 @@ from collections.abc import Callable
 from uuid import UUID
 
 from substrat.logging.event_log import EventLog
+from substrat.model import CommandWrapper
 from substrat.provider.base import AgentProvider, ProviderSession
 from substrat.session.model import Session, SessionState
 from substrat.session.store import SessionStore
@@ -41,6 +42,8 @@ class SessionMultiplexer:
         session: Session,
         provider: AgentProvider,
         log: EventLog | None = None,
+        *,
+        wrap_command: CommandWrapper | None = None,
     ) -> ProviderSession:
         """Get a live ProviderSession. Restores from suspension if needed.
 
@@ -59,7 +62,9 @@ class SessionMultiplexer:
                 " — use put() for new sessions"
             )
         await self._ensure_slot()
-        ps = await provider.restore(session.provider_state, log=log)
+        ps = await provider.restore(
+            session.provider_state, log=log, wrap_command=wrap_command
+        )
         self._slots[sid] = ps
         self._held.add(sid)
         session.activate()

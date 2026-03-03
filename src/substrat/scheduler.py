@@ -9,6 +9,7 @@ from typing import Any
 from uuid import UUID
 
 from substrat.logging import EventLog
+from substrat.model import CommandWrapper
 from substrat.provider.base import AgentProvider
 from substrat.session.model import Session
 from substrat.session.multiplexer import SessionMultiplexer
@@ -36,6 +37,7 @@ class TurnScheduler:
         self._log_root = log_root
         self._sessions: dict[UUID, Session] = {}
         self._logs: dict[UUID, EventLog] = {}
+        self._wrap_commands: dict[UUID, CommandWrapper | None] = {}
         self._mux.on_evict = self._on_session_evicted
 
     @property
@@ -58,13 +60,19 @@ class TurnScheduler:
         if log is not None:
             log.log("suspend.result", {"state_size": state_size})
 
-    def restore_session(self, session: Session) -> None:
+    def restore_session(
+        self,
+        session: Session,
+        *,
+        wrap_command: CommandWrapper | None = None,
+    ) -> None:
         """Load an existing session into the scheduler's cache and open its log.
 
         Used during recovery. No provider session created — that happens
         on next send_turn via mux acquire.
         """
         self._sessions[session.id] = session
+        self._wrap_commands[session.id] = wrap_command
         if self._log_root is not None:
             log = EventLog(
                 self._log_root / session.id.hex / "events.jsonl",
@@ -78,6 +86,10 @@ class TurnScheduler:
         provider_name: str,
         model: str,
         system_prompt: str,
+        *,
+        workspace: Path | None = None,
+        wrap_command: CommandWrapper | None = None,
+        agent_id: UUID | None = None,
     ) -> Session:
         """Create a provider session, slot it, persist, and release."""
         if provider_name not in self._providers:
@@ -94,13 +106,21 @@ class TurnScheduler:
             )
             log.open()
 
-        ps = await provider.create(model, system_prompt, log=log)
+        ps = await provider.create(
+            model,
+            system_prompt,
+            log=log,
+            workspace=workspace,
+            wrap_command=wrap_command,
+            agent_id=agent_id,
+        )
         await self._mux.put(session.id, ps)
         session.activate()
         self._store.save(session)
         await self._mux.release(session.id)
 
         self._sessions[session.id] = session
+        self._wrap_commands[session.id] = wrap_command
         if log is not None:
             self._logs[session.id] = log
         return session
@@ -120,7 +140,8 @@ class TurnScheduler:
             session = self._store.load(session_id)
             self._sessions[session_id] = session
 
-        ps = await self._mux.acquire(session, provider, log=log)
+        wc = self._wrap_commands.get(session_id)
+        ps = await self._mux.acquire(session, provider, log=log, wrap_command=wc)
 
         if was_suspended and log is not None:
             log.log(
@@ -150,4 +171,5 @@ class TurnScheduler:
         log = self._logs.pop(session_id, None)
         if log is not None:
             log.close()
+        self._wrap_commands.pop(session_id, None)
         del self._sessions[session_id]

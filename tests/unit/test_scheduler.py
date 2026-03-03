@@ -50,6 +50,7 @@ class FakeProvider:
     def __init__(self, chunks: list[str] | None = None) -> None:
         self._chunks = chunks
         self._error_on_send = False
+        self.create_kwargs: list[dict[str, object]] = []
 
     @property
     def name(self) -> str:
@@ -60,7 +61,9 @@ class FakeProvider:
         model: str,
         system_prompt: str,
         log: EventLog | None = None,
+        **kwargs: object,
     ) -> FakeProviderSession:
+        self.create_kwargs.append(kwargs)
         if self._error_on_send:
             return ErrorProviderSession()
         return FakeProviderSession(self._chunks)
@@ -69,6 +72,8 @@ class FakeProvider:
         self,
         state: bytes,
         log: EventLog | None = None,
+        *,
+        wrap_command: object = None,
     ) -> FakeProviderSession:
         return FakeProviderSession(self._chunks)
 
@@ -120,6 +125,27 @@ async def test_create_session(
     # Persisted to store.
     loaded = store.load(session.id)
     assert loaded.state == SessionState.ACTIVE
+
+
+async def test_create_session_passes_kwargs(
+    scheduler: TurnScheduler,
+    provider: FakeProvider,
+) -> None:
+    """workspace, wrap_command, agent_id are forwarded to provider.create()."""
+    from pathlib import Path
+    from uuid import uuid4
+
+    ws = Path("/fake/ws")
+    wc = lambda cmd, binds, env: cmd  # noqa: E731
+    aid = uuid4()
+    await scheduler.create_session(
+        "fake", "m", "p", workspace=ws, wrap_command=wc, agent_id=aid
+    )
+    assert len(provider.create_kwargs) == 1
+    kw = provider.create_kwargs[0]
+    assert kw["workspace"] == ws
+    assert kw["wrap_command"] is wc
+    assert kw["agent_id"] == aid
 
 
 async def test_create_session_unknown_provider(

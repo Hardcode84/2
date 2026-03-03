@@ -65,6 +65,7 @@ class FakeProvider:
         model: str,
         system_prompt: str,
         log: EventLog | None = None,
+        **kwargs: object,
     ) -> FakeProviderSession:
         self.created.append((model, system_prompt))
         if self._error_on_send:
@@ -75,6 +76,7 @@ class FakeProvider:
         self,
         state: bytes,
         log: EventLog | None = None,
+        **kwargs: object,
     ) -> FakeProviderSession:
         return FakeProviderSession(self._chunks)
 
