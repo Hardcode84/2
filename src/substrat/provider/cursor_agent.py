@@ -259,8 +259,9 @@ class CursorAgentProvider:
         system_prompt = data.get("system_prompt", "")
         workspace = Path(data["workspace"])
         private = data.get("private_workspace", False)
+        # Recreate workspace if it was cleaned up (e.g. private ws after stop()).
+        workspace.mkdir(parents=True, exist_ok=True)
         # Re-write rules file in case workspace was cleaned up.
-        # _write_rules uses parents=True, so missing dirs are recreated.
         _write_rules(workspace, system_prompt)
         if log is not None:
             log.log(
