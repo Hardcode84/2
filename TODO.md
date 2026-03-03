@@ -151,11 +151,11 @@ Code bugs that prevent the full stack from working end-to-end.
 
 ## E2E — Missing Integration Tests
 Every existing integration test exercises one half of the stack. No test bridges daemon + real provider.
-- [ ] Daemon + real cursor-agent (no bwrap) — daemon.start, agent.create, agent.send with CursorAgentProvider, verify real response
+- [x] Daemon + real cursor-agent (no bwrap) — daemon.start, agent.create, agent.send with CursorAgentProvider, verify real response
 - [ ] Daemon + workspace + bwrap — workspace.create, agent.create(workspace=...), agent.send triggers bwrap sandbox
 - [ ] Daemon + bwrap + substrat MCP tools — agent inside bwrap discovers .cursor/mcp.json, MCP server connects back to daemon via SUBSTRAT_SOCKET, tool.call round-trip verified
 - [ ] Multi-agent live coordination — parent spawns child via MCP tool, child sends message back, parent auto-wakes, verify full roundtrip (daemon-layer coordination proven in test_tool_callbacks.py; MCP→daemon chain still untested)
-- [ ] Session suspend/restore under daemon — daemon evicts session (LRU), next send restores from state blob, verify context survives
+- [x] Session suspend/restore under daemon — daemon evicts session (LRU), next send restores from state blob, verify context survives
 
 ## Task Coordination
 Tasks are files in shared workspaces, not a new abstraction. Completion is a message. Wakeup is inbox delivery. Taskwarrior available in sandbox — agents use it directly via CLI, no wrapper needed. Parent and child share a task dir via workspace links, coordinate through `task add`/`task done`. Prompt convention, not infrastructure.
