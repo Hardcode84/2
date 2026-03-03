@@ -16,7 +16,7 @@ no I/O, no daemon.
 from __future__ import annotations
 
 from collections.abc import Callable, Coroutine
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID, uuid4
 
 from substrat.agent.inbox import Inbox
@@ -337,6 +337,84 @@ class ToolHandler:
             if ws.scope in vis
         ]
         return {"workspaces": workspaces}
+
+    def create_workspace(
+        self,
+        name: str,
+        *,
+        network_access: bool = False,
+        view_of: str | None = None,
+        subdir: str = ".",
+        mode: Literal["ro", "rw"] = "ro",
+    ) -> dict[str, Any]:
+        """Create a workspace in the caller's own scope."""
+        from pathlib import Path
+
+        from substrat.workspace.model import LinkSpec, Workspace
+        from substrat.workspace.resolve import resolve, visible_scopes
+        from substrat.workspace.store import validate_name
+
+        try:
+            store, _mapping = self._require_ws_deps()
+        except ToolError as exc:
+            return {"error": str(exc)}
+        try:
+            validate_name(name)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        caller = self._tree.get(self._caller_id)
+        scope = caller.id
+        if store.exists(scope, name):
+            return {"error": f"workspace {name!r} already exists in own scope"}
+        links: list[LinkSpec] = []
+        if view_of is not None:
+            try:
+                src_scope, src_name = resolve(caller, view_of, self._tree)
+            except (ValueError, KeyError) as exc:
+                return {"error": str(exc)}
+            vis = visible_scopes(caller, self._tree)
+            if src_scope not in vis:
+                return {"error": f"workspace {view_of!r} not visible"}
+            try:
+                src_ws = store.load(src_scope, src_name)
+            except FileNotFoundError:
+                return {"error": f"workspace {view_of!r} not found"}
+            host_path = src_ws.root_path / subdir
+            links.append(LinkSpec(host_path=host_path, mount_path=Path("."), mode=mode))
+        ws_dir = store.workspace_dir(scope, name) / "root"
+        ws = Workspace(
+            name=name,
+            scope=scope,
+            root_path=ws_dir,
+            network_access=network_access,
+            links=links,
+        )
+        store.save(ws)
+        return {"status": "created", "name": name}
+
+    def delete_workspace(self, name: str) -> dict[str, Any]:
+        """Delete a workspace. Must be in a mutable scope."""
+        from substrat.workspace.resolve import mutable_scopes, resolve
+
+        try:
+            store, mapping = self._require_ws_deps()
+        except ToolError as exc:
+            return {"error": str(exc)}
+        caller = self._tree.get(self._caller_id)
+        try:
+            scope, local_name = resolve(caller, name, self._tree)
+        except (ValueError, KeyError) as exc:
+            return {"error": str(exc)}
+        mut = mutable_scopes(caller, self._tree)
+        if scope not in mut:
+            return {"error": f"workspace {name!r} is not in a mutable scope"}
+        if not store.exists(scope, local_name):
+            return {"error": f"workspace {name!r} not found"}
+        agents = mapping.agents_in(scope, local_name)
+        if agents:
+            return {"error": f"workspace {name!r} has {len(agents)} assigned agent(s)"}
+        store.delete(scope, local_name)
+        return {"status": "deleted"}
 
     def drain_deferred(self) -> list[DeferredWork]:
         """Return and clear accumulated deferred callbacks."""

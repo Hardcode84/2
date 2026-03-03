@@ -598,3 +598,137 @@ def test_list_workspaces_no_ws_deps_raises() -> None:
     handler = ToolHandler(tree, inboxes, node.id)
     result = handler.list_workspaces()
     assert "error" in result
+
+
+# --- create_workspace ---
+
+
+def test_create_workspace_basic(ws_fix: WsFixture) -> None:
+    """Basic workspace creation in own scope."""
+    result = ws_fix.h_alice.create_workspace("my-env")
+    assert result == {"status": "created", "name": "my-env"}
+    assert ws_fix.ws_store.exists(ws_fix.alice.id, "my-env")
+
+
+def test_create_workspace_duplicate_error(ws_fix: WsFixture) -> None:
+    """Duplicate name in own scope fails."""
+    ws_fix.h_alice.create_workspace("dup")
+    result = ws_fix.h_alice.create_workspace("dup")
+    assert "error" in result
+    assert "already exists" in result["error"]
+
+
+def test_create_workspace_invalid_name(ws_fix: WsFixture) -> None:
+    """Invalid workspace name is rejected."""
+    result = ws_fix.h_alice.create_workspace("../evil")
+    assert "error" in result
+
+
+def test_create_workspace_view_of_own(ws_fix: WsFixture) -> None:
+    """Create a view of own workspace."""
+    ws_fix.h_alice.create_workspace("source")
+    result = ws_fix.h_alice.create_workspace("view", view_of="source")
+    assert result["status"] == "created"
+    ws = ws_fix.ws_store.load(ws_fix.alice.id, "view")
+    assert len(ws.links) == 1
+
+
+def test_create_workspace_view_of_parent(ws_fix: WsFixture) -> None:
+    """Child creates a view of parent's workspace."""
+    ws_fix.h_root.create_workspace("shared")
+    result = ws_fix.h_alice.create_workspace("my-view", view_of="../shared")
+    assert result["status"] == "created"
+    ws = ws_fix.ws_store.load(ws_fix.alice.id, "my-view")
+    assert len(ws.links) == 1
+    # Link points at parent workspace's root_path.
+    parent_ws = ws_fix.ws_store.load(ws_fix.root.id, "shared")
+    assert ws.links[0].host_path == parent_ws.root_path / "."
+
+
+def test_create_workspace_view_of_with_subdir(ws_fix: WsFixture) -> None:
+    """View with subdir restricts to a subfolder."""
+    ws_fix.h_alice.create_workspace("big-ws")
+    result = ws_fix.h_alice.create_workspace("sub-view", view_of="big-ws", subdir="src")
+    assert result["status"] == "created"
+    ws = ws_fix.ws_store.load(ws_fix.alice.id, "sub-view")
+    source_ws = ws_fix.ws_store.load(ws_fix.alice.id, "big-ws")
+    assert ws.links[0].host_path == source_ws.root_path / "src"
+
+
+def test_create_workspace_view_of_nonexistent(ws_fix: WsFixture) -> None:
+    """View of nonexistent workspace fails."""
+    result = ws_fix.h_alice.create_workspace("view", view_of="ghost")
+    assert "error" in result
+    assert "not found" in result["error"]
+
+
+def test_create_workspace_view_of_invisible(ws_fix: WsFixture) -> None:
+    """View of workspace in invisible scope fails."""
+    # Bob's workspace is invisible to alice.
+    ws = Workspace(
+        name="secret",
+        scope=ws_fix.bob.id,
+        root_path=ws_fix.ws_store.workspace_dir(ws_fix.bob.id, "secret") / "root",
+    )
+    ws_fix.ws_store.save(ws)
+    result = ws_fix.h_alice.create_workspace("view", view_of="bob/secret")
+    assert "error" in result
+
+
+def test_create_workspace_persists(ws_fix: WsFixture) -> None:
+    """Created workspace can be loaded back from disk."""
+    ws_fix.h_alice.create_workspace("persistent", network_access=True)
+    ws = ws_fix.ws_store.load(ws_fix.alice.id, "persistent")
+    assert ws.name == "persistent"
+    assert ws.network_access is True
+
+
+# --- delete_workspace ---
+
+
+def test_delete_workspace_basic(ws_fix: WsFixture) -> None:
+    """Delete own workspace."""
+    ws_fix.h_alice.create_workspace("doomed")
+    result = ws_fix.h_alice.delete_workspace("doomed")
+    assert result == {"status": "deleted"}
+    assert not ws_fix.ws_store.exists(ws_fix.alice.id, "doomed")
+
+
+def test_delete_workspace_has_agents(ws_fix: WsFixture) -> None:
+    """Cannot delete workspace with assigned agents."""
+    ws_fix.h_alice.create_workspace("busy")
+    ws_fix.ws_mapping.assign(uuid4(), ws_fix.alice.id, "busy")
+    result = ws_fix.h_alice.delete_workspace("busy")
+    assert "error" in result
+    assert "assigned agent" in result["error"]
+
+
+def test_delete_workspace_not_mutable(ws_fix: WsFixture) -> None:
+    """Cannot delete workspace in parent's (read-only) scope."""
+    ws_fix.h_root.create_workspace("protected")
+    result = ws_fix.h_alice.delete_workspace("../protected")
+    assert "error" in result
+    assert "mutable" in result["error"]
+
+
+def test_delete_workspace_not_found(ws_fix: WsFixture) -> None:
+    """Delete nonexistent workspace fails."""
+    result = ws_fix.h_alice.delete_workspace("ghost")
+    assert "error" in result
+    assert "not found" in result["error"]
+
+
+def test_delete_workspace_removed_from_disk(ws_fix: WsFixture) -> None:
+    """Deleted workspace directory is removed."""
+    ws_fix.h_alice.create_workspace("ephemeral")
+    ws_dir = ws_fix.ws_store.workspace_dir(ws_fix.alice.id, "ephemeral")
+    assert ws_dir.exists()
+    ws_fix.h_alice.delete_workspace("ephemeral")
+    assert not ws_dir.exists()
+
+
+def test_delete_workspace_child_scope(ws_fix: WsFixture) -> None:
+    """Parent can delete workspace in child's scope."""
+    ws_fix.h_alice.create_workspace("child-ws")
+    result = ws_fix.h_root.delete_workspace("alice/child-ws")
+    assert result == {"status": "deleted"}
