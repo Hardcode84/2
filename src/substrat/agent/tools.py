@@ -8,9 +8,8 @@ AGENT_TOOLS is the catalog of Substrat's six agent-facing tools.
 WORKSPACE_TOOLS adds the five workspace management tools.
 ALL_TOOLS is the union for daemon/MCP consumption.
 
-ToolHandler implements them as pure operations on the agent tree,
-inboxes, and (optionally) workspace store/mapping — no wire protocol,
-no I/O, no daemon.
+ToolHandler implements agent tools as pure operations on the agent tree
+and inboxes. Workspace tools delegate to WorkspaceToolHandler.
 """
 
 from __future__ import annotations
@@ -30,8 +29,7 @@ from substrat.agent.tree import AgentTree
 from substrat.model import ToolDef, ToolParam, sentinel_name
 
 if TYPE_CHECKING:
-    from substrat.workspace.mapping import WorkspaceMapping
-    from substrat.workspace.store import WorkspaceStore
+    from substrat.workspace.handler import WorkspaceToolHandler
 
 # -- Substrat agent tool catalog -----------------------------------------
 
@@ -174,7 +172,7 @@ class ToolError(Exception):
 
 
 DeferredWork = Callable[[], Coroutine[Any, Any, None]]
-SpawnCallback = Callable[[AgentNode], DeferredWork]
+SpawnCallback = Callable[[AgentNode, tuple[UUID, str] | None], DeferredWork]
 LogCallback = Callable[[UUID, str, dict[str, Any]], None]
 WakeCallback = Callable[[UUID], None]
 TerminateCallback = Callable[[UUID], DeferredWork]
@@ -198,8 +196,7 @@ class ToolHandler:
         log_callback: LogCallback | None = None,
         wake_callback: WakeCallback | None = None,
         terminate_callback: TerminateCallback | None = None,
-        ws_store: WorkspaceStore | None = None,
-        ws_mapping: WorkspaceMapping | None = None,
+        ws_handler: WorkspaceToolHandler | None = None,
     ) -> None:
         self._tree = tree
         self._inboxes = inboxes
@@ -208,8 +205,7 @@ class ToolHandler:
         self._log_callback = log_callback
         self._wake_callback = wake_callback
         self._terminate_callback = terminate_callback
-        self._ws_store = ws_store
-        self._ws_mapping = ws_mapping
+        self._ws_handler = ws_handler
         self._deferred: list[DeferredWork] = []
 
     # --- Public tools ---
@@ -322,26 +318,12 @@ class ToolHandler:
         # Validate workspace ref before mutating the tree.
         ws_key: tuple[UUID, str] | None = None
         if workspace is not None:
-            from substrat.workspace.resolve import resolve, visible_scopes
-
-            if self._ws_store is None or self._ws_mapping is None:
+            if self._ws_handler is None:
                 return {"error": "workspace tools not available"}
-            caller, parent_id, child_lookup = self._resolve_ctx()
             try:
-                scope, ws_name = resolve(
-                    caller.id,
-                    workspace,
-                    parent_id=parent_id,
-                    child_lookup=child_lookup,
-                )
+                ws_key = self._ws_handler.validate_ref(workspace)
             except (ValueError, KeyError) as exc:
                 return {"error": str(exc)}
-            vis = visible_scopes(caller.id, caller.children, parent_id)
-            if scope not in vis:
-                return {"error": f"workspace {workspace!r} not visible"}
-            if not self._ws_store.exists(scope, ws_name):
-                return {"error": f"workspace {workspace!r} not found"}
-            ws_key = (scope, ws_name)
 
         child = AgentNode(
             session_id=uuid4(),
@@ -353,14 +335,10 @@ class ToolHandler:
             self._tree.add(child)
         except ValueError as exc:
             return {"error": str(exc)}
-        # Assign workspace if requested.
-        if ws_key is not None and self._ws_mapping is not None:
-            child.workspace = ws_key
-            self._ws_mapping.assign(child.id, ws_key[0], ws_key[1])
         # Eager inbox so messages sent before provider starts are queued.
         self._inboxes[child.id] = Inbox()
         if self._spawn_callback is not None:
-            self._deferred.append(self._spawn_callback(child))
+            self._deferred.append(self._spawn_callback(child, ws_key))
         result: dict[str, Any] = {
             "status": "accepted",
             "agent_id": str(child.id),
@@ -416,30 +394,13 @@ class ToolHandler:
             "message_id": str(envelope.id),
         }
 
+    # --- Workspace tool delegates ---
+
     def list_workspaces(self) -> dict[str, Any]:
         """List workspaces visible to the caller."""
-        from substrat.workspace.resolve import (
-            mutable_scopes,
-            visible_scopes,
-        )
-
-        try:
-            store, _mapping = self._require_ws_deps()
-        except ToolError as exc:
-            return {"error": str(exc)}
-        caller, parent_id, _child_lookup = self._resolve_ctx()
-        vis = visible_scopes(caller.id, caller.children, parent_id)
-        mut = mutable_scopes(caller.id, caller.children)
-        workspaces = [
-            {
-                "name": ws.name,
-                "scope": self._scope_label(ws.scope, caller),
-                "mutable": ws.scope in mut,
-            }
-            for ws in store.scan()
-            if ws.scope in vis
-        ]
-        return {"workspaces": workspaces}
+        if self._ws_handler is None:
+            return {"error": "workspace tools not available"}
+        return self._ws_handler.list_workspaces()
 
     def create_workspace(
         self,
@@ -451,98 +412,21 @@ class ToolHandler:
         mode: Literal["ro", "rw"] = "ro",
     ) -> dict[str, Any]:
         """Create a workspace in the caller's own scope."""
-        from pathlib import Path
-
-        from substrat.workspace.model import LinkSpec, Workspace
-        from substrat.workspace.resolve import resolve, visible_scopes
-        from substrat.workspace.store import validate_name
-
-        try:
-            store, _mapping = self._require_ws_deps()
-        except ToolError as exc:
-            return {"error": str(exc)}
-        try:
-            validate_name(name)
-        except ValueError as exc:
-            return {"error": str(exc)}
-        caller, parent_id, child_lookup = self._resolve_ctx()
-        scope = caller.id
-        if store.exists(scope, name):
-            return {"error": f"workspace {name!r} already exists in own scope"}
-        links: list[LinkSpec] = []
-        if view_of is not None:
-            try:
-                src_scope, src_name = resolve(
-                    caller.id,
-                    view_of,
-                    parent_id=parent_id,
-                    child_lookup=child_lookup,
-                )
-            except (ValueError, KeyError) as exc:
-                return {"error": str(exc)}
-            vis = visible_scopes(caller.id, caller.children, parent_id)
-            if src_scope not in vis:
-                return {"error": f"workspace {view_of!r} not visible"}
-            try:
-                src_ws = store.load(src_scope, src_name)
-            except FileNotFoundError:
-                return {"error": f"workspace {view_of!r} not found"}
-            host_path = src_ws.root_path / subdir
-            links.append(LinkSpec(host_path=host_path, mount_path=Path("."), mode=mode))
-        ws_dir = store.workspace_dir(scope, name) / "root"
-        ws = Workspace(
-            name=name,
-            scope=scope,
-            root_path=ws_dir,
+        if self._ws_handler is None:
+            return {"error": "workspace tools not available"}
+        return self._ws_handler.create_workspace(
+            name,
             network_access=network_access,
-            links=links,
+            view_of=view_of,
+            subdir=subdir,
+            mode=mode,
         )
-        store.save(ws)
-        return {"status": "created", "name": name}
 
     def delete_workspace(self, name: str) -> dict[str, Any]:
-        """Delete a workspace and its entire view tree.
-
-        Fails if any workspace in the tree has assigned agents.
-        """
-        from substrat.workspace.resolve import mutable_scopes, resolve
-        from substrat.workspace.store import view_tree
-
-        try:
-            store, mapping = self._require_ws_deps()
-        except ToolError as exc:
-            return {"error": str(exc)}
-        caller, parent_id, child_lookup = self._resolve_ctx()
-        try:
-            scope, local_name = resolve(
-                caller.id,
-                name,
-                parent_id=parent_id,
-                child_lookup=child_lookup,
-            )
-        except (ValueError, KeyError) as exc:
-            return {"error": str(exc)}
-        mut = mutable_scopes(caller.id, caller.children)
-        if scope not in mut:
-            return {"error": f"workspace {name!r} is not in a mutable scope"}
-        if not store.exists(scope, local_name):
-            return {"error": f"workspace {name!r} not found"}
-        # Collect the full view tree (transitive views).
-        views = view_tree(scope, local_name, store)
-        # Check agents on root + all views before deleting anything.
-        all_targets = [(scope, local_name)] + [(v.scope, v.name) for v in views]
-        for s, n in all_targets:
-            agents = mapping.agents_in(s, n)
-            if agents:
-                label = f"{s.hex[:8]}/{n}" if (s, n) != (scope, local_name) else name
-                return {
-                    "error": f"workspace {label!r} has {len(agents)} assigned agent(s)"
-                }
-        # Delete views first (leaves), then root.
-        for v in reversed(views):
-            store.delete(v.scope, v.name)
-        store.delete(scope, local_name)
-        return {"status": "deleted"}
+        """Delete a workspace. Must be in a mutable scope."""
+        if self._ws_handler is None:
+            return {"error": "workspace tools not available"}
+        return self._ws_handler.delete_workspace(name)
 
     def link_dir(
         self,
@@ -553,81 +437,15 @@ class ToolHandler:
         mode: Literal["ro", "rw"] = "ro",
     ) -> dict[str, Any]:
         """Link a directory from caller's workspace into a target workspace."""
-        from pathlib import Path
-
-        from substrat.workspace.model import LinkSpec
-        from substrat.workspace.resolve import mutable_scopes, resolve
-
-        try:
-            store, mapping = self._require_ws_deps()
-        except ToolError as exc:
-            return {"error": str(exc)}
-        caller, parent_id, child_lookup = self._resolve_ctx()
-        # Caller must have a workspace assigned.
-        caller_ws_key = mapping.get(self._caller_id)
-        if caller_ws_key is None:
-            return {"error": "caller has no workspace assigned"}
-        caller_ws = store.load(*caller_ws_key)
-        host_path = caller_ws.root_path / source
-        if not host_path.exists():
-            return {"error": f"source path {source!r} does not exist"}
-        # Resolve target workspace.
-        try:
-            scope, local_name = resolve(
-                caller.id,
-                workspace,
-                parent_id=parent_id,
-                child_lookup=child_lookup,
-            )
-        except (ValueError, KeyError) as exc:
-            return {"error": str(exc)}
-        mut = mutable_scopes(caller.id, caller.children)
-        if scope not in mut:
-            return {"error": f"workspace {workspace!r} is not in a mutable scope"}
-        try:
-            target_ws = store.load(scope, local_name)
-        except FileNotFoundError:
-            return {"error": f"workspace {workspace!r} not found"}
-        target_ws.links.append(
-            LinkSpec(host_path=host_path, mount_path=Path(target), mode=mode)
-        )
-        store.save(target_ws)
-        return {"status": "linked"}
+        if self._ws_handler is None:
+            return {"error": "workspace tools not available"}
+        return self._ws_handler.link_dir(workspace, source, target, mode=mode)
 
     def unlink_dir(self, workspace: str, target: str) -> dict[str, Any]:
         """Remove a linked directory from a workspace."""
-        from pathlib import Path
-
-        from substrat.workspace.resolve import mutable_scopes, resolve
-
-        try:
-            store, _mapping = self._require_ws_deps()
-        except ToolError as exc:
-            return {"error": str(exc)}
-        caller, parent_id, child_lookup = self._resolve_ctx()
-        try:
-            scope, local_name = resolve(
-                caller.id,
-                workspace,
-                parent_id=parent_id,
-                child_lookup=child_lookup,
-            )
-        except (ValueError, KeyError) as exc:
-            return {"error": str(exc)}
-        mut = mutable_scopes(caller.id, caller.children)
-        if scope not in mut:
-            return {"error": f"workspace {workspace!r} is not in a mutable scope"}
-        try:
-            ws = store.load(scope, local_name)
-        except FileNotFoundError:
-            return {"error": f"workspace {workspace!r} not found"}
-        mount = Path(target)
-        for i, link in enumerate(ws.links):
-            if link.mount_path == mount:
-                ws.links.pop(i)
-                store.save(ws)
-                return {"status": "unlinked"}
-        return {"error": f"no link at {target!r}"}
+        if self._ws_handler is None:
+            return {"error": "workspace tools not available"}
+        return self._ws_handler.unlink_dir(workspace, target)
 
     def drain_deferred(self) -> list[DeferredWork]:
         """Return and clear accumulated deferred callbacks."""
@@ -708,32 +526,3 @@ class ToolHandler:
         inbox.deliver(envelope)
         if self._wake_callback is not None:
             self._wake_callback(recipient_id)
-
-    def _require_ws_deps(self) -> tuple[WorkspaceStore, WorkspaceMapping]:
-        """Return workspace deps or raise ToolError if not configured."""
-        if self._ws_store is None or self._ws_mapping is None:
-            raise ToolError("workspace tools not available")
-        return self._ws_store, self._ws_mapping
-
-    def _resolve_ctx(self) -> tuple[AgentNode, UUID | None, Callable[[str], UUID]]:
-        """Pre-compute plain data needed by workspace resolve functions."""
-        caller = self._tree.get(self._caller_id)
-        parent = self._tree.parent(self._caller_id)
-        parent_id = parent.id if parent else None
-
-        def child_lookup(name: str) -> UUID:
-            return self._tree.child_by_name(self._caller_id, name).id
-
-        return caller, parent_id, child_lookup
-
-    def _scope_label(self, scope: UUID, caller: AgentNode) -> str:
-        """Map a scope UUID to a human-readable label for the caller."""
-        if scope == caller.id:
-            return "self"
-        # Check children.
-        for cid in caller.children:
-            child = self._tree.get(cid)
-            if child.id == scope:
-                return child.name
-        # Must be parent scope.
-        return "parent"

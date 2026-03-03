@@ -729,16 +729,13 @@ async def test_recover_workspace_assignment(
     await orch.run_turn(root.id, "go")
 
     # Verify pre-recovery state.
-    child = orch.tree.get(child_id)
-    assert child.workspace is not None
-    original_ws = child.workspace
+    assert ws_mapping.get(child_id) is not None
+    original_ws = ws_mapping.get(child_id)
 
     # Recover into a fresh orchestrator.
     orch2, ws_store2, ws_mapping2 = _fresh_orch_ws(tmp_path, provider)
     await orch2.recover()
 
-    recovered = orch2.tree.get(child_id)
-    assert recovered.workspace == original_ws
     assert ws_mapping2.get(child_id) == original_ws
 
 
@@ -753,8 +750,6 @@ async def test_recover_workspace_none_by_default(
     orch2, _, ws_mapping2 = _fresh_orch_ws(tmp_path, provider)
     await orch2.recover()
 
-    recovered = orch2.tree.get(root.id)
-    assert recovered.workspace is None
     assert ws_mapping2.get(root.id) is None
 
 
@@ -806,8 +801,7 @@ async def test_recover_workspace_old_event_no_field(
     orch2, _, ws_mapping2 = _fresh_orch_ws(tmp_path, provider)
     await orch2.recover()
 
-    recovered = orch2.tree.get(root.id)
-    assert recovered.workspace is None
+    assert ws_mapping2.get(root.id) is None
 
 
 # -- Recovery wake ----------------------------------------------------------

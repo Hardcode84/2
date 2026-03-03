@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from substrat.workspace.bwrap import SYSTEM_RO_BINDS, build_command, check_available
+from substrat.workspace.handler import WorkspaceToolHandler
 from substrat.workspace.mapping import WorkspaceKey, WorkspaceMapping
 from substrat.workspace.model import LinkSpec, Workspace
 from substrat.workspace.resolve import mutable_scopes, resolve, visible_scopes
@@ -15,6 +16,7 @@ __all__ = [
     "WorkspaceKey",
     "WorkspaceMapping",
     "WorkspaceStore",
+    "WorkspaceToolHandler",
     "build_command",
     "check_available",
     "mutable_scopes",

@@ -31,6 +31,7 @@ from substrat.logging.event_log import read_log
 from substrat.model import CommandWrapper
 from substrat.scheduler import TurnScheduler
 from substrat.session.model import Session, SessionState
+from substrat.workspace.handler import WorkspaceToolHandler
 from substrat.workspace.mapping import WorkspaceMapping
 from substrat.workspace.model import Workspace
 from substrat.workspace.store import WorkspaceStore
@@ -104,7 +105,6 @@ class Orchestrator:
             session_id=uuid4(),
             name=name,
             instructions=instructions,
-            workspace=workspace,
         )
         prompt = build_prompt(instructions)
         session = await self._scheduler.create_session(
@@ -349,6 +349,15 @@ class Orchestrator:
         model: str,
     ) -> ToolHandler:
         """Build a ToolHandler with spawn, log, wake, and terminate callbacks."""
+        ws_handler: WorkspaceToolHandler | None = None
+        if self._ws_store is not None and self._ws_mapping is not None:
+            ws_handler = WorkspaceToolHandler(
+                store=self._ws_store,
+                mapping=self._ws_mapping,
+                caller_id=agent_id,
+                resolve_ctx=self._make_resolve_ctx(agent_id),
+                scope_namer=self._make_scope_namer(agent_id),
+            )
         return ToolHandler(
             self._tree,
             self._inboxes,
@@ -357,9 +366,40 @@ class Orchestrator:
             log_callback=self._make_log_callback(),
             wake_callback=self._notify_wake,
             terminate_callback=self._make_terminate_callback(),
-            ws_store=self._ws_store,
-            ws_mapping=self._ws_mapping,
+            ws_handler=ws_handler,
         )
+
+    def _make_resolve_ctx(
+        self, agent_id: UUID
+    ) -> Callable[[], tuple[UUID | None, list[UUID], Callable[[str], UUID]]]:
+        """Return a closure that reads tree state fresh each call."""
+
+        def ctx() -> tuple[UUID | None, list[UUID], Callable[[str], UUID]]:
+            parent = self._tree.parent(agent_id)
+            parent_id = parent.id if parent else None
+            caller = self._tree.get(agent_id)
+
+            def child_lookup(name: str) -> UUID:
+                return self._tree.child_by_name(agent_id, name).id
+
+            return parent_id, caller.children, child_lookup
+
+        return ctx
+
+    def _make_scope_namer(self, agent_id: UUID) -> Callable[[UUID], str]:
+        """Return a closure that maps scope UUIDs to display labels."""
+
+        def namer(scope: UUID) -> str:
+            if scope == agent_id:
+                return "self"
+            caller = self._tree.get(agent_id)
+            for cid in caller.children:
+                child = self._tree.get(cid)
+                if child.id == scope:
+                    return child.name
+            return "parent"
+
+        return namer
 
     def _make_log_callback(self) -> LogCallback:
         """Return a closure that logs message events to the recipient's session log."""
@@ -395,9 +435,12 @@ class Orchestrator:
         session_id is patched to match the real session after creation.
         """
 
-        def callback(child: AgentNode) -> DeferredWork:
+        def callback(child: AgentNode, ws_key: tuple[UUID, str] | None) -> DeferredWork:
             async def do_spawn() -> None:
-                ws_path, wrap_cmd = self._resolve_workspace(child.workspace)
+                # Assign workspace mapping if requested.
+                if ws_key is not None and self._ws_mapping is not None:
+                    self._ws_mapping.assign(child.id, ws_key[0], ws_key[1])
+                ws_path, wrap_cmd = self._resolve_workspace(ws_key)
                 prompt = build_prompt(child.instructions)
                 session = await self._scheduler.create_session(
                     provider,
@@ -411,11 +454,7 @@ class Orchestrator:
                 # Log after session created so the event goes to the real log.
                 parent_node = self._tree.parent(child.id)
                 parent_sid = parent_node.session_id.hex if parent_node else None
-                ws_data = (
-                    [child.workspace[0].hex, child.workspace[1]]
-                    if child.workspace
-                    else None
-                )
+                ws_data = [ws_key[0].hex, ws_key[1]] if ws_key else None
                 self._log_lifecycle(
                     session.id,
                     "agent.created",
@@ -544,14 +583,15 @@ class Orchestrator:
                     name=info["name"],
                     parent_id=parent_agent_id,
                     instructions=info["instructions"],
-                    workspace=ws_tuple,
                 )
                 self._tree.add(node)
                 self._inboxes[node.id] = Inbox()
                 prov = info["session"].provider_name or self._default_provider
                 mdl = info["session"].model or self._default_model
                 self._handlers[node.id] = self._make_handler(node.id, prov, mdl)
-                # Rebuild wrap_command for agents with workspaces.
+                # Rebuild workspace mapping and wrap_command.
+                if ws_tuple is not None and self._ws_mapping is not None:
+                    self._ws_mapping.assign(node.id, ws_tuple[0], ws_tuple[1])
                 _, wrap_cmd = self._resolve_workspace(ws_tuple)
                 self._scheduler.restore_session(info["session"], wrap_command=wrap_cmd)
                 placed.add(node.id)
@@ -611,14 +651,6 @@ class Orchestrator:
                 inbox = self._inboxes.get(recipient_id)
                 if inbox is not None:
                     inbox.deliver(envelope)
-
-        # -- Workspace mapping recovery: reconstruct from AgentNode.workspace. --
-        if self._ws_mapping is not None:
-            for nid in placed:
-                node = self._tree.get(nid)
-                if node.workspace is not None:
-                    scope, ws_name = node.workspace
-                    self._ws_mapping.assign(nid, scope, ws_name)
 
         # -- Recovery wake: agents with pending messages get woken. --
         for nid in placed:

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NamedTuple
 from uuid import UUID, uuid4
@@ -22,7 +23,12 @@ from substrat.agent import (
     ToolHandler,
 )
 from substrat.agent.message import USER
-from substrat.workspace import Workspace, WorkspaceMapping, WorkspaceStore
+from substrat.workspace import (
+    Workspace,
+    WorkspaceMapping,
+    WorkspaceStore,
+    WorkspaceToolHandler,
+)
 
 
 class ToolFixture(NamedTuple):
@@ -40,7 +46,9 @@ class ToolFixture(NamedTuple):
     h_dave: ToolHandler
 
 
-def _dummy_spawn_callback(node: AgentNode) -> Any:
+def _dummy_spawn_callback(
+    node: AgentNode, ws_key: tuple[UUID, str] | None = None
+) -> Any:
     """Return a no-op coroutine factory for testing deferred work."""
 
     async def _noop() -> None:
@@ -662,12 +670,38 @@ def ws_fix(tmp_path: Path) -> WsFixture:
         inboxes[n.id] = Inbox()
 
     def handler(agent_id: UUID) -> ToolHandler:
+        def resolve_ctx() -> tuple[UUID | None, list[UUID], Callable[[str], UUID]]:
+            parent = tree.parent(agent_id)
+            parent_id = parent.id if parent else None
+            caller = tree.get(agent_id)
+
+            def child_lookup(name: str) -> UUID:
+                return tree.child_by_name(agent_id, name).id
+
+            return parent_id, caller.children, child_lookup
+
+        def scope_namer(scope: UUID) -> str:
+            if scope == agent_id:
+                return "self"
+            caller = tree.get(agent_id)
+            for cid in caller.children:
+                child = tree.get(cid)
+                if child.id == scope:
+                    return child.name
+            return "parent"
+
+        ws_handler = WorkspaceToolHandler(
+            store=store,
+            mapping=mapping,
+            caller_id=agent_id,
+            resolve_ctx=resolve_ctx,
+            scope_namer=scope_namer,
+        )
         return ToolHandler(
             tree,
             inboxes,
             agent_id,
-            ws_store=store,
-            ws_mapping=mapping,
+            ws_handler=ws_handler,
         )
 
     return WsFixture(
@@ -1088,21 +1122,55 @@ def test_unlink_dir_no_link_at_path(ws_fix: WsFixture) -> None:
 
 
 def test_spawn_with_workspace_assigns(ws_fix: WsFixture) -> None:
-    """Spawn with workspace assigns the child and sets AgentNode.workspace."""
+    """Spawn with workspace passes ws_key through callback."""
     ws_fix.h_root.create_workspace("child-env")
-    result = ws_fix.h_root.spawn_agent("eve", "work", workspace="child-env")
+    # Replace spawn callback with one that captures ws_key.
+    captured: list[tuple[UUID, str] | None] = []
+
+    def spy_cb(node: AgentNode, ws_key: tuple[UUID, str] | None) -> Any:
+        captured.append(ws_key)
+
+        async def _noop() -> None:
+            pass
+
+        return _noop
+
+    handler = ToolHandler(
+        ws_fix.tree,
+        ws_fix.inboxes,
+        ws_fix.root.id,
+        spawn_callback=spy_cb,
+        ws_handler=ws_fix.h_root._ws_handler,
+    )
+    result = handler.spawn_agent("eve", "work", workspace="child-env")
     assert result["status"] == "accepted"
     assert result["workspace"] == "child-env"
-    child_id = UUID(result["agent_id"])
-    child = ws_fix.tree.get(child_id)
-    assert child.workspace == (ws_fix.root.id, "child-env")
-    assert child_id in ws_fix.ws_mapping
+    assert len(captured) == 1
+    assert captured[0] == (ws_fix.root.id, "child-env")
 
 
 def test_spawn_with_workspace_mapping_entry(ws_fix: WsFixture) -> None:
-    """Mapping tracks the assignment after spawn."""
+    """Spawn callback receives ws_key that can be used for mapping assignment."""
     ws_fix.h_root.create_workspace("env")
-    result = ws_fix.h_root.spawn_agent("fred", "go", workspace="env")
+
+    # Build a handler with a spawn callback that assigns the mapping.
+    def assigning_cb(node: AgentNode, ws_key: tuple[UUID, str] | None) -> Any:
+        if ws_key is not None:
+            ws_fix.ws_mapping.assign(node.id, ws_key[0], ws_key[1])
+
+        async def _noop() -> None:
+            pass
+
+        return _noop
+
+    handler = ToolHandler(
+        ws_fix.tree,
+        ws_fix.inboxes,
+        ws_fix.root.id,
+        spawn_callback=assigning_cb,
+        ws_handler=ws_fix.h_root._ws_handler,
+    )
+    result = handler.spawn_agent("fred", "go", workspace="env")
     child_id = UUID(result["agent_id"])
     agents = ws_fix.ws_mapping.agents_in(ws_fix.root.id, "env")
     assert child_id in agents
@@ -1129,10 +1197,9 @@ def test_spawn_with_invisible_workspace(ws_fix: WsFixture) -> None:
 
 
 def test_spawn_without_workspace_no_key(ws_fix: WsFixture) -> None:
-    """Spawn without workspace doesn't set workspace or return key."""
+    """Spawn without workspace doesn't set mapping or return key."""
     result = ws_fix.h_root.spawn_agent("plain", "go")
     assert result["status"] == "accepted"
     assert "workspace" not in result
     child_id = UUID(result["agent_id"])
-    child = ws_fix.tree.get(child_id)
-    assert child.workspace is None
+    assert ws_fix.ws_mapping.get(child_id) is None

@@ -223,7 +223,6 @@ async def test_create_root_agent_with_workspace(tmp_path: Path) -> None:
         wrap_command_factory=fake_factory,
     )
     node = await o.create_root_agent("w", "i", workspace=(scope, "env"))
-    assert node.workspace == (scope, "env")
     assert ws_mapping.get(node.id) == (scope, "env")
     assert len(factory_calls) == 1
     assert factory_calls[0].name == "env"
