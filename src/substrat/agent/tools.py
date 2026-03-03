@@ -419,8 +419,12 @@ class ToolHandler:
         return {"status": "created", "name": name}
 
     def delete_workspace(self, name: str) -> dict[str, Any]:
-        """Delete a workspace. Must be in a mutable scope."""
+        """Delete a workspace and its entire view tree.
+
+        Fails if any workspace in the tree has assigned agents.
+        """
         from substrat.workspace.resolve import mutable_scopes, resolve
+        from substrat.workspace.store import view_tree
 
         try:
             store, mapping = self._require_ws_deps()
@@ -436,9 +440,20 @@ class ToolHandler:
             return {"error": f"workspace {name!r} is not in a mutable scope"}
         if not store.exists(scope, local_name):
             return {"error": f"workspace {name!r} not found"}
-        agents = mapping.agents_in(scope, local_name)
-        if agents:
-            return {"error": f"workspace {name!r} has {len(agents)} assigned agent(s)"}
+        # Collect the full view tree (transitive views).
+        views = view_tree(scope, local_name, store)
+        # Check agents on root + all views before deleting anything.
+        all_targets = [(scope, local_name)] + [(v.scope, v.name) for v in views]
+        for s, n in all_targets:
+            agents = mapping.agents_in(s, n)
+            if agents:
+                label = f"{s.hex[:8]}/{n}" if (s, n) != (scope, local_name) else name
+                return {
+                    "error": f"workspace {label!r} has {len(agents)} assigned agent(s)"
+                }
+        # Delete views first (leaves), then root.
+        for v in reversed(views):
+            store.delete(v.scope, v.name)
         store.delete(scope, local_name)
         return {"status": "deleted"}
 

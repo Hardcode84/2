@@ -4,6 +4,8 @@
 
 """Persistent workspace store backed by per-scope JSON files."""
 
+from __future__ import annotations
+
 import json
 import re
 import shutil
@@ -118,3 +120,47 @@ class WorkspaceStore:
             ],
             created_at=obj["created_at"],
         )
+
+
+def _is_view_of(candidate: Workspace, source: Workspace) -> bool:
+    """True if any of candidate's links point into source's root_path."""
+    src = source.root_path.resolve()
+    for link in candidate.links:
+        try:
+            link.host_path.resolve().relative_to(src)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def view_tree(
+    root_scope: UUID,
+    root_name: str,
+    store: WorkspaceStore,
+) -> list[Workspace]:
+    """Discover the full view tree rooted at (scope, name).
+
+    Returns all workspaces that are (transitively) views of the root,
+    NOT including the root itself. Uses BFS over all workspaces in
+    the store.
+    """
+    root_ws = store.load(root_scope, root_name)
+    all_ws = store.scan()
+
+    # Index by key for dedup.
+    found: dict[tuple[UUID, str], Workspace] = {}
+    # BFS queue: workspaces whose dependents we haven't checked yet.
+    queue = [root_ws]
+    while queue:
+        source = queue.pop(0)
+        for ws in all_ws:
+            key = (ws.scope, ws.name)
+            if key == (root_scope, root_name):
+                continue
+            if key in found:
+                continue
+            if _is_view_of(ws, source):
+                found[key] = ws
+                queue.append(ws)
+    return list(found.values())

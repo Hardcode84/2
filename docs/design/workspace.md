@@ -115,15 +115,13 @@ if any workspace in the tree has alive (non-terminated) agents assigned to it.
 The daemon enforces this — checks the agent-workspace mapping for every
 workspace in the view tree before allowing deletion.
 
-**v1 limitation:** View tree cascade is deferred. `delete_workspace` checks
-direct agent assignments only — it does not discover or delete dependent views.
-Deleting a source workspace while views exist leaves orphaned links. This is a
-known gap, not a bug.
-
 View tree discovery: a workspace B is a view of workspace A if any of B's
-links point into A's `root_path`. The daemon maintains this dependency graph
-(derived from `LinkSpec.host_path` at link time). Deleting a leaf view does
-not affect the source workspace.
+links point into A's `root_path` (resolved, checked via `Path.relative_to`).
+The `view_tree()` function in `store.py` discovers the full transitive closure
+via BFS. `delete_workspace` checks agent assignments on every workspace in the
+tree before deleting anything — if any workspace has assigned agents, the
+entire operation is refused. Deleting a leaf view does not affect the source
+workspace.
 
 ### Link / Unlink
 

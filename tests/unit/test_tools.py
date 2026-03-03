@@ -734,6 +734,55 @@ def test_delete_workspace_child_scope(ws_fix: WsFixture) -> None:
     assert result == {"status": "deleted"}
 
 
+def test_delete_cascades_to_views(ws_fix: WsFixture) -> None:
+    """Deleting a source workspace also deletes its views."""
+    ws_fix.h_alice.create_workspace("source")
+    ws_fix.h_alice.create_workspace("view1", view_of="source")
+    ws_fix.h_alice.create_workspace("view2", view_of="source")
+    assert ws_fix.ws_store.exists(ws_fix.alice.id, "view1")
+    assert ws_fix.ws_store.exists(ws_fix.alice.id, "view2")
+    result = ws_fix.h_alice.delete_workspace("source")
+    assert result == {"status": "deleted"}
+    assert not ws_fix.ws_store.exists(ws_fix.alice.id, "source")
+    assert not ws_fix.ws_store.exists(ws_fix.alice.id, "view1")
+    assert not ws_fix.ws_store.exists(ws_fix.alice.id, "view2")
+
+
+def test_delete_cascades_transitive(ws_fix: WsFixture) -> None:
+    """Transitive views (view of a view) are also deleted."""
+    ws_fix.h_alice.create_workspace("base")
+    ws_fix.h_alice.create_workspace("mid", view_of="base")
+    ws_fix.h_alice.create_workspace("leaf", view_of="mid")
+    result = ws_fix.h_alice.delete_workspace("base")
+    assert result == {"status": "deleted"}
+    assert not ws_fix.ws_store.exists(ws_fix.alice.id, "base")
+    assert not ws_fix.ws_store.exists(ws_fix.alice.id, "mid")
+    assert not ws_fix.ws_store.exists(ws_fix.alice.id, "leaf")
+
+
+def test_delete_blocked_by_view_agents(ws_fix: WsFixture) -> None:
+    """Cannot delete source if a view has assigned agents."""
+    ws_fix.h_alice.create_workspace("source")
+    ws_fix.h_alice.create_workspace("view", view_of="source")
+    ws_fix.ws_mapping.assign(uuid4(), ws_fix.alice.id, "view")
+    result = ws_fix.h_alice.delete_workspace("source")
+    assert "error" in result
+    assert "assigned agent" in result["error"]
+    # Source still exists — nothing was deleted.
+    assert ws_fix.ws_store.exists(ws_fix.alice.id, "source")
+    assert ws_fix.ws_store.exists(ws_fix.alice.id, "view")
+
+
+def test_delete_leaf_view_keeps_source(ws_fix: WsFixture) -> None:
+    """Deleting a leaf view does not affect the source workspace."""
+    ws_fix.h_alice.create_workspace("source")
+    ws_fix.h_alice.create_workspace("view", view_of="source")
+    result = ws_fix.h_alice.delete_workspace("view")
+    assert result == {"status": "deleted"}
+    assert ws_fix.ws_store.exists(ws_fix.alice.id, "source")
+    assert not ws_fix.ws_store.exists(ws_fix.alice.id, "view")
+
+
 # --- link_dir ---
 
 
