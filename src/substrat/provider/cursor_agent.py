@@ -159,6 +159,7 @@ class CursorSession:
         """Close event log and remove private workspace if we created one."""
         if self._log is not None:
             self._log.close()
+            self._log = None
         if self._private_workspace and self._workspace.exists():
             shutil.rmtree(self._workspace, ignore_errors=True)
 

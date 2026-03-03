@@ -83,6 +83,8 @@ def log_method(
                 if log and before:
                     log.log(event_name, args_dict)
                 result = await fn(self, *args, **kwargs)
+                # Re-read: the method may have closed/cleared the log (e.g. stop()).
+                log = _get_log(self)
                 if log and after:
                     result_data: dict[str, Any] = {**args_dict}
                     if result is not None:
