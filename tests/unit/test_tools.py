@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, NamedTuple
 from uuid import UUID, uuid4
 
@@ -20,6 +21,8 @@ from substrat.agent import (
     MessageKind,
     ToolHandler,
 )
+from substrat.agent.message import USER
+from substrat.workspace import Workspace, WorkspaceMapping, WorkspaceStore
 
 
 class ToolFixture(NamedTuple):
@@ -448,3 +451,150 @@ def test_enqueue_logged_before_inbox_delivery(fix: ToolFixture) -> None:
     handler.send_message("bob", "check timing")
     # Callback fired before deliver — inbox was still at its pre-delivery length.
     assert inbox_lengths == [0]
+
+
+# === Workspace tool tests ===
+
+
+class WsFixture(NamedTuple):
+    tree: AgentTree
+    inboxes: InboxRegistry
+    ws_store: WorkspaceStore
+    ws_mapping: WorkspaceMapping
+    root: AgentNode
+    alice: AgentNode
+    bob: AgentNode
+    h_root: ToolHandler
+    h_alice: ToolHandler
+    h_bob: ToolHandler
+
+
+@pytest.fixture()
+def ws_fix(tmp_path: Path) -> WsFixture:
+    """Build tree: root -> {alice, bob}. Each handler has workspace deps."""
+    tree = AgentTree()
+    inboxes: InboxRegistry = {}
+    store = WorkspaceStore(tmp_path / "workspaces")
+    mapping = WorkspaceMapping()
+
+    root = AgentNode(session_id=uuid4(), name="root")
+    alice = AgentNode(session_id=uuid4(), name="alice", parent_id=root.id)
+    bob = AgentNode(session_id=uuid4(), name="bob", parent_id=root.id)
+    for n in (root, alice, bob):
+        tree.add(n)
+        inboxes[n.id] = Inbox()
+
+    def handler(agent_id: UUID) -> ToolHandler:
+        return ToolHandler(
+            tree,
+            inboxes,
+            agent_id,
+            ws_store=store,
+            ws_mapping=mapping,
+        )
+
+    return WsFixture(
+        tree,
+        inboxes,
+        store,
+        mapping,
+        root,
+        alice,
+        bob,
+        handler(root.id),
+        handler(alice.id),
+        handler(bob.id),
+    )
+
+
+# --- list_workspaces ---
+
+
+def test_list_workspaces_own_scope(ws_fix: WsFixture) -> None:
+    """Agent sees workspaces in its own scope."""
+    ws = Workspace(
+        name="mine",
+        scope=ws_fix.alice.id,
+        root_path=ws_fix.ws_store.workspace_dir(ws_fix.alice.id, "mine") / "root",
+    )
+    ws_fix.ws_store.save(ws)
+    result = ws_fix.h_alice.list_workspaces()
+    names = [w["name"] for w in result["workspaces"]]
+    assert "mine" in names
+    entry = next(w for w in result["workspaces"] if w["name"] == "mine")
+    assert entry["scope"] == "self"
+    assert entry["mutable"] is True
+
+
+def test_list_workspaces_child_scope(ws_fix: WsFixture) -> None:
+    """Parent sees workspaces in children's scopes."""
+    ws = Workspace(
+        name="child-ws",
+        scope=ws_fix.alice.id,
+        root_path=ws_fix.ws_store.workspace_dir(ws_fix.alice.id, "child-ws") / "root",
+    )
+    ws_fix.ws_store.save(ws)
+    result = ws_fix.h_root.list_workspaces()
+    entry = next(w for w in result["workspaces"] if w["name"] == "child-ws")
+    assert entry["scope"] == "alice"
+    assert entry["mutable"] is True
+
+
+def test_list_workspaces_parent_scope_not_mutable(ws_fix: WsFixture) -> None:
+    """Child sees parent's workspaces as read-only."""
+    ws = Workspace(
+        name="parent-ws",
+        scope=ws_fix.root.id,
+        root_path=ws_fix.ws_store.workspace_dir(ws_fix.root.id, "parent-ws") / "root",
+    )
+    ws_fix.ws_store.save(ws)
+    result = ws_fix.h_alice.list_workspaces()
+    entry = next(w for w in result["workspaces"] if w["name"] == "parent-ws")
+    assert entry["scope"] == "parent"
+    assert entry["mutable"] is False
+
+
+def test_list_workspaces_empty(ws_fix: WsFixture) -> None:
+    """No workspaces exist — returns empty list."""
+    result = ws_fix.h_alice.list_workspaces()
+    assert result == {"workspaces": []}
+
+
+def test_list_workspaces_invisible_scopes_filtered(ws_fix: WsFixture) -> None:
+    """Workspaces in sibling scope are not visible."""
+    # Create workspace in bob's scope — alice shouldn't see it.
+    ws = Workspace(
+        name="bob-ws",
+        scope=ws_fix.bob.id,
+        root_path=ws_fix.ws_store.workspace_dir(ws_fix.bob.id, "bob-ws") / "root",
+    )
+    ws_fix.ws_store.save(ws)
+    result = ws_fix.h_alice.list_workspaces()
+    names = [w["name"] for w in result["workspaces"]]
+    assert "bob-ws" not in names
+
+
+def test_list_workspaces_root_sees_user_scope(ws_fix: WsFixture) -> None:
+    """Root agent sees USER-scoped workspaces as parent scope."""
+    ws = Workspace(
+        name="user-ws",
+        scope=USER,
+        root_path=ws_fix.ws_store.workspace_dir(USER, "user-ws") / "root",
+    )
+    ws_fix.ws_store.save(ws)
+    result = ws_fix.h_root.list_workspaces()
+    entry = next(w for w in result["workspaces"] if w["name"] == "user-ws")
+    assert entry["scope"] == "parent"
+    assert entry["mutable"] is False
+
+
+def test_list_workspaces_no_ws_deps_raises() -> None:
+    """Handler without workspace deps raises ToolError on workspace tools."""
+    tree = AgentTree()
+    inboxes: InboxRegistry = {}
+    node = AgentNode(session_id=uuid4(), name="lonely")
+    tree.add(node)
+    inboxes[node.id] = Inbox()
+    handler = ToolHandler(tree, inboxes, node.id)
+    result = handler.list_workspaces()
+    assert "error" in result

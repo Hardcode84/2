@@ -5,14 +5,18 @@
 """Tool catalog and logic layer.
 
 AGENT_TOOLS is the catalog of Substrat's five agent-facing tools.
-ToolHandler implements them as pure operations on the agent tree and
-inboxes — no wire protocol, no I/O, no daemon.
+WORKSPACE_TOOLS adds the five workspace management tools.
+ALL_TOOLS is the union for daemon/MCP consumption.
+
+ToolHandler implements them as pure operations on the agent tree,
+inboxes, and (optionally) workspace store/mapping — no wire protocol,
+no I/O, no daemon.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Coroutine
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from substrat.agent.inbox import Inbox
@@ -25,6 +29,10 @@ from substrat.agent.node import AgentNode
 from substrat.agent.router import RoutingError, resolve_broadcast, validate_route
 from substrat.agent.tree import AgentTree
 from substrat.model import ToolDef, ToolParam
+
+if TYPE_CHECKING:
+    from substrat.workspace.mapping import WorkspaceMapping
+    from substrat.workspace.store import WorkspaceStore
 
 # -- Substrat agent tool catalog -----------------------------------------
 
@@ -70,6 +78,79 @@ AGENT_TOOLS: tuple[ToolDef, ...] = (
 )
 
 
+WORKSPACE_TOOLS: tuple[ToolDef, ...] = (
+    ToolDef(
+        "list_workspaces",
+        "List visible workspaces (own, children's, parent's scopes).",
+    ),
+    ToolDef(
+        "create_workspace",
+        "Create a workspace in the calling agent's scope.",
+        (
+            ToolParam("name", "string", "Workspace name."),
+            ToolParam(
+                "network_access",
+                "boolean",
+                "Allow network access inside the sandbox.",
+                required=False,
+                default=False,
+            ),
+            ToolParam(
+                "view_of",
+                "string",
+                "Source workspace ref for live view.",
+                required=False,
+            ),
+            ToolParam(
+                "subdir",
+                "string",
+                "Subfolder within source (view_of only).",
+                required=False,
+                default=".",
+            ),
+            ToolParam(
+                "mode",
+                "string",
+                "View mode: ro or rw (view_of only).",
+                required=False,
+                default="ro",
+            ),
+        ),
+    ),
+    ToolDef(
+        "delete_workspace",
+        "Delete a workspace. Must be in a mutable scope.",
+        (ToolParam("name", "string", "Workspace ref (scoped)."),),
+    ),
+    ToolDef(
+        "link_dir",
+        "Link a directory into a workspace.",
+        (
+            ToolParam("workspace", "string", "Target workspace ref (scoped)."),
+            ToolParam("source", "string", "Path inside caller's own workspace."),
+            ToolParam("target", "string", "Mount path inside target workspace."),
+            ToolParam(
+                "mode",
+                "string",
+                "Bind mode: ro or rw.",
+                required=False,
+                default="ro",
+            ),
+        ),
+    ),
+    ToolDef(
+        "unlink_dir",
+        "Remove a linked directory from a workspace.",
+        (
+            ToolParam("workspace", "string", "Workspace ref (scoped)."),
+            ToolParam("target", "string", "Mount path to remove."),
+        ),
+    ),
+)
+
+ALL_TOOLS: tuple[ToolDef, ...] = AGENT_TOOLS + WORKSPACE_TOOLS
+
+
 class ToolError(Exception):
     """Raised when a tool call fails for a recoverable reason."""
 
@@ -95,12 +176,16 @@ class ToolHandler:
         caller_id: UUID,
         spawn_callback: SpawnCallback | None = None,
         log_callback: LogCallback | None = None,
+        ws_store: WorkspaceStore | None = None,
+        ws_mapping: WorkspaceMapping | None = None,
     ) -> None:
         self._tree = tree
         self._inboxes = inboxes
         self._caller_id = caller_id
         self._spawn_callback = spawn_callback
         self._log_callback = log_callback
+        self._ws_store = ws_store
+        self._ws_mapping = ws_mapping
         self._deferred: list[DeferredWork] = []
 
     # --- Public tools ---
@@ -228,6 +313,31 @@ class ToolHandler:
             ],
         }
 
+    def list_workspaces(self) -> dict[str, Any]:
+        """List workspaces visible to the caller."""
+        from substrat.workspace.resolve import (
+            mutable_scopes,
+            visible_scopes,
+        )
+
+        try:
+            store, _mapping = self._require_ws_deps()
+        except ToolError as exc:
+            return {"error": str(exc)}
+        caller = self._tree.get(self._caller_id)
+        vis = visible_scopes(caller, self._tree)
+        mut = mutable_scopes(caller, self._tree)
+        workspaces = [
+            {
+                "name": ws.name,
+                "scope": self._scope_label(ws.scope, caller),
+                "mutable": ws.scope in mut,
+            }
+            for ws in store.scan()
+            if ws.scope in vis
+        ]
+        return {"workspaces": workspaces}
+
     def drain_deferred(self) -> list[DeferredWork]:
         """Return and clear accumulated deferred callbacks."""
         work = self._deferred
@@ -305,3 +415,21 @@ class ToolHandler:
             inbox = Inbox()
             self._inboxes[recipient_id] = inbox
         inbox.deliver(envelope)
+
+    def _require_ws_deps(self) -> tuple[WorkspaceStore, WorkspaceMapping]:
+        """Return workspace deps or raise ToolError if not configured."""
+        if self._ws_store is None or self._ws_mapping is None:
+            raise ToolError("workspace tools not available")
+        return self._ws_store, self._ws_mapping
+
+    def _scope_label(self, scope: UUID, caller: AgentNode) -> str:
+        """Map a scope UUID to a human-readable label for the caller."""
+        if scope == caller.id:
+            return "self"
+        # Check children.
+        for cid in caller.children:
+            child = self._tree.get(cid)
+            if child.id == scope:
+                return child.name
+        # Must be parent scope.
+        return "parent"

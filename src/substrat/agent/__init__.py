@@ -19,6 +19,8 @@ from substrat.agent.router import (
 )
 from substrat.agent.tools import (
     AGENT_TOOLS,
+    ALL_TOOLS,
+    WORKSPACE_TOOLS,
     InboxRegistry,
     LogCallback,
     ToolError,
@@ -29,6 +31,7 @@ from substrat.model import ToolDef, ToolParam
 
 __all__ = [
     "AGENT_TOOLS",
+    "ALL_TOOLS",
     "AgentNode",
     "AgentState",
     "AgentStateError",
@@ -44,6 +47,7 @@ __all__ = [
     "ToolError",
     "ToolHandler",
     "ToolParam",
+    "WORKSPACE_TOOLS",
     "USER",
     "is_sentinel",
     "reachable_set",
