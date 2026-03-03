@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
 
+from substrat.model import ToolDef, ToolParam
 from substrat.workspace.mapping import WorkspaceMapping
 from substrat.workspace.model import LinkSpec, Workspace
 from substrat.workspace.resolve import (
@@ -19,6 +20,78 @@ from substrat.workspace.resolve import (
     visible_scopes,
 )
 from substrat.workspace.store import WorkspaceStore, validate_name, view_tree
+
+# -- Workspace tool catalog -------------------------------------------------
+
+WORKSPACE_TOOLS: tuple[ToolDef, ...] = (
+    ToolDef(
+        "list_workspaces",
+        "List visible workspaces (own, children's, parent's scopes).",
+    ),
+    ToolDef(
+        "create_workspace",
+        "Create a workspace in the calling agent's scope.",
+        (
+            ToolParam("name", "string", "Workspace name."),
+            ToolParam(
+                "network_access",
+                "boolean",
+                "Allow network access inside the sandbox.",
+                required=False,
+                default=False,
+            ),
+            ToolParam(
+                "view_of",
+                "string",
+                "Source workspace ref for live view.",
+                required=False,
+            ),
+            ToolParam(
+                "subdir",
+                "string",
+                "Subfolder within source (view_of only).",
+                required=False,
+                default=".",
+            ),
+            ToolParam(
+                "mode",
+                "string",
+                "View mode: ro or rw (view_of only).",
+                required=False,
+                default="ro",
+            ),
+        ),
+    ),
+    ToolDef(
+        "delete_workspace",
+        "Delete a workspace. Must be in a mutable scope.",
+        (ToolParam("name", "string", "Workspace ref (scoped)."),),
+    ),
+    ToolDef(
+        "link_dir",
+        "Link a directory into a workspace.",
+        (
+            ToolParam("workspace", "string", "Target workspace ref (scoped)."),
+            ToolParam("source", "string", "Path inside caller's own workspace."),
+            ToolParam("target", "string", "Mount path inside target workspace."),
+            ToolParam(
+                "mode",
+                "string",
+                "Bind mode: ro or rw.",
+                required=False,
+                default="ro",
+            ),
+        ),
+    ),
+    ToolDef(
+        "unlink_dir",
+        "Remove a linked directory from a workspace.",
+        (
+            ToolParam("workspace", "string", "Workspace ref (scoped)."),
+            ToolParam("target", "string", "Mount path to remove."),
+        ),
+    ),
+)
 
 # Fresh-read callback: returns (parent_id, children, child_lookup).
 ResolveCtx = Callable[[], tuple[UUID | None, Sequence[UUID], Callable[[str], UUID]]]

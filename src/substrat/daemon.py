@@ -19,7 +19,7 @@ from typing import Any
 from uuid import UUID
 
 from substrat.agent.node import AgentStateError
-from substrat.agent.tools import ALL_TOOLS
+from substrat.agent.tools import AGENT_TOOLS
 from substrat.model import CommandWrapper, LinkSpec
 from substrat.orchestrator import Orchestrator
 from substrat.provider.base import AgentProvider
@@ -28,9 +28,13 @@ from substrat.scheduler import TurnScheduler
 from substrat.session.multiplexer import SessionMultiplexer
 from substrat.session.store import SessionStore
 from substrat.workspace import bwrap
+from substrat.workspace.handler import WORKSPACE_TOOLS
 from substrat.workspace.mapping import WorkspaceMapping
 from substrat.workspace.model import Workspace
 from substrat.workspace.store import WorkspaceStore
+
+_ALL_TOOLS = AGENT_TOOLS + WORKSPACE_TOOLS
+_WS_TOOL_NAMES: frozenset[str] = frozenset(t.name for t in WORKSPACE_TOOLS)
 
 _log = logging.getLogger(__name__)
 
@@ -63,7 +67,7 @@ class Daemon:
         store = SessionStore(root / "agents")
         mux = SessionMultiplexer(store, max_slots=max_slots)
         if providers is None:
-            providers = {"cursor-agent": CursorAgentProvider(tools=ALL_TOOLS)}
+            providers = {"cursor-agent": CursorAgentProvider(tools=_ALL_TOOLS)}
         scheduler = TurnScheduler(providers, mux, store, log_root=root / "agents")
         self._ws_store = WorkspaceStore(root / "workspaces")
         ws_mapping = WorkspaceMapping()
@@ -308,7 +312,7 @@ class Daemon:
         await self._orch.terminate_agent(agent_id)
         return {"status": "terminated", "agent_id": agent_id.hex}
 
-    _TOOL_NAMES: frozenset[str] = frozenset(t.name for t in ALL_TOOLS)
+    _TOOL_NAMES: frozenset[str] = frozenset(t.name for t in _ALL_TOOLS)
 
     async def _h_tool_call(self, params: dict[str, Any]) -> dict[str, Any]:
         agent_id = UUID(params["agent_id"])
@@ -316,8 +320,14 @@ class Daemon:
         arguments = params.get("arguments", {})
         if tool_name not in self._TOOL_NAMES:
             raise ValueError(f"unknown tool: {tool_name}")
-        handler = self._orch.get_handler(agent_id)
-        method = getattr(handler, tool_name)
+        if tool_name in _WS_TOOL_NAMES:
+            ws_handler = self._orch.get_ws_handler(agent_id)
+            if ws_handler is None:
+                return {"error": "workspace tools not available"}
+            method = getattr(ws_handler, tool_name)
+        else:
+            handler = self._orch.get_handler(agent_id)
+            method = getattr(handler, tool_name)
         return method(**arguments)  # type: ignore[no-any-return]
 
     # -- Workspace RPC handlers ------------------------------------------------

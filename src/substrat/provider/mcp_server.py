@@ -215,7 +215,8 @@ def daemon_dispatch(socket_path: str, agent_id: str) -> ToolDispatch:
 
 def main() -> None:
     """``python -m substrat.provider.mcp_server --agent-id <uuid>``."""
-    from substrat.agent.tools import ALL_TOOLS
+    from substrat.agent.tools import AGENT_TOOLS
+    from substrat.workspace.handler import WORKSPACE_TOOLS
 
     parser = argparse.ArgumentParser(description="Substrat MCP tool server")
     parser.add_argument("--agent-id", required=True, help="Agent UUID.")
@@ -225,8 +226,9 @@ def main() -> None:
     if not socket_path:
         raise SystemExit("SUBSTRAT_SOCKET not set — cannot connect to daemon")
 
+    all_tools = AGENT_TOOLS + WORKSPACE_TOOLS
     dispatch = daemon_dispatch(socket_path, args.agent_id)
-    McpServer(ALL_TOOLS, dispatch).run()
+    McpServer(all_tools, dispatch).run()
 
 
 if __name__ == "__main__":

@@ -723,7 +723,9 @@ async def test_recover_workspace_assignment(
     h_root = orch.get_handler(root.id)
 
     # Create a workspace and spawn a child into it.
-    h_root.create_workspace("work-env")
+    wh_root = orch.get_ws_handler(root.id)
+    assert wh_root is not None
+    wh_root.create_workspace("work-env")
     result = h_root.spawn_agent("worker", "do work", workspace="work-env")
     child_id = UUID(result["agent_id"])
     await orch.run_turn(root.id, "go")
@@ -763,7 +765,9 @@ async def test_recover_workspace_event_log_field(
 
     root = await orch.create_root_agent("root", "r")
     h_root = orch.get_handler(root.id)
-    h_root.create_workspace("env")
+    wh_root = orch.get_ws_handler(root.id)
+    assert wh_root is not None
+    wh_root.create_workspace("env")
     result = h_root.spawn_agent("child", "ci", workspace="env")
     child_id = UUID(result["agent_id"])
     await orch.run_turn(root.id, "go")

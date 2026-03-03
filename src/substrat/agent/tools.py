@@ -5,17 +5,14 @@
 """Tool catalog and logic layer.
 
 AGENT_TOOLS is the catalog of Substrat's six agent-facing tools.
-WORKSPACE_TOOLS adds the five workspace management tools.
-ALL_TOOLS is the union for daemon/MCP consumption.
-
 ToolHandler implements agent tools as pure operations on the agent tree
-and inboxes. Workspace tools delegate to WorkspaceToolHandler.
+and inboxes. Workspace validation is injected as a callable.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Coroutine
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any
 from uuid import UUID, uuid4
 
 from substrat.agent.inbox import Inbox
@@ -27,9 +24,6 @@ from substrat.agent.node import AgentNode
 from substrat.agent.router import RoutingError, resolve_broadcast, validate_route
 from substrat.agent.tree import AgentTree
 from substrat.model import ToolDef, ToolParam, sentinel_name
-
-if TYPE_CHECKING:
-    from substrat.workspace.handler import WorkspaceToolHandler
 
 # -- Substrat agent tool catalog -----------------------------------------
 
@@ -94,79 +88,6 @@ AGENT_TOOLS: tuple[ToolDef, ...] = (
 )
 
 
-WORKSPACE_TOOLS: tuple[ToolDef, ...] = (
-    ToolDef(
-        "list_workspaces",
-        "List visible workspaces (own, children's, parent's scopes).",
-    ),
-    ToolDef(
-        "create_workspace",
-        "Create a workspace in the calling agent's scope.",
-        (
-            ToolParam("name", "string", "Workspace name."),
-            ToolParam(
-                "network_access",
-                "boolean",
-                "Allow network access inside the sandbox.",
-                required=False,
-                default=False,
-            ),
-            ToolParam(
-                "view_of",
-                "string",
-                "Source workspace ref for live view.",
-                required=False,
-            ),
-            ToolParam(
-                "subdir",
-                "string",
-                "Subfolder within source (view_of only).",
-                required=False,
-                default=".",
-            ),
-            ToolParam(
-                "mode",
-                "string",
-                "View mode: ro or rw (view_of only).",
-                required=False,
-                default="ro",
-            ),
-        ),
-    ),
-    ToolDef(
-        "delete_workspace",
-        "Delete a workspace. Must be in a mutable scope.",
-        (ToolParam("name", "string", "Workspace ref (scoped)."),),
-    ),
-    ToolDef(
-        "link_dir",
-        "Link a directory into a workspace.",
-        (
-            ToolParam("workspace", "string", "Target workspace ref (scoped)."),
-            ToolParam("source", "string", "Path inside caller's own workspace."),
-            ToolParam("target", "string", "Mount path inside target workspace."),
-            ToolParam(
-                "mode",
-                "string",
-                "Bind mode: ro or rw.",
-                required=False,
-                default="ro",
-            ),
-        ),
-    ),
-    ToolDef(
-        "unlink_dir",
-        "Remove a linked directory from a workspace.",
-        (
-            ToolParam("workspace", "string", "Workspace ref (scoped)."),
-            ToolParam("target", "string", "Mount path to remove."),
-        ),
-    ),
-)
-
-ALL_TOOLS: tuple[ToolDef, ...] = AGENT_TOOLS + WORKSPACE_TOOLS
-
-
 class ToolError(Exception):
     """Raised when a tool call fails for a recoverable reason."""
 
@@ -176,6 +97,7 @@ SpawnCallback = Callable[[AgentNode, tuple[UUID, str] | None], DeferredWork]
 LogCallback = Callable[[UUID, str, dict[str, Any]], None]
 WakeCallback = Callable[[UUID], None]
 TerminateCallback = Callable[[UUID], DeferredWork]
+ValidateWsRef = Callable[[str], tuple[UUID, str]]
 InboxRegistry = dict[UUID, Inbox]
 
 
@@ -196,7 +118,7 @@ class ToolHandler:
         log_callback: LogCallback | None = None,
         wake_callback: WakeCallback | None = None,
         terminate_callback: TerminateCallback | None = None,
-        ws_handler: WorkspaceToolHandler | None = None,
+        validate_ws_ref: ValidateWsRef | None = None,
     ) -> None:
         self._tree = tree
         self._inboxes = inboxes
@@ -205,7 +127,7 @@ class ToolHandler:
         self._log_callback = log_callback
         self._wake_callback = wake_callback
         self._terminate_callback = terminate_callback
-        self._ws_handler = ws_handler
+        self._validate_ws_ref = validate_ws_ref
         self._deferred: list[DeferredWork] = []
 
     # --- Public tools ---
@@ -318,10 +240,10 @@ class ToolHandler:
         # Validate workspace ref before mutating the tree.
         ws_key: tuple[UUID, str] | None = None
         if workspace is not None:
-            if self._ws_handler is None:
+            if self._validate_ws_ref is None:
                 return {"error": "workspace tools not available"}
             try:
-                ws_key = self._ws_handler.validate_ref(workspace)
+                ws_key = self._validate_ws_ref(workspace)
             except (ValueError, KeyError) as exc:
                 return {"error": str(exc)}
 
@@ -393,59 +315,6 @@ class ToolHandler:
             "status": "completing",
             "message_id": str(envelope.id),
         }
-
-    # --- Workspace tool delegates ---
-
-    def list_workspaces(self) -> dict[str, Any]:
-        """List workspaces visible to the caller."""
-        if self._ws_handler is None:
-            return {"error": "workspace tools not available"}
-        return self._ws_handler.list_workspaces()
-
-    def create_workspace(
-        self,
-        name: str,
-        *,
-        network_access: bool = False,
-        view_of: str | None = None,
-        subdir: str = ".",
-        mode: Literal["ro", "rw"] = "ro",
-    ) -> dict[str, Any]:
-        """Create a workspace in the caller's own scope."""
-        if self._ws_handler is None:
-            return {"error": "workspace tools not available"}
-        return self._ws_handler.create_workspace(
-            name,
-            network_access=network_access,
-            view_of=view_of,
-            subdir=subdir,
-            mode=mode,
-        )
-
-    def delete_workspace(self, name: str) -> dict[str, Any]:
-        """Delete a workspace. Must be in a mutable scope."""
-        if self._ws_handler is None:
-            return {"error": "workspace tools not available"}
-        return self._ws_handler.delete_workspace(name)
-
-    def link_dir(
-        self,
-        workspace: str,
-        source: str,
-        target: str,
-        *,
-        mode: Literal["ro", "rw"] = "ro",
-    ) -> dict[str, Any]:
-        """Link a directory from caller's workspace into a target workspace."""
-        if self._ws_handler is None:
-            return {"error": "workspace tools not available"}
-        return self._ws_handler.link_dir(workspace, source, target, mode=mode)
-
-    def unlink_dir(self, workspace: str, target: str) -> dict[str, Any]:
-        """Remove a linked directory from a workspace."""
-        if self._ws_handler is None:
-            return {"error": "workspace tools not available"}
-        return self._ws_handler.unlink_dir(workspace, target)
 
     def drain_deferred(self) -> list[DeferredWork]:
         """Return and clear accumulated deferred callbacks."""

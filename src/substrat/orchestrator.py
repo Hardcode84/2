@@ -65,6 +65,7 @@ class Orchestrator:
         self._tree = AgentTree()
         self._inboxes: InboxRegistry = {}
         self._handlers: dict[UUID, ToolHandler] = {}
+        self._ws_handlers: dict[UUID, WorkspaceToolHandler] = {}
         self._ws_store = ws_store
         self._ws_mapping = ws_mapping
         self._wrap_factory = wrap_command_factory
@@ -169,11 +170,16 @@ class Orchestrator:
         await self._scheduler.terminate_session(node.session_id)
         self._tree.remove(agent_id)
         self._handlers.pop(agent_id, None)
+        self._ws_handlers.pop(agent_id, None)
         self._inboxes.pop(agent_id, None)
 
     def get_handler(self, agent_id: UUID) -> ToolHandler:
         """Return the tool handler for an agent. KeyError if unknown."""
         return self._handlers[agent_id]
+
+    def get_ws_handler(self, agent_id: UUID) -> WorkspaceToolHandler | None:
+        """Return the workspace tool handler for an agent, or None."""
+        return self._ws_handlers.get(agent_id)
 
     # -- Wake loop ------------------------------------------------------------
 
@@ -349,7 +355,7 @@ class Orchestrator:
         model: str,
     ) -> ToolHandler:
         """Build a ToolHandler with spawn, log, wake, and terminate callbacks."""
-        ws_handler: WorkspaceToolHandler | None = None
+        validate_ws_ref = None
         if self._ws_store is not None and self._ws_mapping is not None:
             ws_handler = WorkspaceToolHandler(
                 store=self._ws_store,
@@ -358,6 +364,8 @@ class Orchestrator:
                 resolve_ctx=self._make_resolve_ctx(agent_id),
                 scope_namer=self._make_scope_namer(agent_id),
             )
+            self._ws_handlers[agent_id] = ws_handler
+            validate_ws_ref = ws_handler.validate_ref
         return ToolHandler(
             self._tree,
             self._inboxes,
@@ -366,7 +374,7 @@ class Orchestrator:
             log_callback=self._make_log_callback(),
             wake_callback=self._notify_wake,
             terminate_callback=self._make_terminate_callback(),
-            ws_handler=ws_handler,
+            validate_ws_ref=validate_ws_ref,
         )
 
     def _make_resolve_ctx(
