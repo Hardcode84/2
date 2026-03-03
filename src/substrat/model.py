@@ -4,6 +4,7 @@
 
 """Shared data types used across layers."""
 
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -19,6 +20,13 @@ class LinkSpec:
     host_path: Path
     mount_path: Path
     mode: Literal["ro", "rw"] = "ro"
+
+
+# Wraps a subprocess command with sandbox binds and environment.
+type CommandWrapper = Callable[
+    [Sequence[str], Sequence[LinkSpec], Mapping[str, str]],
+    Sequence[str],
+]
 
 
 @dataclass(frozen=True)

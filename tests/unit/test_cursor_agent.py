@@ -8,14 +8,17 @@ import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import pytest
 
 from substrat.model import LinkSpec
 from substrat.provider.base import AgentProvider, ProviderSession
 from substrat.provider.cursor_agent import (
+    _CURSOR_BINDS,
     CursorAgentProvider,
     CursorSession,
+    _write_mcp_config,
     _write_rules,
 )
 
@@ -72,7 +75,7 @@ async def _aiter_to_list(agen: object) -> list[str]:
 @patch("substrat.provider.cursor_agent._cursor_binary", return_value=FAKE_BINARY)
 @patch("asyncio.create_subprocess_exec")
 async def test_send_applies_wrapper(mock_exec: AsyncMock, _mock_bin: MagicMock) -> None:
-    """Wrapper receives raw argv and its output is what gets exec'd."""
+    """Wrapper receives raw argv and cursor binds; its output is what gets exec'd."""
     captured: list[tuple[Sequence[str], Sequence[LinkSpec], Mapping[str, str]]] = []
 
     def spy_wrapper(
@@ -98,8 +101,8 @@ async def test_send_applies_wrapper(mock_exec: AsyncMock, _mock_bin: MagicMock) 
     cmd, binds, env = captured[0]
     # Raw command starts with the cursor binary.
     assert cmd[0] == FAKE_BINARY
-    # No provider-specific binds or env yet.
-    assert list(binds) == []
+    # Provider-specific binds are passed through.
+    assert list(binds) == list(_CURSOR_BINDS)
     assert dict(env) == {}
     # Subprocess received the wrapped command.
     actual_cmd = mock_exec.call_args[0]
@@ -151,13 +154,18 @@ async def test_create_chat_applies_wrapper(
     # Only create-chat — system prompt is written as .mdc, not sent.
     mock_exec.return_value = _mock_process(b"chat-id-123\n")
 
-    with patch("substrat.provider.cursor_agent.Path") as mock_path_cls:
-        mock_path_cls.return_value = tmp_path
-        provider = CursorAgentProvider(wrap_command=spy_wrapper)
-        session = await provider.create(model="test-model", system_prompt="be cool")
+    provider = CursorAgentProvider()
+    session = await provider.create(
+        model="test-model",
+        system_prompt="be cool",
+        workspace=tmp_path,
+        wrap_command=spy_wrapper,
+    )
 
     # create-chat call was wrapped.
     assert list(captured[0][0]) == [FAKE_BINARY, "create-chat"]
+    # Cursor binds are forwarded.
+    assert list(captured[0][1]) == list(_CURSOR_BINDS)
     create_cmd = mock_exec.call_args_list[0][0]
     assert create_cmd[0] == "bwrap"
     assert session.session_id == "chat-id-123"
@@ -174,10 +182,12 @@ async def test_create_chat_no_wrapper(
     """Without wrapper, create-chat uses raw command."""
     mock_exec.return_value = _mock_process(b"chat-id-456\n")
 
-    with patch("substrat.provider.cursor_agent.Path") as mock_path_cls:
-        mock_path_cls.return_value = tmp_path
-        provider = CursorAgentProvider()
-        session = await provider.create(model="test-model", system_prompt="hey")
+    provider = CursorAgentProvider()
+    session = await provider.create(
+        model="test-model",
+        system_prompt="hey",
+        workspace=tmp_path,
+    )
 
     create_cmd = mock_exec.call_args_list[0][0]
     assert create_cmd == (FAKE_BINARY, "create-chat")
@@ -207,17 +217,65 @@ def test_write_rules_skipped_when_empty(tmp_path: Path) -> None:
     assert not (tmp_path / ".cursor" / "rules" / "substrat.mdc").exists()
 
 
+# --- MCP config ---
+
+
+def test_write_mcp_config(tmp_path: Path) -> None:
+    """_write_mcp_config writes .cursor/mcp.json with agent-id."""
+    aid = uuid4()
+    path = _write_mcp_config(tmp_path, aid)
+    assert path == tmp_path / ".cursor" / "mcp.json"
+    config = json.loads(path.read_text())
+    server = config["mcpServers"]["substrat"]
+    assert server["command"] == "python"
+    assert "--agent-id" in server["args"]
+    assert aid.hex in server["args"]
+
+
+@pytest.mark.asyncio
+@patch("substrat.provider.cursor_agent._cursor_binary", return_value=FAKE_BINARY)
+@patch("asyncio.create_subprocess_exec")
+async def test_create_writes_mcp_config(
+    mock_exec: AsyncMock, _mock_bin: MagicMock, tmp_path: Path
+) -> None:
+    """create() writes MCP config when both workspace and agent_id are given."""
+    mock_exec.return_value = _mock_process(b"chat-id\n")
+    aid = uuid4()
+    provider = CursorAgentProvider()
+    await provider.create(
+        model="m",
+        system_prompt="p",
+        workspace=tmp_path,
+        agent_id=aid,
+    )
+    mcp = tmp_path / ".cursor" / "mcp.json"
+    assert mcp.exists()
+    config = json.loads(mcp.read_text())
+    assert aid.hex in config["mcpServers"]["substrat"]["args"]
+
+
+@pytest.mark.asyncio
+@patch("substrat.provider.cursor_agent._cursor_binary", return_value=FAKE_BINARY)
+@patch("asyncio.create_subprocess_exec")
+async def test_create_no_mcp_without_agent_id(
+    mock_exec: AsyncMock, _mock_bin: MagicMock, tmp_path: Path
+) -> None:
+    """create() without agent_id does not write MCP config."""
+    mock_exec.return_value = _mock_process(b"chat-id\n")
+    provider = CursorAgentProvider()
+    await provider.create(
+        model="m",
+        system_prompt="p",
+        workspace=tmp_path,
+    )
+    assert not (tmp_path / ".cursor" / "mcp.json").exists()
+
+
 # --- protocol compliance ---
 
 
-def test_provider_with_wrapper_satisfies_protocol() -> None:
-    """CursorAgentProvider with wrap_command still satisfies AgentProvider."""
-    provider = CursorAgentProvider(wrap_command=lambda cmd, binds, env: cmd)
-    assert isinstance(provider, AgentProvider)
-
-
-def test_provider_without_wrapper_satisfies_protocol() -> None:
-    """CursorAgentProvider without wrap_command still satisfies AgentProvider."""
+def test_provider_satisfies_protocol() -> None:
+    """CursorAgentProvider satisfies AgentProvider protocol."""
     provider = CursorAgentProvider()
     assert isinstance(provider, AgentProvider)
 

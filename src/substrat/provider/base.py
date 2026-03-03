@@ -5,9 +5,12 @@
 """Agent provider protocol — the interface all LLM/agent backends implement."""
 
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from typing import Protocol, runtime_checkable
+from uuid import UUID
 
 from substrat.logging.event_log import EventLog
+from substrat.model import CommandWrapper
 
 
 @runtime_checkable
@@ -46,6 +49,10 @@ class AgentProvider(Protocol):
         model: str,
         system_prompt: str,
         log: EventLog | None = None,
+        *,
+        workspace: Path | None = None,
+        wrap_command: CommandWrapper | None = None,
+        agent_id: UUID | None = None,
     ) -> ProviderSession:
         """Start a new conversation with the given model and instructions."""
         ...
@@ -54,6 +61,8 @@ class AgentProvider(Protocol):
         self,
         state: bytes,
         log: EventLog | None = None,
+        *,
+        wrap_command: CommandWrapper | None = None,
     ) -> ProviderSession:
         """Recreate a session from a previously suspended state blob."""
         ...

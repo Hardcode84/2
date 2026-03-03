@@ -7,17 +7,12 @@
 import asyncio
 import json
 import shutil
-from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
+from uuid import UUID
 
 from substrat.logging import EventLog, log_method
-from substrat.model import LinkSpec, ToolDef
-
-type CommandWrapper = Callable[
-    [Sequence[str], Sequence[LinkSpec], Mapping[str, str]],
-    Sequence[str],
-]
-
+from substrat.model import CommandWrapper, LinkSpec, ToolDef
 
 _MDC_TEMPLATE = """\
 ---
@@ -48,6 +43,38 @@ def _cursor_binary() -> str:
     if path is None:
         raise RuntimeError("cursor-agent not found in PATH")
     return path
+
+
+# Host directories cursor-agent needs access to inside the sandbox.
+_CURSOR_BINDS: tuple[LinkSpec, ...] = (
+    LinkSpec(Path.home() / ".cursor", Path.home() / ".cursor", "rw"),
+    LinkSpec(Path.home() / ".local", Path.home() / ".local", "ro"),
+    LinkSpec(
+        Path.home() / ".config" / "cursor", Path.home() / ".config" / "cursor", "rw"
+    ),
+)
+
+
+def _write_mcp_config(workspace: Path, agent_id: UUID) -> Path:
+    """Write .cursor/mcp.json so cursor-agent can reach the MCP tool server."""
+    cursor_dir = workspace / ".cursor"
+    cursor_dir.mkdir(parents=True, exist_ok=True)
+    config_path = cursor_dir / "mcp.json"
+    config = {
+        "mcpServers": {
+            "substrat": {
+                "command": "python",
+                "args": [
+                    "-m",
+                    "substrat.provider.mcp_server",
+                    "--agent-id",
+                    agent_id.hex,
+                ],
+            }
+        }
+    }
+    config_path.write_text(json.dumps(config, indent=2))
+    return config_path
 
 
 class CursorSession:
@@ -84,7 +111,7 @@ class CursorSession:
         """Send a message, yield the final response text."""
         cmd = self._build_cmd(message)
         if self._wrap_command is not None:
-            cmd = list(self._wrap_command(cmd, (), {}))
+            cmd = list(self._wrap_command(cmd, _CURSOR_BINDS, {}))
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -152,10 +179,8 @@ class CursorAgentProvider:
 
     def __init__(
         self,
-        wrap_command: CommandWrapper | None = None,
         tools: Sequence[ToolDef] = (),
     ) -> None:
-        self._wrap_command = wrap_command
         self._tools = tuple(tools)
 
     @property
@@ -167,17 +192,23 @@ class CursorAgentProvider:
         model: str,
         system_prompt: str,
         log: EventLog | None = None,
+        *,
+        workspace: Path | None = None,
+        wrap_command: CommandWrapper | None = None,
+        agent_id: UUID | None = None,
     ) -> CursorSession:
         """Create a new cursor-agent session."""
-        workspace = Path("/tmp")
-        rules_path = _write_rules(workspace, system_prompt)
-        session_id = await self._create_chat()
+        ws = workspace if workspace is not None else Path("/tmp")
+        rules_path = _write_rules(ws, system_prompt)
+        if agent_id is not None and workspace is not None:
+            _write_mcp_config(ws, agent_id)
+        session_id = await self._create_chat(wrap_command)
         log_payload: dict[str, object] = {
             "provider": self.name,
             "model": model,
             "session_id": session_id,
             "system_prompt": system_prompt,
-            "workspace": str(workspace),
+            "workspace": str(ws),
         }
         if rules_path is not None:
             log_payload["rules_path"] = str(rules_path)
@@ -186,10 +217,10 @@ class CursorAgentProvider:
         return CursorSession(
             session_id=session_id,
             model=model,
-            workspace=workspace,
+            workspace=ws,
             system_prompt=system_prompt,
             log=log,
-            wrap_command=self._wrap_command,
+            wrap_command=wrap_command,
             tools=self._tools,
         )
 
@@ -197,6 +228,8 @@ class CursorAgentProvider:
         self,
         state: bytes,
         log: EventLog | None = None,
+        *,
+        wrap_command: CommandWrapper | None = None,
     ) -> CursorSession:
         """Restore from a suspended state blob."""
         data = json.loads(state.decode())
@@ -221,15 +254,15 @@ class CursorAgentProvider:
             workspace=workspace,
             system_prompt=system_prompt,
             log=log,
-            wrap_command=self._wrap_command,
+            wrap_command=wrap_command,
             tools=self._tools,
         )
 
-    async def _create_chat(self) -> str:
+    async def _create_chat(self, wrap_command: CommandWrapper | None = None) -> str:
         """Pre-create a chat via cursor-agent create-chat."""
         cmd: Sequence[str] = [_cursor_binary(), "create-chat"]
-        if self._wrap_command is not None:
-            cmd = self._wrap_command(cmd, (), {})
+        if wrap_command is not None:
+            cmd = wrap_command(cmd, _CURSOR_BINDS, {})
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
