@@ -21,7 +21,7 @@ If docs disagree, `substrat.md` wins.
 - Python. Strict mypy. pytest. No exceptions (well, the Python kind is fine).
 - Tests use flat functions with comment separators, not classes. Group by topic with `# --- section ---` headers.
 - Do not invent new layers. Three is already too many.
-- Sessions know nothing about trees. Trees know nothing about workspaces. Keep it that way.
+- Sessions know nothing about trees. Trees know nothing about workspaces. Keep it that way. If you need to break a layer boundary, think again — you don't.
 - Simplicity over features. If it works without the new thing, don't add the new thing. Fight scope creep like it owes you money.
 - `README.md` is not documentation. Do not update it with project info. It is perfect as it is.
 
