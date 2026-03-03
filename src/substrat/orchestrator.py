@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 from collections.abc import Callable
@@ -14,8 +15,8 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from substrat.agent.inbox import Inbox
-from substrat.agent.message import MessageEnvelope, MessageKind
-from substrat.agent.node import AgentNode, AgentState
+from substrat.agent.message import MessageEnvelope, MessageKind, sentinel_name
+from substrat.agent.node import AgentNode, AgentState, AgentStateError
 from substrat.agent.prompt import build_prompt
 from substrat.agent.tools import (
     DeferredWork,
@@ -65,6 +66,8 @@ class Orchestrator:
         self._ws_store = ws_store
         self._ws_mapping = ws_mapping
         self._wrap_factory = wrap_command_factory
+        self._wake_queue: asyncio.Queue[UUID] = asyncio.Queue()
+        self._wake_task: asyncio.Task[None] | None = None
 
     @property
     def tree(self) -> AgentTree:
@@ -147,16 +150,7 @@ class Orchestrator:
         """
         node = self._tree.get(agent_id)
         node.begin_turn()
-        try:
-            response = await self._scheduler.send_turn(node.session_id, prompt)
-        except Exception:
-            # Reset state if still BUSY (begin_turn succeeded but send blew up).
-            if node.state == AgentState.BUSY:
-                node.end_turn()
-            raise
-        node.end_turn()
-        await self._drain_deferred(agent_id)
-        return response
+        return await self._execute_turn(node, prompt)
 
     async def terminate_agent(self, agent_id: UUID) -> None:
         """Terminate a leaf agent and clean up all associated state."""
@@ -180,7 +174,137 @@ class Orchestrator:
         """Return the tool handler for an agent. KeyError if unknown."""
         return self._handlers[agent_id]
 
+    # -- Wake loop ------------------------------------------------------------
+
+    _WAKE_LIMIT = 100  # Max wakes per drain cycle.
+
+    def start_wake_loop(self) -> None:
+        """Start the background wake-processing task."""
+        if self._wake_task is not None:
+            return
+        self._wake_task = asyncio.get_event_loop().create_task(self._wake_loop())
+
+    async def stop_wake_loop(self) -> None:
+        """Cancel the background wake task and wait for cleanup."""
+        if self._wake_task is None:
+            return
+        self._wake_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await self._wake_task
+        self._wake_task = None
+
+    def _notify_wake(self, agent_id: UUID) -> None:
+        """Enqueue a wake notification. Called synchronously from _deliver."""
+        self._wake_queue.put_nowait(agent_id)
+
+    async def _wake_loop(self) -> None:
+        """Background consumer: drain queue, process wakes."""
+        while True:
+            agent_id = await self._wake_queue.get()
+            # Batch-drain up to limit.
+            batch: list[UUID] = [agent_id]
+            while len(batch) < self._WAKE_LIMIT:
+                try:
+                    batch.append(self._wake_queue.get_nowait())
+                except asyncio.QueueEmpty:
+                    break
+            if len(batch) >= self._WAKE_LIMIT:
+                _log.warning(
+                    "wake limit hit (%d), possible ping-pong",
+                    self._WAKE_LIMIT,
+                )
+            # Deduplicate — only the first occurrence per agent matters.
+            seen: set[UUID] = set()
+            for aid in batch:
+                if aid not in seen:
+                    seen.add(aid)
+                    await self._process_wake(aid)
+
+    async def _process_wake(self, agent_id: UUID) -> None:
+        """Wake a single IDLE agent that has pending messages."""
+        if agent_id not in self._tree:
+            return
+        node = self._tree.get(agent_id)
+        if node.state != AgentState.IDLE:
+            return
+        inbox = self._inboxes.get(agent_id)
+        if not inbox:
+            return
+        try:
+            node.begin_turn()
+        except AgentStateError:
+            return
+        prompt = self._format_wake_prompt(agent_id)
+        if not prompt:
+            # Inbox drained by a concurrent check_inbox.
+            node.end_turn()
+            return
+        await self._execute_turn(node, prompt)
+
+    def _format_wake_prompt(self, agent_id: UUID) -> str:
+        """Drain inbox and format as a prompt string. Empty if inbox empty."""
+        inbox = self._inboxes.get(agent_id)
+        if not inbox:
+            return ""
+        messages = inbox.collect()
+        if not messages:
+            return ""
+        for m in messages:
+            self._log_lifecycle_for_agent(
+                agent_id,
+                "message.delivered",
+                {"message_id": m.id.hex},
+            )
+        if len(messages) == 1:
+            m = messages[0]
+            name = self._sender_display_name(m.sender)
+            return f"Message from {name}:\n{m.payload}"
+        lines: list[str] = []
+        for i, m in enumerate(messages, 1):
+            name = self._sender_display_name(m.sender)
+            lines.append(f"{i}. From {name}: {m.payload}")
+        return "\n".join(lines)
+
+    def _sender_display_name(self, sender_id: UUID) -> str:
+        """Human-readable sender name."""
+        name = sentinel_name(sender_id)
+        if name is not None:
+            return name
+        try:
+            return self._tree.get(sender_id).name or str(sender_id)
+        except KeyError:
+            return str(sender_id)
+
+    def _log_lifecycle_for_agent(
+        self,
+        agent_id: UUID,
+        event: str,
+        data: dict[str, Any],
+    ) -> None:
+        """Log lifecycle event using agent_id to resolve session."""
+        try:
+            node = self._tree.get(agent_id)
+        except KeyError:
+            return
+        self._log_lifecycle(node.session_id, event, data)
+
     # -- Private --------------------------------------------------------------
+
+    async def _execute_turn(self, node: AgentNode, prompt: str) -> str:
+        """Execute a turn on an already-BUSY node.
+
+        Shared by run_turn (external RPC) and _process_wake (internal).
+        Handles error recovery and deferred drain.
+        """
+        try:
+            response = await self._scheduler.send_turn(node.session_id, prompt)
+        except Exception:
+            if node.state == AgentState.BUSY:
+                node.end_turn()
+            raise
+        node.end_turn()
+        await self._drain_deferred(node.id)
+        return response
 
     def _resolve_workspace(
         self,
@@ -204,13 +328,14 @@ class Orchestrator:
         provider: str,
         model: str,
     ) -> ToolHandler:
-        """Build a ToolHandler with spawn and log callbacks."""
+        """Build a ToolHandler with spawn, log, and wake callbacks."""
         return ToolHandler(
             self._tree,
             self._inboxes,
             agent_id,
             spawn_callback=self._make_spawn_callback(provider, model),
             log_callback=self._make_log_callback(),
+            wake_callback=self._notify_wake,
             ws_store=self._ws_store,
             ws_mapping=self._ws_mapping,
         )
@@ -468,3 +593,10 @@ class Orchestrator:
         handler = self._handlers[agent_id]
         for work in handler.drain_deferred():
             await work()
+        # Post-spawn wake: newly created children with non-empty inboxes.
+        if agent_id not in self._tree:
+            return
+        for child in self._tree.children(agent_id):
+            inbox = self._inboxes.get(child.id)
+            if inbox and child.state == AgentState.IDLE:
+                self._notify_wake(child.id)

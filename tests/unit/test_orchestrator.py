@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -28,11 +29,18 @@ from substrat.workspace.store import WorkspaceStore
 class FakeProviderSession:
     """Minimal provider session for testing."""
 
-    def __init__(self, chunks: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        chunks: list[str] | None = None,
+        prompt_log: list[str] | None = None,
+    ) -> None:
         self._chunks = chunks if chunks is not None else ["ok"]
+        self._prompt_log = prompt_log
         self.stopped = False
 
     async def send(self, message: str) -> AsyncGenerator[str, None]:
+        if self._prompt_log is not None:
+            self._prompt_log.append(message)
         for chunk in self._chunks:
             yield chunk
 
@@ -57,6 +65,7 @@ class FakeProvider:
     def __init__(self, chunks: list[str] | None = None) -> None:
         self._chunks = chunks
         self.created: list[tuple[str, str]] = []
+        self.prompts: list[str] = []
         self._error_on_send = False
 
     @property
@@ -73,7 +82,7 @@ class FakeProvider:
         self.created.append((model, system_prompt))
         if self._error_on_send:
             return ErrorProviderSession()
-        return FakeProviderSession(self._chunks)
+        return FakeProviderSession(self._chunks, self.prompts)
 
     async def restore(
         self,
@@ -81,7 +90,7 @@ class FakeProvider:
         log: EventLog | None = None,
         **kwargs: object,
     ) -> FakeProviderSession:
-        return FakeProviderSession(self._chunks)
+        return FakeProviderSession(self._chunks, self.prompts)
 
 
 # -- Fixtures ---------------------------------------------------------------
@@ -423,3 +432,191 @@ async def test_get_handler_unknown(orch: Orchestrator) -> None:
 
     with pytest.raises(KeyError):
         orch.get_handler(uuid4())
+
+
+# -- wake loop --------------------------------------------------------------
+
+
+async def test_wake_on_send_message(
+    provider: FakeProvider,
+    orch: Orchestrator,
+) -> None:
+    """Sending a message wakes the IDLE recipient via the wake loop."""
+    orch.start_wake_loop()
+    try:
+        parent = await orch.create_root_agent("parent", "p")
+        handler = orch.get_handler(parent.id)
+        handler.spawn_agent("child", "ci")
+        await orch.run_turn(parent.id, "go")
+
+        child = orch.tree.children(parent.id)[0]
+        # Run a turn on child to get it into a known state.
+        await orch.run_turn(child.id, "wake up")
+
+        provider.prompts.clear()
+        handler = orch.get_handler(parent.id)
+        handler.send_message("child", "hello child")
+
+        # Let the wake loop process.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        # Child should have received a wake turn.
+        assert any("hello child" in p for p in provider.prompts)
+    finally:
+        await orch.stop_wake_loop()
+
+
+async def test_wake_skips_busy_agent(
+    provider: FakeProvider,
+    orch: Orchestrator,
+) -> None:
+    """BUSY agent is not woken — wake is silently skipped."""
+    orch.start_wake_loop()
+    try:
+        parent = await orch.create_root_agent("parent", "p")
+        handler = orch.get_handler(parent.id)
+        handler.spawn_agent("child", "ci")
+        await orch.run_turn(parent.id, "go")
+
+        child = orch.tree.children(parent.id)[0]
+        child.begin_turn()  # Force BUSY.
+
+        provider.prompts.clear()
+        handler = orch.get_handler(parent.id)
+        handler.send_message("child", "while busy")
+
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        # No wake turn sent — child was busy.
+        assert not any("while busy" in p for p in provider.prompts)
+
+        child.end_turn()  # Cleanup.
+    finally:
+        await orch.stop_wake_loop()
+
+
+async def test_wake_skips_terminated_agent(
+    provider: FakeProvider,
+    orch: Orchestrator,
+) -> None:
+    """Terminated agent is skipped in wake processing."""
+    orch.start_wake_loop()
+    try:
+        node = await orch.create_root_agent("doomed", "p")
+        nid = node.id
+        # Enqueue a wake, then terminate.
+        orch._notify_wake(nid)
+        await orch.terminate_agent(nid)
+
+        provider.prompts.clear()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        # No crash, no wake turn.
+        assert not provider.prompts
+    finally:
+        await orch.stop_wake_loop()
+
+
+async def test_wake_skips_empty_inbox(
+    provider: FakeProvider,
+    orch: Orchestrator,
+) -> None:
+    """Agent with empty inbox is not woken."""
+    orch.start_wake_loop()
+    try:
+        node = await orch.create_root_agent("quiet", "p")
+        provider.prompts.clear()
+        orch._notify_wake(node.id)
+
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert not provider.prompts
+    finally:
+        await orch.stop_wake_loop()
+
+
+async def test_post_spawn_wake(
+    provider: FakeProvider,
+    orch: Orchestrator,
+) -> None:
+    """spawn + send pattern: child wakes after parent's turn drains."""
+    orch.start_wake_loop()
+    try:
+        parent = await orch.create_root_agent("parent", "p")
+        handler = orch.get_handler(parent.id)
+        handler.spawn_agent("child", "ci")
+        handler.send_message("child", "go now")
+
+        provider.prompts.clear()
+        await orch.run_turn(parent.id, "trigger drain")
+
+        # Let wake loop process.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert any("go now" in p for p in provider.prompts)
+    finally:
+        await orch.stop_wake_loop()
+
+
+async def test_wake_prompt_format_single(orch: Orchestrator) -> None:
+    """Single message formats as 'Message from <name>:\\n<payload>'."""
+    parent = await orch.create_root_agent("parent", "p")
+    handler = orch.get_handler(parent.id)
+    handler.spawn_agent("child", "ci")
+    await orch.run_turn(parent.id, "go")
+
+    child = orch.tree.children(parent.id)[0]
+    handler = orch.get_handler(parent.id)
+    handler.send_message("child", "single msg")
+
+    prompt = orch._format_wake_prompt(child.id)
+    assert prompt == "Message from parent:\nsingle msg"
+
+
+async def test_wake_prompt_format_multi(orch: Orchestrator) -> None:
+    """Multiple messages format as numbered list."""
+    parent = await orch.create_root_agent("parent", "p")
+    handler = orch.get_handler(parent.id)
+    handler.spawn_agent("a", "ai")
+    handler.spawn_agent("b", "bi")
+    await orch.run_turn(parent.id, "go")
+
+    a_node = next(c for c in orch.tree.children(parent.id) if c.name == "a")
+    # Send two messages to a.
+    handler = orch.get_handler(parent.id)
+    handler.send_message("a", "first")
+    h_b = orch.get_handler(
+        next(c.id for c in orch.tree.children(parent.id) if c.name == "b")
+    )
+    h_b.send_message("a", "second")
+
+    prompt = orch._format_wake_prompt(a_node.id)
+    assert "1. From parent: first" in prompt
+    assert "2. From b: second" in prompt
+
+
+async def test_wake_loop_start_stop(orch: Orchestrator) -> None:
+    """start/stop lifecycle doesn't crash."""
+    orch.start_wake_loop()
+    assert orch._wake_task is not None
+    await orch.stop_wake_loop()
+    assert orch._wake_task is None
+
+
+async def test_wake_loop_double_start(orch: Orchestrator) -> None:
+    """Double start is idempotent."""
+    orch.start_wake_loop()
+    task = orch._wake_task
+    orch.start_wake_loop()
+    assert orch._wake_task is task
+    await orch.stop_wake_loop()
+
+
+async def test_wake_loop_stop_without_start(orch: Orchestrator) -> None:
+    """Stopping without starting is a no-op."""
+    await orch.stop_wake_loop()  # Should not crash.
