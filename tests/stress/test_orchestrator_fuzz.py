@@ -79,6 +79,7 @@ class FakeProvider:
         model: str,
         system_prompt: str,
         log: EventLog | None = None,
+        **kwargs: object,
     ) -> FakeProviderSession:
         return FakeProviderSession()
 
@@ -86,6 +87,7 @@ class FakeProvider:
         self,
         state: bytes,
         log: EventLog | None = None,
+        **kwargs: object,
     ) -> FakeProviderSession:
         return FakeProviderSession()
 
@@ -102,6 +104,7 @@ class FlakyProvider:
         model: str,
         system_prompt: str,
         log: EventLog | None = None,
+        **kwargs: object,
     ) -> FlakyProviderSession:
         return FlakyProviderSession()
 
@@ -109,6 +112,7 @@ class FlakyProvider:
         self,
         state: bytes,
         log: EventLog | None = None,
+        **kwargs: object,
     ) -> FlakyProviderSession:
         return FlakyProviderSession()
 

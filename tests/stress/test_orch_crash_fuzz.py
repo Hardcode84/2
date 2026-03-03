@@ -81,6 +81,7 @@ class FakeProvider:
         model: str,
         system_prompt: str,
         log: EventLog | None = None,
+        **kwargs: object,
     ) -> FakeProviderSession:
         return FakeProviderSession()
 
@@ -88,6 +89,7 @@ class FakeProvider:
         self,
         state: bytes,
         log: EventLog | None = None,
+        **kwargs: object,
     ) -> FakeProviderSession:
         return FakeProviderSession()
 
