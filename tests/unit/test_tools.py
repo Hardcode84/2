@@ -732,3 +732,127 @@ def test_delete_workspace_child_scope(ws_fix: WsFixture) -> None:
     ws_fix.h_alice.create_workspace("child-ws")
     result = ws_fix.h_root.delete_workspace("alice/child-ws")
     assert result == {"status": "deleted"}
+
+
+# --- link_dir ---
+
+
+def test_link_dir_basic(ws_fix: WsFixture) -> None:
+    """Link a directory from caller's workspace into target workspace."""
+    ws_fix.h_alice.create_workspace("src-ws")
+    ws_fix.h_alice.create_workspace("dst-ws")
+    ws_fix.ws_mapping.assign(ws_fix.alice.id, ws_fix.alice.id, "src-ws")
+    # Create a directory inside the source workspace to link.
+    src_ws = ws_fix.ws_store.load(ws_fix.alice.id, "src-ws")
+    (src_ws.root_path / "data").mkdir(parents=True)
+    result = ws_fix.h_alice.link_dir("dst-ws", "data", "/mnt/data")
+    assert result == {"status": "linked"}
+    dst_ws = ws_fix.ws_store.load(ws_fix.alice.id, "dst-ws")
+    assert len(dst_ws.links) == 1
+    assert dst_ws.links[0].mount_path.as_posix() == "/mnt/data"
+
+
+def test_link_dir_caller_no_workspace(ws_fix: WsFixture) -> None:
+    """Caller without workspace cannot link."""
+    ws_fix.h_alice.create_workspace("target")
+    result = ws_fix.h_alice.link_dir("target", "data", "/mnt/data")
+    assert "error" in result
+    assert "no workspace" in result["error"]
+
+
+def test_link_dir_source_not_found(ws_fix: WsFixture) -> None:
+    """Source path must exist in caller's workspace."""
+    ws_fix.h_alice.create_workspace("src-ws")
+    ws_fix.h_alice.create_workspace("dst-ws")
+    ws_fix.ws_mapping.assign(ws_fix.alice.id, ws_fix.alice.id, "src-ws")
+    result = ws_fix.h_alice.link_dir("dst-ws", "nonexistent", "/mnt/x")
+    assert "error" in result
+    assert "does not exist" in result["error"]
+
+
+def test_link_dir_target_not_mutable(ws_fix: WsFixture) -> None:
+    """Cannot link into parent's workspace (read-only scope)."""
+    ws_fix.h_alice.create_workspace("src-ws")
+    ws_fix.ws_mapping.assign(ws_fix.alice.id, ws_fix.alice.id, "src-ws")
+    src_ws = ws_fix.ws_store.load(ws_fix.alice.id, "src-ws")
+    (src_ws.root_path / "data").mkdir(parents=True)
+    ws_fix.h_root.create_workspace("protected")
+    result = ws_fix.h_alice.link_dir("../protected", "data", "/mnt/data")
+    assert "error" in result
+    assert "mutable" in result["error"]
+
+
+def test_link_dir_target_not_found(ws_fix: WsFixture) -> None:
+    """Link into nonexistent target workspace fails."""
+    ws_fix.h_alice.create_workspace("src-ws")
+    ws_fix.ws_mapping.assign(ws_fix.alice.id, ws_fix.alice.id, "src-ws")
+    src_ws = ws_fix.ws_store.load(ws_fix.alice.id, "src-ws")
+    (src_ws.root_path / "data").mkdir(parents=True)
+    result = ws_fix.h_alice.link_dir("ghost", "data", "/mnt/data")
+    assert "error" in result
+    assert "not found" in result["error"]
+
+
+def test_link_dir_mode_default(ws_fix: WsFixture) -> None:
+    """Default link mode is ro."""
+    ws_fix.h_alice.create_workspace("src-ws")
+    ws_fix.h_alice.create_workspace("dst-ws")
+    ws_fix.ws_mapping.assign(ws_fix.alice.id, ws_fix.alice.id, "src-ws")
+    src_ws = ws_fix.ws_store.load(ws_fix.alice.id, "src-ws")
+    (src_ws.root_path / "stuff").mkdir(parents=True)
+    ws_fix.h_alice.link_dir("dst-ws", "stuff", "/mnt/stuff")
+    dst_ws = ws_fix.ws_store.load(ws_fix.alice.id, "dst-ws")
+    assert dst_ws.links[0].mode == "ro"
+
+
+def test_link_dir_persists(ws_fix: WsFixture) -> None:
+    """Link survives a reload from disk."""
+    ws_fix.h_alice.create_workspace("src-ws")
+    ws_fix.h_alice.create_workspace("dst-ws")
+    ws_fix.ws_mapping.assign(ws_fix.alice.id, ws_fix.alice.id, "src-ws")
+    src_ws = ws_fix.ws_store.load(ws_fix.alice.id, "src-ws")
+    (src_ws.root_path / "code").mkdir(parents=True)
+    ws_fix.h_alice.link_dir("dst-ws", "code", "/src", mode="rw")
+    reloaded = ws_fix.ws_store.load(ws_fix.alice.id, "dst-ws")
+    assert len(reloaded.links) == 1
+    assert reloaded.links[0].mode == "rw"
+
+
+# --- unlink_dir ---
+
+
+def test_unlink_dir_basic(ws_fix: WsFixture) -> None:
+    """Unlink removes the link entry."""
+    ws_fix.h_alice.create_workspace("src-ws")
+    ws_fix.h_alice.create_workspace("dst-ws")
+    ws_fix.ws_mapping.assign(ws_fix.alice.id, ws_fix.alice.id, "src-ws")
+    src_ws = ws_fix.ws_store.load(ws_fix.alice.id, "src-ws")
+    (src_ws.root_path / "data").mkdir(parents=True)
+    ws_fix.h_alice.link_dir("dst-ws", "data", "/mnt/data")
+    result = ws_fix.h_alice.unlink_dir("dst-ws", "/mnt/data")
+    assert result == {"status": "unlinked"}
+    dst_ws = ws_fix.ws_store.load(ws_fix.alice.id, "dst-ws")
+    assert len(dst_ws.links) == 0
+
+
+def test_unlink_dir_not_mutable(ws_fix: WsFixture) -> None:
+    """Cannot unlink from parent's workspace."""
+    ws_fix.h_root.create_workspace("parent-ws")
+    result = ws_fix.h_alice.unlink_dir("../parent-ws", "/some/path")
+    assert "error" in result
+    assert "mutable" in result["error"]
+
+
+def test_unlink_dir_not_found(ws_fix: WsFixture) -> None:
+    """Unlink from nonexistent workspace fails."""
+    result = ws_fix.h_alice.unlink_dir("ghost", "/path")
+    assert "error" in result
+    assert "not found" in result["error"]
+
+
+def test_unlink_dir_no_link_at_path(ws_fix: WsFixture) -> None:
+    """Unlink with no matching mount_path fails."""
+    ws_fix.h_alice.create_workspace("ws")
+    result = ws_fix.h_alice.unlink_dir("ws", "/nonexistent")
+    assert "error" in result
+    assert "no link" in result["error"]

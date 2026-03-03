@@ -416,6 +416,81 @@ class ToolHandler:
         store.delete(scope, local_name)
         return {"status": "deleted"}
 
+    def link_dir(
+        self,
+        workspace: str,
+        source: str,
+        target: str,
+        *,
+        mode: Literal["ro", "rw"] = "ro",
+    ) -> dict[str, Any]:
+        """Link a directory from caller's workspace into a target workspace."""
+        from pathlib import Path
+
+        from substrat.workspace.model import LinkSpec
+        from substrat.workspace.resolve import mutable_scopes, resolve
+
+        try:
+            store, mapping = self._require_ws_deps()
+        except ToolError as exc:
+            return {"error": str(exc)}
+        caller = self._tree.get(self._caller_id)
+        # Caller must have a workspace assigned.
+        caller_ws_key = mapping.get(self._caller_id)
+        if caller_ws_key is None:
+            return {"error": "caller has no workspace assigned"}
+        caller_ws = store.load(*caller_ws_key)
+        host_path = caller_ws.root_path / source
+        if not host_path.exists():
+            return {"error": f"source path {source!r} does not exist"}
+        # Resolve target workspace.
+        try:
+            scope, local_name = resolve(caller, workspace, self._tree)
+        except (ValueError, KeyError) as exc:
+            return {"error": str(exc)}
+        mut = mutable_scopes(caller, self._tree)
+        if scope not in mut:
+            return {"error": f"workspace {workspace!r} is not in a mutable scope"}
+        try:
+            target_ws = store.load(scope, local_name)
+        except FileNotFoundError:
+            return {"error": f"workspace {workspace!r} not found"}
+        target_ws.links.append(
+            LinkSpec(host_path=host_path, mount_path=Path(target), mode=mode)
+        )
+        store.save(target_ws)
+        return {"status": "linked"}
+
+    def unlink_dir(self, workspace: str, target: str) -> dict[str, Any]:
+        """Remove a linked directory from a workspace."""
+        from pathlib import Path
+
+        from substrat.workspace.resolve import mutable_scopes, resolve
+
+        try:
+            store, _mapping = self._require_ws_deps()
+        except ToolError as exc:
+            return {"error": str(exc)}
+        caller = self._tree.get(self._caller_id)
+        try:
+            scope, local_name = resolve(caller, workspace, self._tree)
+        except (ValueError, KeyError) as exc:
+            return {"error": str(exc)}
+        mut = mutable_scopes(caller, self._tree)
+        if scope not in mut:
+            return {"error": f"workspace {workspace!r} is not in a mutable scope"}
+        try:
+            ws = store.load(scope, local_name)
+        except FileNotFoundError:
+            return {"error": f"workspace {workspace!r} not found"}
+        mount = Path(target)
+        for i, link in enumerate(ws.links):
+            if link.mount_path == mount:
+                ws.links.pop(i)
+                store.save(ws)
+                return {"status": "unlinked"}
+        return {"error": f"no link at {target!r}"}
+
     def drain_deferred(self) -> list[DeferredWork]:
         """Return and clear accumulated deferred callbacks."""
         work = self._deferred
