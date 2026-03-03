@@ -695,6 +695,48 @@ async def test_wake_loop_stop_without_start(orch: Orchestrator) -> None:
 # -- complete lifecycle -----------------------------------------------------
 
 
+async def test_spawn_failure_cleans_up_child(tmp_path: Path) -> None:
+    """If child session creation fails, the orphaned node is removed."""
+
+    class FailOnSecondCreate(FakeProvider):
+        def __init__(self) -> None:
+            super().__init__()
+            self._count = 0
+
+        async def create(
+            self,
+            model: str,
+            system_prompt: str,
+            log: EventLog | None = None,
+            **kwargs: object,
+        ) -> FakeProviderSession:
+            self._count += 1
+            if self._count > 1:
+                raise RuntimeError("boom")
+            return await super().create(model, system_prompt, log, **kwargs)
+
+    prov = FailOnSecondCreate()
+    store = SessionStore(tmp_path / "agents")
+    mux = SessionMultiplexer(store)
+    sched = TurnScheduler({"fake": prov}, mux, store, log_root=tmp_path / "agents")
+    orch = Orchestrator(sched, default_provider="fake", default_model="m")
+
+    root = await orch.create_root_agent("root", "instructions")
+    handler = orch.get_handler(root.id)
+    result = handler.spawn_agent("child", "doomed")
+    child_id = UUID(result["agent_id"])
+
+    # Child is in the tree before deferred work executes.
+    assert child_id in orch.tree
+    assert child_id in orch.inboxes
+
+    # Deferred spawn will fail — child should be cleaned up.
+    await orch._drain_deferred(root.id)
+
+    assert child_id not in orch.tree
+    assert child_id not in orch.inboxes
+
+
 async def test_complete_lifecycle(
     provider: FakeProvider,
     orch: Orchestrator,

@@ -7,6 +7,7 @@
 import asyncio
 import json
 import shutil
+import tempfile
 from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 from uuid import UUID
@@ -93,6 +94,8 @@ class CursorSession:
         log: EventLog | None = None,
         wrap_command: CommandWrapper | None = None,
         tools: Sequence[ToolDef] = (),
+        *,
+        private_workspace: bool = False,
     ) -> None:
         self._session_id = session_id
         self._model = model
@@ -101,6 +104,7 @@ class CursorSession:
         self._log = log
         self._wrap_command = wrap_command
         self._tools = tuple(tools)
+        self._private_workspace = private_workspace
 
     @property
     def session_id(self) -> str:
@@ -140,35 +144,46 @@ class CursorSession:
     @log_method(after=True)
     async def suspend(self) -> bytes:
         """Serialize state — session ID, model, workspace, system prompt."""
-        state = {
+        state: dict[str, object] = {
             "session_id": self._session_id,
             "model": self._model,
             "workspace": str(self._workspace),
             "system_prompt": self._system_prompt,
         }
+        if self._private_workspace:
+            state["private_workspace"] = True
         return json.dumps(state).encode()
 
     @log_method(after=True)
     async def stop(self) -> None:
-        """Nothing to clean up — subprocesses are per-send."""
+        """Close event log and remove private workspace if we created one."""
         if self._log is not None:
             self._log.close()
+        if self._private_workspace and self._workspace.exists():
+            shutil.rmtree(self._workspace, ignore_errors=True)
 
     def _build_cmd(self, prompt: str) -> list[str]:
-        return [
+        cmd = [
             _cursor_binary(),
             "--print",
             "--output-format",
             "stream-json",
             "--trust",
-            "--model",
-            self._model,
-            "--workspace",
-            str(self._workspace),
-            "--resume",
-            self._session_id,
-            prompt,
         ]
+        if self._tools:
+            cmd.append("--approve-mcps")
+        cmd.extend(
+            [
+                "--model",
+                self._model,
+                "--workspace",
+                str(self._workspace),
+                "--resume",
+                self._session_id,
+                prompt,
+            ]
+        )
+        return cmd
 
 
 class CursorAgentProvider:
@@ -198,7 +213,12 @@ class CursorAgentProvider:
         agent_id: UUID | None = None,
     ) -> CursorSession:
         """Create a new cursor-agent session."""
-        ws = workspace if workspace is not None else Path("/tmp")
+        private = workspace is None
+        ws = (
+            workspace
+            if workspace is not None
+            else Path(tempfile.mkdtemp(prefix="substrat-"))
+        )
         rules_path = _write_rules(ws, system_prompt)
         if agent_id is not None and workspace is not None:
             _write_mcp_config(ws, agent_id)
@@ -222,6 +242,7 @@ class CursorAgentProvider:
             log=log,
             wrap_command=wrap_command,
             tools=self._tools,
+            private_workspace=private,
         )
 
     async def restore(
@@ -236,7 +257,9 @@ class CursorAgentProvider:
         session_id = data["session_id"]
         system_prompt = data.get("system_prompt", "")
         workspace = Path(data["workspace"])
+        private = data.get("private_workspace", False)
         # Re-write rules file in case workspace was cleaned up.
+        # _write_rules uses parents=True, so missing dirs are recreated.
         _write_rules(workspace, system_prompt)
         if log is not None:
             log.log(
@@ -256,6 +279,7 @@ class CursorAgentProvider:
             log=log,
             wrap_command=wrap_command,
             tools=self._tools,
+            private_workspace=private,
         )
 
     async def _create_chat(self, wrap_command: CommandWrapper | None = None) -> str:

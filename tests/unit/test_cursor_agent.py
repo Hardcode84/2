@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import pytest
 
-from substrat.model import LinkSpec
+from substrat.model import LinkSpec, ToolDef
 from substrat.provider.base import AgentProvider, ProviderSession
 from substrat.provider.cursor_agent import (
     _CURSOR_BINDS,
@@ -289,3 +289,100 @@ def test_session_with_wrapper_satisfies_protocol() -> None:
         wrap_command=lambda cmd, binds, env: cmd,
     )
     assert isinstance(session, ProviderSession)
+
+
+# --- --approve-mcps flag ---
+
+
+@pytest.mark.asyncio
+@patch("substrat.provider.cursor_agent._cursor_binary", return_value=FAKE_BINARY)
+@patch("asyncio.create_subprocess_exec")
+async def test_approve_mcps_included_with_tools(
+    mock_exec: AsyncMock, _mock_bin: MagicMock
+) -> None:
+    """--approve-mcps is added to the command when tools are configured."""
+    mock_exec.return_value = _mock_process(_fake_assistant_output("ok"))
+    tool = ToolDef(name="test_tool", description="A test tool.")
+    session = CursorSession(
+        session_id="sess-1",
+        model="m",
+        workspace=Path("/tmp"),
+        tools=(tool,),
+    )
+    await _aiter_to_list(session.send("hello"))
+    actual_cmd = mock_exec.call_args[0]
+    assert "--approve-mcps" in actual_cmd
+
+
+@pytest.mark.asyncio
+@patch("substrat.provider.cursor_agent._cursor_binary", return_value=FAKE_BINARY)
+@patch("asyncio.create_subprocess_exec")
+async def test_approve_mcps_absent_without_tools(
+    mock_exec: AsyncMock, _mock_bin: MagicMock
+) -> None:
+    """--approve-mcps is NOT added when no tools are configured."""
+    mock_exec.return_value = _mock_process(_fake_assistant_output("ok"))
+    session = CursorSession(
+        session_id="sess-1",
+        model="m",
+        workspace=Path("/tmp"),
+    )
+    await _aiter_to_list(session.send("hello"))
+    actual_cmd = mock_exec.call_args[0]
+    assert "--approve-mcps" not in actual_cmd
+
+
+# --- private workspace ---
+
+
+@pytest.mark.asyncio
+@patch("substrat.provider.cursor_agent._cursor_binary", return_value=FAKE_BINARY)
+@patch("asyncio.create_subprocess_exec")
+async def test_create_without_workspace_uses_private_dir(
+    mock_exec: AsyncMock, _mock_bin: MagicMock
+) -> None:
+    """Provider allocates a unique temp dir when workspace is None."""
+    mock_exec.return_value = _mock_process(b"chat-id\n")
+    provider = CursorAgentProvider()
+    session = await provider.create(model="m", system_prompt="p")
+    assert session._private_workspace is True
+    assert session._workspace != Path("/tmp")
+    assert session._workspace.exists()
+    # Rules were written into the private workspace.
+    assert (session._workspace / ".cursor" / "rules" / "substrat.mdc").exists()
+    await session.stop()
+    assert not session._workspace.exists()
+
+
+@pytest.mark.asyncio
+@patch("substrat.provider.cursor_agent._cursor_binary", return_value=FAKE_BINARY)
+@patch("asyncio.create_subprocess_exec")
+async def test_create_with_workspace_not_private(
+    mock_exec: AsyncMock, _mock_bin: MagicMock, tmp_path: Path
+) -> None:
+    """Explicit workspace is not treated as private (not deleted on stop)."""
+    mock_exec.return_value = _mock_process(b"chat-id\n")
+    provider = CursorAgentProvider()
+    session = await provider.create(model="m", system_prompt="p", workspace=tmp_path)
+    assert session._private_workspace is False
+    await session.stop()
+    assert tmp_path.exists()
+
+
+@pytest.mark.asyncio
+@patch("substrat.provider.cursor_agent._cursor_binary", return_value=FAKE_BINARY)
+@patch("asyncio.create_subprocess_exec")
+async def test_suspend_restore_preserves_private_flag(
+    mock_exec: AsyncMock, _mock_bin: MagicMock
+) -> None:
+    """private_workspace flag survives suspend/restore."""
+    mock_exec.return_value = _mock_process(b"chat-id\n")
+    provider = CursorAgentProvider()
+    session = await provider.create(model="m", system_prompt="p")
+    ws_path = session._workspace
+    state = await session.suspend()
+    restored = await provider.restore(state)
+    assert restored._private_workspace is True
+    assert restored._workspace == ws_path
+    await restored.stop()
+    assert not ws_path.exists()

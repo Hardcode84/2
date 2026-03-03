@@ -445,40 +445,51 @@ class Orchestrator:
 
         def callback(child: AgentNode, ws_key: tuple[UUID, str] | None) -> DeferredWork:
             async def do_spawn() -> None:
-                # Assign workspace mapping if requested.
-                if ws_key is not None and self._ws_mapping is not None:
-                    self._ws_mapping.assign(child.id, ws_key[0], ws_key[1])
-                ws_path, wrap_cmd = self._resolve_workspace(ws_key)
-                prompt = build_prompt(child.instructions)
-                session = await self._scheduler.create_session(
-                    provider,
-                    model,
-                    prompt,
-                    workspace=ws_path,
-                    wrap_command=wrap_cmd,
-                    agent_id=child.id,
-                )
-                child.session_id = session.id
-                # Log after session created so the event goes to the real log.
-                parent_node = self._tree.parent(child.id)
-                parent_sid = parent_node.session_id.hex if parent_node else None
-                ws_data = [ws_key[0].hex, ws_key[1]] if ws_key else None
-                self._log_lifecycle(
-                    session.id,
-                    "agent.created",
-                    {
-                        "agent_id": child.id.hex,
-                        "name": child.name,
-                        "parent_session_id": parent_sid,
-                        "instructions": child.instructions,
-                        "workspace": ws_data,
-                    },
-                )
-                self._handlers[child.id] = self._make_handler(
-                    child.id,
-                    provider,
-                    model,
-                )
+                try:
+                    # Assign workspace mapping if requested.
+                    if ws_key is not None and self._ws_mapping is not None:
+                        self._ws_mapping.assign(child.id, ws_key[0], ws_key[1])
+                    ws_path, wrap_cmd = self._resolve_workspace(ws_key)
+                    prompt = build_prompt(child.instructions)
+                    session = await self._scheduler.create_session(
+                        provider,
+                        model,
+                        prompt,
+                        workspace=ws_path,
+                        wrap_command=wrap_cmd,
+                        agent_id=child.id,
+                    )
+                    child.session_id = session.id
+                    # Log after session created so the event goes to the real log.
+                    parent_node = self._tree.parent(child.id)
+                    parent_sid = parent_node.session_id.hex if parent_node else None
+                    ws_data = [ws_key[0].hex, ws_key[1]] if ws_key else None
+                    self._log_lifecycle(
+                        session.id,
+                        "agent.created",
+                        {
+                            "agent_id": child.id.hex,
+                            "name": child.name,
+                            "parent_session_id": parent_sid,
+                            "instructions": child.instructions,
+                            "workspace": ws_data,
+                        },
+                    )
+                    self._handlers[child.id] = self._make_handler(
+                        child.id,
+                        provider,
+                        model,
+                    )
+                except Exception:
+                    _log.exception(
+                        "spawn failed for child %s — cleaning up orphan",
+                        child.id.hex,
+                    )
+                    if child.id in self._tree:
+                        self._tree.remove(child.id)
+                    self._inboxes.pop(child.id, None)
+                    if self._ws_mapping is not None and child.id in self._ws_mapping:
+                        self._ws_mapping.unassign(child.id)
 
             return do_spawn
 
@@ -671,7 +682,10 @@ class Orchestrator:
         """Drain and execute deferred work from the agent's tool handler."""
         handler = self._handlers[agent_id]
         for work in handler.drain_deferred():
-            await work()
+            try:
+                await work()
+            except Exception:
+                _log.exception("deferred work failed for agent %s", agent_id)
         # Post-spawn wake: newly created children with non-empty inboxes.
         if agent_id not in self._tree:
             return
