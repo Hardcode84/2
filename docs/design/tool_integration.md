@@ -162,6 +162,74 @@ Returns:
 
 TODO: define what "recent activity" actually means.
 
+### `list_workspaces`
+
+List visible workspaces (own, children's, parent's scopes).
+
+```
+Parameters: (none)
+
+Returns:
+  {"workspaces": [{"name": "str", "scope": "self" | "parent" | "<child-name>", "mutable": bool}, ...]}
+```
+
+### `create_workspace`
+
+Create a workspace in the calling agent's scope. Supports live views via
+`view_of`.
+
+```
+Parameters:
+  name: str
+  network_access: bool = false
+  view_of: str | null           # Source workspace ref for live view.
+  subdir: str = "."             # Subfolder within source (view_of only).
+  mode: "ro" | "rw" = "ro"     # View mode (view_of only).
+
+Returns:
+  {"status": "created", "name": "str"}
+```
+
+### `delete_workspace`
+
+Delete a workspace. Must be in a mutable scope.
+
+```
+Parameters:
+  name: str                     # Workspace ref (scoped).
+
+Returns:
+  {"status": "deleted"}
+```
+
+### `link_dir`
+
+Link a directory from the calling agent's workspace into a target workspace.
+
+```
+Parameters:
+  workspace: str                # Target workspace ref (scoped).
+  source: str                   # Path inside caller's own workspace.
+  target: str                   # Mount path inside target workspace.
+  mode: "ro" | "rw" = "ro"
+
+Returns:
+  {"status": "linked"}
+```
+
+### `unlink_dir`
+
+Remove a linked directory from a workspace.
+
+```
+Parameters:
+  workspace: str                # Workspace ref (scoped).
+  target: str                   # Mount path to remove.
+
+Returns:
+  {"status": "unlinked"}
+```
+
 ### `read_file` / `write_file`
 
 These are provider-native tools — no need to reimplement. They operate within
@@ -220,8 +288,10 @@ Tool definitions are layer-neutral frozen dataclasses in `src/substrat/model.py`
 - **`ToolDef`** — name, description, tuple of `ToolParam`. No serialization
   logic — that lives in the MCP server.
 
-The agent tool catalog (`AGENT_TOOLS`) lives in `src/substrat/agent/tools.py`
-and is a tuple of `ToolDef` objects. Providers accept tools at construction
+The agent tool catalog (`AGENT_TOOLS`) and workspace tool catalog
+(`WORKSPACE_TOOLS`) both live in `src/substrat/agent/tools.py` as tuples of
+`ToolDef` objects. `ALL_TOOLS = AGENT_TOOLS + WORKSPACE_TOOLS` is the unified
+set used by the daemon and MCP server. Providers accept tools at construction
 via `tools: Sequence[ToolDef]`.
 
 ## Open Questions

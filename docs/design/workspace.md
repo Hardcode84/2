@@ -115,6 +115,11 @@ if any workspace in the tree has alive (non-terminated) agents assigned to it.
 The daemon enforces this — checks the agent-workspace mapping for every
 workspace in the view tree before allowing deletion.
 
+**v1 limitation:** View tree cascade is deferred. `delete_workspace` checks
+direct agent assignments only — it does not discover or delete dependent views.
+Deleting a source workspace while views exist leaves orphaned links. This is a
+known gap, not a bug.
+
 View tree discovery: a workspace B is a view of workspace A if any of B's
 links point into A's `root_path`. The daemon maintains this dependency graph
 (derived from `LinkSpec.host_path` at link time). Deleting a leaf view does
@@ -218,6 +223,11 @@ recovery, the mapping is reconstructed from agent records (each `AgentNode`
 stores its workspace scope and name).
 
 ## Agent-Facing Tools
+
+**Status:** All five workspace tools are implemented in `src/substrat/agent/tools.py`
+as methods on `ToolHandler`. The tool catalog (`WORKSPACE_TOOLS`) and unified
+`ALL_TOOLS` tuple are exported from `substrat.agent`. Daemon and MCP server
+use `ALL_TOOLS` for dispatch.
 
 Agents manage workspaces through MCP tools. All tools are non-blocking and
 return immediately. Workspace references use the scoped syntax described in
