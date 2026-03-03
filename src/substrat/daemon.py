@@ -81,15 +81,15 @@ class Daemon:
         )
 
         self._handlers: dict[str, Any] = {
-            "agent.create": self._h_agent_create,
-            "agent.list": self._h_agent_list,
-            "agent.send": self._h_agent_send,
-            "agent.inspect": self._h_agent_inspect,
-            "agent.terminate": self._h_agent_terminate,
-            "tool.call": self._h_tool_call,
-            "workspace.create": self._h_workspace_create,
-            "workspace.list": self._h_workspace_list,
-            "workspace.delete": self._h_workspace_delete,
+            "agent.create": self._handle_agent_create,
+            "agent.list": self._handle_agent_list,
+            "agent.send": self._handle_agent_send,
+            "agent.inspect": self._handle_agent_inspect,
+            "agent.terminate": self._handle_agent_terminate,
+            "tool.call": self._handle_tool_call,
+            "workspace.create": self._handle_workspace_create,
+            "workspace.list": self._handle_workspace_list,
+            "workspace.delete": self._handle_workspace_delete,
         }
 
     @property
@@ -249,7 +249,7 @@ class Daemon:
 
     # -- RPC handlers ----------------------------------------------------------
 
-    async def _h_agent_create(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def _handle_agent_create(self, params: dict[str, Any]) -> dict[str, Any]:
         name = params.get("name") or ""
         instructions = params.get("instructions") or ""
         provider = params.get("provider")
@@ -281,19 +281,19 @@ class Daemon:
                 return ws.scope, ws.name
         raise ValueError(f"workspace not found: {ws_name}")
 
-    async def _h_agent_list(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def _handle_agent_list(self, params: dict[str, Any]) -> dict[str, Any]:
         nodes = []
         for node in self._orch.tree.roots():
             nodes.extend(self._walk_tree(node))
         return {"agents": nodes}
 
-    async def _h_agent_send(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def _handle_agent_send(self, params: dict[str, Any]) -> dict[str, Any]:
         agent_id = UUID(params["agent_id"])
         message = params.get("message", "")
         response = await self._orch.run_turn(agent_id, message)
         return {"response": response}
 
-    async def _h_agent_inspect(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def _handle_agent_inspect(self, params: dict[str, Any]) -> dict[str, Any]:
         agent_id = UUID(params["agent_id"])
         node = self._orch.tree.get(agent_id)
         children = self._orch.tree.children(agent_id)
@@ -313,14 +313,14 @@ class Daemon:
             ],
         }
 
-    async def _h_agent_terminate(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def _handle_agent_terminate(self, params: dict[str, Any]) -> dict[str, Any]:
         agent_id = UUID(params["agent_id"])
         await self._orch.terminate_agent(agent_id)
         return {"status": "terminated", "agent_id": agent_id.hex}
 
     _TOOL_NAMES: frozenset[str] = frozenset(t.name for t in _ALL_TOOLS)
 
-    async def _h_tool_call(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def _handle_tool_call(self, params: dict[str, Any]) -> dict[str, Any]:
         agent_id = UUID(params["agent_id"])
         tool_name = params["tool"]
         arguments = params.get("arguments", {})
@@ -338,7 +338,7 @@ class Daemon:
 
     # -- Workspace RPC handlers ------------------------------------------------
 
-    async def _h_workspace_create(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def _handle_workspace_create(self, params: dict[str, Any]) -> dict[str, Any]:
         from uuid import uuid4
 
         ws_name = params["name"]
@@ -354,7 +354,7 @@ class Daemon:
         self._ws_store.save(ws)
         return {"scope": scope.hex, "name": ws_name}
 
-    async def _h_workspace_list(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def _handle_workspace_list(self, params: dict[str, Any]) -> dict[str, Any]:
         workspaces = self._ws_store.scan()
         return {
             "workspaces": [
@@ -368,7 +368,7 @@ class Daemon:
             ]
         }
 
-    async def _h_workspace_delete(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def _handle_workspace_delete(self, params: dict[str, Any]) -> dict[str, Any]:
         scope = UUID(params["scope"])
         ws_name = params["name"]
         self._ws_store.delete(scope, ws_name)

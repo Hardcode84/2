@@ -44,7 +44,7 @@ async def test_agent_create(daemon: Daemon) -> None:
     """agent.create returns agent_id and name."""
     await daemon.start()
     try:
-        result = await daemon._h_agent_create(
+        result = await daemon._handle_agent_create(
             {"name": "alpha", "instructions": "do stuff"}
         )
         assert "agent_id" in result
@@ -57,7 +57,7 @@ async def test_agent_list_empty(daemon: Daemon) -> None:
     """agent.list returns empty list when no agents exist."""
     await daemon.start()
     try:
-        result = await daemon._h_agent_list({})
+        result = await daemon._handle_agent_list({})
         assert result == {"agents": []}
     finally:
         await daemon.stop()
@@ -67,9 +67,9 @@ async def test_agent_list_with_agents(daemon: Daemon) -> None:
     """agent.list returns all agents."""
     await daemon.start()
     try:
-        await daemon._h_agent_create({"name": "a", "instructions": "i"})
-        await daemon._h_agent_create({"name": "b", "instructions": "j"})
-        result = await daemon._h_agent_list({})
+        await daemon._handle_agent_create({"name": "a", "instructions": "i"})
+        await daemon._handle_agent_create({"name": "b", "instructions": "j"})
+        result = await daemon._handle_agent_list({})
         names = [a["name"] for a in result["agents"]]
         assert sorted(names) == ["a", "b"]
     finally:
@@ -80,8 +80,8 @@ async def test_agent_send(daemon: Daemon) -> None:
     """agent.send returns provider response."""
     await daemon.start()
     try:
-        created = await daemon._h_agent_create({"name": "a", "instructions": "i"})
-        result = await daemon._h_agent_send(
+        created = await daemon._handle_agent_create({"name": "a", "instructions": "i"})
+        result = await daemon._handle_agent_send(
             {"agent_id": created["agent_id"], "message": "hello"}
         )
         assert result["response"] == "ok"
@@ -93,8 +93,8 @@ async def test_agent_inspect(daemon: Daemon) -> None:
     """agent.inspect returns state, children, inbox."""
     await daemon.start()
     try:
-        created = await daemon._h_agent_create({"name": "a", "instructions": "i"})
-        result = await daemon._h_agent_inspect({"agent_id": created["agent_id"]})
+        created = await daemon._handle_agent_create({"name": "a", "instructions": "i"})
+        result = await daemon._handle_agent_inspect({"agent_id": created["agent_id"]})
         assert result["name"] == "a"
         assert result["state"] == "idle"
         assert result["children"] == []
@@ -107,9 +107,11 @@ async def test_agent_terminate(daemon: Daemon) -> None:
     """agent.terminate removes agent from tree."""
     await daemon.start()
     try:
-        created = await daemon._h_agent_create({"name": "doomed", "instructions": "i"})
-        await daemon._h_agent_terminate({"agent_id": created["agent_id"]})
-        result = await daemon._h_agent_list({})
+        created = await daemon._handle_agent_create(
+            {"name": "doomed", "instructions": "i"}
+        )
+        await daemon._handle_agent_terminate({"agent_id": created["agent_id"]})
+        result = await daemon._handle_agent_list({})
         assert result["agents"] == []
     finally:
         await daemon.stop()
@@ -119,8 +121,8 @@ async def test_tool_call_dispatch(daemon: Daemon) -> None:
     """tool.call dispatches to the agent's ToolHandler method."""
     await daemon.start()
     try:
-        created = await daemon._h_agent_create({"name": "a", "instructions": "i"})
-        result = await daemon._h_tool_call(
+        created = await daemon._handle_agent_create({"name": "a", "instructions": "i"})
+        result = await daemon._handle_tool_call(
             {
                 "agent_id": created["agent_id"],
                 "tool": "check_inbox",
@@ -140,29 +142,29 @@ async def test_full_lifecycle(daemon: Daemon) -> None:
     await daemon.start()
     try:
         # Create.
-        created = await daemon._h_agent_create(
+        created = await daemon._handle_agent_create(
             {"name": "worker", "instructions": "work hard"}
         )
         aid = created["agent_id"]
 
         # List.
-        agents = (await daemon._h_agent_list({}))["agents"]
+        agents = (await daemon._handle_agent_list({}))["agents"]
         assert len(agents) == 1
         assert agents[0]["name"] == "worker"
 
         # Send.
-        resp = await daemon._h_agent_send({"agent_id": aid, "message": "go"})
+        resp = await daemon._handle_agent_send({"agent_id": aid, "message": "go"})
         assert resp["response"] == "ok"
 
         # Inspect.
-        info = await daemon._h_agent_inspect({"agent_id": aid})
+        info = await daemon._handle_agent_inspect({"agent_id": aid})
         assert info["state"] == "idle"
 
         # Terminate.
-        await daemon._h_agent_terminate({"agent_id": aid})
+        await daemon._handle_agent_terminate({"agent_id": aid})
 
         # List (empty).
-        agents = (await daemon._h_agent_list({}))["agents"]
+        agents = (await daemon._handle_agent_list({}))["agents"]
         assert agents == []
     finally:
         await daemon.stop()
@@ -220,7 +222,7 @@ async def test_tool_call_unknown_tool(daemon: Daemon) -> None:
     """tool.call with unknown tool returns ERR_INVALID."""
     await daemon.start()
     try:
-        created = await daemon._h_agent_create({"name": "a", "instructions": "i"})
+        created = await daemon._handle_agent_create({"name": "a", "instructions": "i"})
         with pytest.raises(RpcError) as exc_info:
             await async_call(
                 str(daemon.socket_path),
@@ -276,8 +278,8 @@ async def test_workspace_tool_dispatch(daemon: Daemon) -> None:
     """Workspace tools are callable through tool.call dispatch."""
     await daemon.start()
     try:
-        created = await daemon._h_agent_create({"name": "a", "instructions": "i"})
-        result = await daemon._h_tool_call(
+        created = await daemon._handle_agent_create({"name": "a", "instructions": "i"})
+        result = await daemon._handle_tool_call(
             {
                 "agent_id": created["agent_id"],
                 "tool": "list_workspaces",
@@ -293,9 +295,9 @@ async def test_tool_call_rejects_non_tool_method(daemon: Daemon) -> None:
     """tool.call must reject methods not in ALL_TOOLS (e.g. drain_deferred)."""
     await daemon.start()
     try:
-        created = await daemon._h_agent_create({"name": "a", "instructions": "i"})
+        created = await daemon._handle_agent_create({"name": "a", "instructions": "i"})
         with pytest.raises(ValueError, match="unknown tool"):
-            await daemon._h_tool_call(
+            await daemon._handle_tool_call(
                 {
                     "agent_id": created["agent_id"],
                     "tool": "drain_deferred",
@@ -348,7 +350,7 @@ async def test_agent_state_error_returns_invalid(daemon: Daemon) -> None:
     """AgentStateError from concurrent send maps to ERR_INVALID, not ERR_INTERNAL."""
     await daemon.start()
     try:
-        created = await daemon._h_agent_create({"name": "a", "instructions": "i"})
+        created = await daemon._handle_agent_create({"name": "a", "instructions": "i"})
         aid = created["agent_id"]
         # First send puts agent into BUSY; node.begin_turn() on second would fail.
         # Simulate by calling begin_turn directly before sending via UDS.
@@ -432,11 +434,11 @@ async def test_workspace_create(daemon: Daemon) -> None:
     """workspace.create persists workspace and returns scope/name."""
     await daemon.start()
     try:
-        result = await daemon._h_workspace_create({"name": "dev"})
+        result = await daemon._handle_workspace_create({"name": "dev"})
         assert result["name"] == "dev"
         assert "scope" in result
         # Workspace appears in list.
-        listed = await daemon._h_workspace_list({})
+        listed = await daemon._handle_workspace_list({})
         names = [ws["name"] for ws in listed["workspaces"]]
         assert "dev" in names
     finally:
@@ -448,7 +450,7 @@ async def test_workspace_create_with_scope(daemon: Daemon) -> None:
     await daemon.start()
     try:
         scope = uuid4().hex
-        result = await daemon._h_workspace_create({"name": "env", "scope": scope})
+        result = await daemon._handle_workspace_create({"name": "env", "scope": scope})
         assert result["scope"] == scope
         assert result["name"] == "env"
     finally:
@@ -459,7 +461,7 @@ async def test_workspace_list_empty(daemon: Daemon) -> None:
     """workspace.list returns empty when no workspaces exist."""
     await daemon.start()
     try:
-        result = await daemon._h_workspace_list({})
+        result = await daemon._handle_workspace_list({})
         assert result == {"workspaces": []}
     finally:
         await daemon.stop()
@@ -469,13 +471,13 @@ async def test_workspace_delete(daemon: Daemon) -> None:
     """workspace.delete removes workspace from store."""
     await daemon.start()
     try:
-        created = await daemon._h_workspace_create({"name": "doomed"})
-        result = await daemon._h_workspace_delete(
+        created = await daemon._handle_workspace_create({"name": "doomed"})
+        result = await daemon._handle_workspace_delete(
             {"scope": created["scope"], "name": "doomed"}
         )
         assert result["status"] == "deleted"
         # Verify it's gone.
-        listed = await daemon._h_workspace_list({})
+        listed = await daemon._handle_workspace_list({})
         assert listed["workspaces"] == []
     finally:
         await daemon.stop()

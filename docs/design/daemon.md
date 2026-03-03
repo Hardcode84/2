@@ -48,12 +48,12 @@ Handler methods registered in `self._handlers: dict[str, Callable]`.
 
 | Method | Handler | Delegates to |
 |--------|---------|-------------|
-| `agent.create` | `_h_agent_create` | `orch.create_root_agent()` |
-| `agent.list` | `_h_agent_list` | Walk tree from roots |
-| `agent.send` | `_h_agent_send` | `orch.run_turn()` |
-| `agent.inspect` | `_h_agent_inspect` | Tree + inbox queries |
-| `agent.terminate` | `_h_agent_terminate` | `orch.terminate_agent()` |
-| `tool.call` | `_h_tool_call` | `orch.get_handler().method()` |
+| `agent.create` | `_handle_agent_create` | `orch.create_root_agent()` |
+| `agent.list` | `_handle_agent_list` | Walk tree from roots |
+| `agent.send` | `_handle_agent_send` | `orch.run_turn()` |
+| `agent.inspect` | `_handle_agent_inspect` | Tree + inbox queries |
+| `agent.terminate` | `_handle_agent_terminate` | `orch.terminate_agent()` |
+| `tool.call` | `_handle_tool_call` | `orch.get_handler().method()` |
 
 ### Error Codes
 
