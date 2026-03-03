@@ -588,6 +588,13 @@ class Orchestrator:
                     scope, ws_name = node.workspace
                     self._ws_mapping.assign(nid, scope, ws_name)
 
+        # -- Recovery wake: agents with pending messages get woken. --
+        for nid in placed:
+            node = self._tree.get(nid)
+            inbox = self._inboxes.get(nid)
+            if inbox and node.state == AgentState.IDLE:
+                self._notify_wake(nid)
+
     async def _drain_deferred(self, agent_id: UUID) -> None:
         """Drain and execute deferred work from the agent's tool handler."""
         handler = self._handlers[agent_id]

@@ -506,3 +506,22 @@ async def test_workspace_list_over_uds(daemon: Daemon) -> None:
         assert "ws1" in names
     finally:
         await daemon.stop()
+
+
+# -- Wake loop lifecycle -------------------------------------------------------
+
+
+async def test_daemon_start_initializes_wake_loop(daemon: Daemon) -> None:
+    """daemon.start() starts the orchestrator wake loop."""
+    await daemon.start()
+    try:
+        assert daemon.orchestrator._wake_task is not None
+    finally:
+        await daemon.stop()
+
+
+async def test_daemon_stop_cancels_wake_loop(daemon: Daemon) -> None:
+    """daemon.stop() cancels the wake loop task."""
+    await daemon.start()
+    await daemon.stop()
+    assert daemon.orchestrator._wake_task is None

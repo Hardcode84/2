@@ -808,3 +808,31 @@ async def test_recover_workspace_old_event_no_field(
 
     recovered = orch2.tree.get(root.id)
     assert recovered.workspace is None
+
+
+# -- Recovery wake ----------------------------------------------------------
+
+
+async def test_recovery_wake_queued(
+    orch: Orchestrator,
+    tmp_path: Path,
+    provider: FakeProvider,
+) -> None:
+    """Recovered agent with pending message gets a wake notification."""
+    root = await orch.create_root_agent("root", "r")
+    h = orch.get_handler(root.id)
+    r = h.spawn_agent("child", "ci")
+    child_id = UUID(r["agent_id"])
+    await orch.run_turn(root.id, "go")
+
+    # Send message, don't check inbox.
+    h = orch.get_handler(root.id)
+    h.send_message("child", "pending msg")
+
+    orch2 = _fresh_orch(tmp_path, provider)
+    await orch2.recover()
+
+    # Wake queue should have the child's id.
+    assert not orch2._wake_queue.empty()
+    woken_id = orch2._wake_queue.get_nowait()
+    assert woken_id == child_id

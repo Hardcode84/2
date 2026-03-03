@@ -104,6 +104,7 @@ class Daemon:
         self._root.mkdir(parents=True, exist_ok=True)
         self._cleanup_stale()
         await self._orch.recover()
+        self._orch.start_wake_loop()
         self._server = await asyncio.start_unix_server(
             self._handle_connection,
             path=str(self._sock_path),
@@ -113,6 +114,7 @@ class Daemon:
 
     async def stop(self) -> None:
         """Stop the daemon: close server, remove socket and PID file."""
+        await self._orch.stop_wake_loop()
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
