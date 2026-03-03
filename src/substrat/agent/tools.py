@@ -172,6 +172,7 @@ class ToolError(Exception):
 DeferredWork = Callable[[], Coroutine[Any, Any, None]]
 SpawnCallback = Callable[[AgentNode], DeferredWork]
 LogCallback = Callable[[UUID, str, dict[str, Any]], None]
+WakeCallback = Callable[[UUID], None]
 InboxRegistry = dict[UUID, Inbox]
 
 
@@ -190,6 +191,7 @@ class ToolHandler:
         caller_id: UUID,
         spawn_callback: SpawnCallback | None = None,
         log_callback: LogCallback | None = None,
+        wake_callback: WakeCallback | None = None,
         ws_store: WorkspaceStore | None = None,
         ws_mapping: WorkspaceMapping | None = None,
     ) -> None:
@@ -198,6 +200,7 @@ class ToolHandler:
         self._caller_id = caller_id
         self._spawn_callback = spawn_callback
         self._log_callback = log_callback
+        self._wake_callback = wake_callback
         self._ws_store = ws_store
         self._ws_mapping = ws_mapping
         self._deferred: list[DeferredWork] = []
@@ -645,6 +648,8 @@ class ToolHandler:
             inbox = Inbox()
             self._inboxes[recipient_id] = inbox
         inbox.deliver(envelope)
+        if self._wake_callback is not None:
+            self._wake_callback(recipient_id)
 
     def _require_ws_deps(self) -> tuple[WorkspaceStore, WorkspaceMapping]:
         """Return workspace deps or raise ToolError if not configured."""

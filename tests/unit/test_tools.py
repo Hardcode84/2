@@ -525,6 +525,48 @@ def test_enqueue_logged_before_inbox_delivery(fix: ToolFixture) -> None:
     assert inbox_lengths == [0]
 
 
+# --- wake callback ---
+
+
+def test_send_message_fires_wake(fix: ToolFixture) -> None:
+    """send_message fires wake callback for recipient."""
+    woken: list[UUID] = []
+    handler = ToolHandler(
+        fix.tree, fix.inboxes, fix.alice.id, wake_callback=woken.append
+    )
+    handler.send_message("bob", "hi")
+    assert woken == [fix.bob.id]
+
+
+def test_broadcast_fires_wake_per_sibling(fix: ToolFixture) -> None:
+    """broadcast fires wake callback once per sibling."""
+    woken: list[UUID] = []
+    handler = ToolHandler(
+        fix.tree, fix.inboxes, fix.alice.id, wake_callback=woken.append
+    )
+    handler.broadcast("hello team")
+    assert set(woken) == {fix.bob.id, fix.carol.id}
+
+
+def test_no_wake_callback_no_crash(fix: ToolFixture) -> None:
+    """Delivery without wake callback doesn't crash."""
+    handler = ToolHandler(fix.tree, fix.inboxes, fix.alice.id)
+    result = handler.send_message("bob", "quiet")
+    assert result["status"] == "sent"
+
+
+def test_wake_fires_after_inbox_delivery(fix: ToolFixture) -> None:
+    """At wake time the inbox already contains the message."""
+    inbox_lengths: list[int] = []
+
+    def spy(agent_id: UUID) -> None:
+        inbox_lengths.append(len(fix.inboxes[agent_id]))
+
+    handler = ToolHandler(fix.tree, fix.inboxes, fix.alice.id, wake_callback=spy)
+    handler.send_message("bob", "check timing")
+    assert inbox_lengths == [1]
+
+
 # === Workspace tool tests ===
 
 

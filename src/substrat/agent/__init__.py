@@ -26,6 +26,7 @@ from substrat.agent.tools import (
     LogCallback,
     ToolError,
     ToolHandler,
+    WakeCallback,
 )
 from substrat.agent.tree import AgentTree
 from substrat.model import ToolDef, ToolParam
@@ -50,6 +51,7 @@ __all__ = [
     "ToolHandler",
     "ToolParam",
     "WORKSPACE_TOOLS",
+    "WakeCallback",
     "USER",
     "build_prompt",
     "is_sentinel",
