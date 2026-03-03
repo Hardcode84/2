@@ -374,13 +374,15 @@ def test_make_wrap_command_produces_bwrap(
 ) -> None:
     """_make_wrap_command closure produces valid bwrap argv."""
     d = Daemon(tmp_path, providers={"fake": provider}, default_provider="fake")
+    scope = uuid4()
     ws = Workspace(
         name="test",
-        scope=uuid4(),
-        root_path=tmp_path / "ws-root",
+        scope=scope,
+        root_path=d._ws_store.workspace_dir(scope, "test") / "root",
     )
-    (tmp_path / "ws-root").mkdir()
-    wrapper = d._make_wrap_command(ws)
+    ws.root_path.mkdir(parents=True)
+    d._ws_store.save(ws)
+    wrapper = d._make_wrap_command(scope, "test")
     result = list(wrapper(["echo", "hi"], [], {}))
 
     # Should start with bwrap.
@@ -404,9 +406,15 @@ def test_make_wrap_command_merges_extra_binds(
 ) -> None:
     """Extra binds from caller are included in the bwrap command."""
     d = Daemon(tmp_path, providers={"fake": provider}, default_provider="fake")
-    ws = Workspace(name="t", scope=uuid4(), root_path=tmp_path / "r")
-    (tmp_path / "r").mkdir()
-    wrapper = d._make_wrap_command(ws)
+    scope = uuid4()
+    ws = Workspace(
+        name="t",
+        scope=scope,
+        root_path=d._ws_store.workspace_dir(scope, "t") / "root",
+    )
+    ws.root_path.mkdir(parents=True)
+    d._ws_store.save(ws)
+    wrapper = d._make_wrap_command(scope, "t")
     extra = [LinkSpec(Path("/opt/foo"), Path("/opt/foo"), "ro")]
     result = list(wrapper(["cmd"], extra, {"MY_VAR": "val"}))
     assert "/opt/foo" in result

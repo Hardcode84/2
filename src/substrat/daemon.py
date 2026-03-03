@@ -209,9 +209,14 @@ class Daemon:
 
     # -- Wrap-command factory --------------------------------------------------
 
-    def _make_wrap_command(self, workspace: Workspace) -> CommandWrapper:
-        """Build a per-agent closure that sandboxes commands via bwrap."""
+    def _make_wrap_command(self, scope: UUID, ws_name: str) -> CommandWrapper:
+        """Build a per-agent closure that sandboxes commands via bwrap.
+
+        Re-reads workspace from store on each invocation so link_dir /
+        unlink_dir changes are picked up without session restart.
+        """
         sock = self._sock_path
+        ws_store = self._ws_store
 
         # Collect python prefix binds so the MCP server can import substrat.
         py_binds: list[LinkSpec] = []
@@ -226,6 +231,7 @@ class Daemon:
             binds: Sequence[LinkSpec],
             env: Mapping[str, str],
         ) -> Sequence[str]:
+            workspace = ws_store.load(scope, ws_name)
             all_binds = [
                 *binds,
                 *py_binds,

@@ -204,10 +204,10 @@ async def test_create_root_agent_with_workspace(tmp_path: Path) -> None:
     (tmp_path / "ws-root").mkdir()
     ws_store.save(ws)
 
-    factory_calls: list[Workspace] = []
+    factory_calls: list[tuple[UUID, str]] = []
 
-    def fake_factory(w: Workspace) -> object:
-        factory_calls.append(w)
+    def fake_factory(s: UUID, n: str) -> object:
+        factory_calls.append((s, n))
         return lambda cmd, binds, env: cmd
 
     store = SessionStore(tmp_path / "sessions")
@@ -225,7 +225,7 @@ async def test_create_root_agent_with_workspace(tmp_path: Path) -> None:
     node = await o.create_root_agent("w", "i", workspace=(scope, "env"))
     assert ws_mapping.get(node.id) == (scope, "env")
     assert len(factory_calls) == 1
-    assert factory_calls[0].name == "env"
+    assert factory_calls[0] == (scope, "env")
 
 
 # -- run_turn ---------------------------------------------------------------

@@ -33,11 +33,11 @@ from substrat.scheduler import TurnScheduler
 from substrat.session.model import Session, SessionState
 from substrat.workspace.handler import WorkspaceToolHandler
 from substrat.workspace.mapping import WorkspaceMapping
-from substrat.workspace.model import Workspace
 from substrat.workspace.store import WorkspaceStore
 
-# Factory that builds a CommandWrapper from a Workspace.
-WrapCommandFactory = Callable[[Workspace], CommandWrapper]
+# Factory that builds a CommandWrapper from a workspace key (scope, name).
+# The returned closure re-reads workspace state on each invocation.
+WrapCommandFactory = Callable[[UUID, str], CommandWrapper]
 
 _log = logging.getLogger(__name__)
 
@@ -345,7 +345,7 @@ class Orchestrator:
         ws = self._ws_store.load(scope, ws_name)
         wrap_cmd = None
         if self._wrap_factory is not None:
-            wrap_cmd = self._wrap_factory(ws)
+            wrap_cmd = self._wrap_factory(scope, ws_name)
         return ws.root_path, wrap_cmd
 
     def _make_handler(
