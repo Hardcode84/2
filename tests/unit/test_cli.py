@@ -314,6 +314,207 @@ def test_workspace_delete() -> None:
 # -- Bug regression tests ------------------------------------------------------
 
 
+# -- workspace link ------------------------------------------------------------
+
+
+def test_workspace_link() -> None:
+    """workspace link calls workspace.link and prints confirmation."""
+    with patch("substrat.cli.app.sync_call") as mock:
+        mock.return_value = {"status": "linked", "scope": "aaa", "name": "dev"}
+        result = runner.invoke(
+            app,
+            [
+                "workspace",
+                "link",
+                "dev",
+                "aaa",
+                "--source",
+                "/opt/data",
+                "--target",
+                "/mnt/data",
+            ],
+        )
+    assert result.exit_code == 0
+    assert "linked aaa/dev" in result.output
+    assert "/opt/data -> /mnt/data" in result.output
+    assert "(ro)" in result.output
+
+
+def test_workspace_link_rw_mode() -> None:
+    """workspace link passes mode option."""
+    with patch("substrat.cli.app.sync_call") as mock:
+        mock.return_value = {"status": "linked", "scope": "bbb", "name": "ws"}
+        result = runner.invoke(
+            app,
+            [
+                "workspace",
+                "link",
+                "ws",
+                "bbb",
+                "--source",
+                "/src",
+                "--target",
+                "/src",
+                "--mode",
+                "rw",
+            ],
+        )
+    assert result.exit_code == 0
+    assert "(rw)" in result.output
+    call_params = mock.call_args[0][2]
+    assert call_params["mode"] == "rw"
+
+
+# -- workspace unlink ----------------------------------------------------------
+
+
+def test_workspace_unlink() -> None:
+    """workspace unlink calls workspace.unlink and prints confirmation."""
+    with patch("substrat.cli.app.sync_call") as mock:
+        mock.return_value = {"status": "unlinked", "scope": "aaa", "name": "dev"}
+        result = runner.invoke(
+            app,
+            ["workspace", "unlink", "dev", "aaa", "--target", "/mnt/data"],
+        )
+    assert result.exit_code == 0
+    assert "unlinked /mnt/data from aaa/dev" in result.output
+
+
+# -- workspace view ------------------------------------------------------------
+
+
+def test_workspace_view() -> None:
+    """workspace view creates workspace and links source root."""
+    with patch("substrat.cli.app.sync_call") as mock:
+        mock.side_effect = [
+            # workspace.inspect on source.
+            {"name": "src", "scope": "aaa", "root_path": "/ws/root", "links": []},
+            # workspace.create for the view.
+            {"scope": "bbb", "name": "my-view"},
+            # workspace.link to bind source into view.
+            {"status": "linked", "scope": "bbb", "name": "my-view"},
+        ]
+        result = runner.invoke(
+            app,
+            [
+                "workspace",
+                "view",
+                "src",
+                "aaa",
+                "--name",
+                "my-view",
+            ],
+        )
+    assert result.exit_code == 0
+    assert "bbb/my-view" in result.output
+    # Verify the three RPC calls.
+    assert mock.call_count == 3
+
+
+def test_workspace_view_with_subdir() -> None:
+    """workspace view --subdir appends to source root_path."""
+    with patch("substrat.cli.app.sync_call") as mock:
+        mock.side_effect = [
+            {"name": "src", "scope": "aaa", "root_path": "/ws/root", "links": []},
+            {"scope": "ccc", "name": "sub-view"},
+            {"status": "linked", "scope": "ccc", "name": "sub-view"},
+        ]
+        result = runner.invoke(
+            app,
+            [
+                "workspace",
+                "view",
+                "src",
+                "aaa",
+                "--name",
+                "sub-view",
+                "--subdir",
+                "data/stuff",
+            ],
+        )
+    assert result.exit_code == 0
+    # Third call is workspace.link — check host_path includes subdir.
+    link_params = mock.call_args_list[2][0][2]
+    assert link_params["host_path"] == "/ws/root/data/stuff"
+
+
+def test_workspace_view_with_scope_and_mode() -> None:
+    """workspace view passes explicit scope and mode."""
+    with patch("substrat.cli.app.sync_call") as mock:
+        mock.side_effect = [
+            {"name": "src", "scope": "aaa", "root_path": "/r", "links": []},
+            {"scope": "ddd", "name": "v"},
+            {"status": "linked", "scope": "ddd", "name": "v"},
+        ]
+        result = runner.invoke(
+            app,
+            [
+                "workspace",
+                "view",
+                "src",
+                "aaa",
+                "--name",
+                "v",
+                "--scope",
+                "ddd",
+                "--mode",
+                "rw",
+            ],
+        )
+    assert result.exit_code == 0
+    create_params = mock.call_args_list[1][0][2]
+    assert create_params["scope"] == "ddd"
+    link_params = mock.call_args_list[2][0][2]
+    assert link_params["mode"] == "rw"
+
+
+# -- workspace inspect ---------------------------------------------------------
+
+
+def test_workspace_inspect() -> None:
+    """workspace inspect prints workspace details."""
+    with patch("substrat.cli.app.sync_call") as mock:
+        mock.return_value = {
+            "name": "dev",
+            "scope": "aabbcc",
+            "root_path": "/ws/dev/root",
+            "network_access": True,
+            "created_at": "2026-01-01T00:00:00Z",
+            "links": [],
+        }
+        result = runner.invoke(app, ["workspace", "inspect", "dev", "aabbcc"])
+    assert result.exit_code == 0
+    assert "dev" in result.output
+    assert "aabbcc" in result.output
+    assert "/ws/dev/root" in result.output
+    assert "True" in result.output
+    assert "2026-01-01" in result.output
+
+
+def test_workspace_inspect_with_links() -> None:
+    """workspace inspect prints link table."""
+    with patch("substrat.cli.app.sync_call") as mock:
+        mock.return_value = {
+            "name": "lk",
+            "scope": "fff",
+            "root_path": "/r",
+            "network_access": False,
+            "created_at": "2026-03-03T00:00:00Z",
+            "links": [
+                {"host_path": "/a", "mount_path": "/b", "mode": "ro"},
+                {"host_path": "/c", "mount_path": "/d", "mode": "rw"},
+            ],
+        }
+        result = runner.invoke(app, ["workspace", "inspect", "lk", "fff"])
+    assert result.exit_code == 0
+    assert "links:" in result.output
+    assert "/a -> /b (ro)" in result.output
+    assert "/c -> /d (rw)" in result.output
+
+
+# -- Bug regression tests ------------------------------------------------------
+
+
 def test_daemon_start_permission_error(tmp_path: Path) -> None:
     """PID owned by another user — PermissionError means 'already running'."""
     from unittest.mock import patch as _patch

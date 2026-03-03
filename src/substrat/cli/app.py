@@ -298,6 +298,110 @@ def workspace_delete(
     typer.echo(f"deleted {scope}/{name}")
 
 
+@workspace_app.command("link")
+def workspace_link(
+    name: str = typer.Argument(help="Workspace name."),
+    scope: str = typer.Argument(help="Scope UUID (hex)."),
+    source: str = typer.Option(..., help="Host path to bind."),
+    target: str = typer.Option(..., help="Mount path inside sandbox."),
+    mode: str = typer.Option("ro", help="Mount mode (ro or rw)."),
+    root: Path = _ROOT_OPT,
+) -> None:
+    """Add a bind-mount link to a workspace."""
+    _call(
+        root,
+        "workspace.link",
+        {
+            "scope": scope,
+            "name": name,
+            "host_path": source,
+            "mount_path": target,
+            "mode": mode,
+        },
+    )
+    typer.echo(f"linked {scope}/{name} {source} -> {target} ({mode})")
+
+
+@workspace_app.command("unlink")
+def workspace_unlink(
+    name: str = typer.Argument(help="Workspace name."),
+    scope: str = typer.Argument(help="Scope UUID (hex)."),
+    target: str = typer.Option(..., help="Mount path to remove."),
+    root: Path = _ROOT_OPT,
+) -> None:
+    """Remove a bind-mount link from a workspace."""
+    _call(
+        root,
+        "workspace.unlink",
+        {"scope": scope, "name": name, "mount_path": target},
+    )
+    typer.echo(f"unlinked {target} from {scope}/{name}")
+
+
+@workspace_app.command("view")
+def workspace_view(
+    source_name: str = typer.Argument(help="Source workspace name."),
+    source_scope: str = typer.Argument(help="Source workspace scope (hex)."),
+    name: str = typer.Option(..., help="Name for the view workspace."),
+    scope: str | None = typer.Option(
+        None, help="Scope for the view (auto if omitted)."
+    ),
+    subdir: str | None = typer.Option(None, help="Source subdirectory to expose."),
+    mode: str = typer.Option("ro", help="Mount mode (ro or rw)."),
+    root: Path = _ROOT_OPT,
+) -> None:
+    """Create a view workspace linked into another workspace's root."""
+    # Resolve source root path.
+    source = _call(
+        root,
+        "workspace.inspect",
+        {"scope": source_scope, "name": source_name},
+    )
+    host_path = source["root_path"]
+    if subdir is not None:
+        host_path = str(Path(host_path) / subdir)
+
+    # Create the view workspace.
+    create_params: dict[str, Any] = {"name": name}
+    if scope is not None:
+        create_params["scope"] = scope
+    created = _call(root, "workspace.create", create_params)
+
+    # Link source into the view.
+    _call(
+        root,
+        "workspace.link",
+        {
+            "scope": created["scope"],
+            "name": name,
+            "host_path": host_path,
+            "mount_path": host_path,
+            "mode": mode,
+        },
+    )
+    typer.echo(f"{created['scope']}/{name}")
+
+
+@workspace_app.command("inspect")
+def workspace_inspect(
+    name: str = typer.Argument(help="Workspace name."),
+    scope: str = typer.Argument(help="Scope UUID (hex)."),
+    root: Path = _ROOT_OPT,
+) -> None:
+    """Inspect a workspace's details."""
+    result = _call(root, "workspace.inspect", {"scope": scope, "name": name})
+    typer.echo(f"name:     {result['name']}")
+    typer.echo(f"scope:    {result['scope']}")
+    typer.echo(f"root:     {result['root_path']}")
+    typer.echo(f"network:  {result['network_access']}")
+    typer.echo(f"created:  {result['created_at']}")
+    links = result.get("links", [])
+    if links:
+        typer.echo("links:")
+        for lk in links:
+            typer.echo(f"  {lk['host_path']} -> {lk['mount_path']} ({lk['mode']})")
+
+
 def main() -> None:
     """Entry point for ``substrat`` CLI."""
     app()

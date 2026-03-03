@@ -34,7 +34,7 @@
 - [x] bwrap command builder — build_command + check_available sandbox probe
 - [x] Workspace MCP tools — create_workspace, link_dir, unlink_dir, delete_workspace, list_workspaces
 - [x] View tree tracking — BFS discovery in store.view_tree(), cascade delete in delete_workspace
-- [ ] CLI workspace commands — create, delete, list, link, unlink, view, inspect
+- [x] CLI workspace commands — create, delete, list, link, unlink, view, inspect
 
 ## Daemon
 - [x] UDS server + event loop
@@ -58,7 +58,7 @@
 - [x] agent create/list/send/inspect/terminate
 - [ ] agent attach (bidirectional streaming)
 - [ ] session list/suspend/resume/delete
-- [ ] workspace create/delete/list/link/unlink/view/inspect
+- [x] workspace create/delete/list/link/unlink/view/inspect
 
 ## EventLog
 - [x] No directory fsync after file creation — new file's dir entry not durable on crash

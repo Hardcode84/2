@@ -535,3 +535,185 @@ async def test_daemon_stop_cancels_wake_loop(daemon: Daemon) -> None:
     await daemon.start()
     await daemon.stop()
     assert daemon.orchestrator._wake_task is None
+
+
+# -- Workspace link/unlink/inspect handlers -----------------------------------
+
+
+async def test_workspace_link(daemon: Daemon) -> None:
+    """workspace.link appends a bind mount to the workspace."""
+    await daemon.start()
+    try:
+        created = await daemon._handle_workspace_create({"name": "dev"})
+        scope = created["scope"]
+        result = await daemon._handle_workspace_link(
+            {
+                "scope": scope,
+                "name": "dev",
+                "host_path": "/opt/data",
+                "mount_path": "/mnt/data",
+                "mode": "rw",
+            }
+        )
+        assert result["status"] == "linked"
+        # Verify link persisted.
+        info = await daemon._handle_workspace_inspect({"scope": scope, "name": "dev"})
+        assert len(info["links"]) == 1
+        assert info["links"][0]["host_path"] == "/opt/data"
+        assert info["links"][0]["mount_path"] == "/mnt/data"
+        assert info["links"][0]["mode"] == "rw"
+    finally:
+        await daemon.stop()
+
+
+async def test_workspace_link_default_mode(daemon: Daemon) -> None:
+    """workspace.link defaults to read-only mode."""
+    await daemon.start()
+    try:
+        created = await daemon._handle_workspace_create({"name": "ro"})
+        await daemon._handle_workspace_link(
+            {
+                "scope": created["scope"],
+                "name": "ro",
+                "host_path": "/src",
+                "mount_path": "/src",
+            }
+        )
+        info = await daemon._handle_workspace_inspect(
+            {"scope": created["scope"], "name": "ro"}
+        )
+        assert info["links"][0]["mode"] == "ro"
+    finally:
+        await daemon.stop()
+
+
+async def test_workspace_link_not_found(daemon: Daemon) -> None:
+    """workspace.link on nonexistent workspace raises KeyError."""
+    await daemon.start()
+    try:
+        with pytest.raises(KeyError, match="workspace not found"):
+            await daemon._handle_workspace_link(
+                {
+                    "scope": uuid4().hex,
+                    "name": "ghost",
+                    "host_path": "/a",
+                    "mount_path": "/b",
+                }
+            )
+    finally:
+        await daemon.stop()
+
+
+async def test_workspace_unlink(daemon: Daemon) -> None:
+    """workspace.unlink removes a link by mount_path."""
+    await daemon.start()
+    try:
+        created = await daemon._handle_workspace_create({"name": "ul"})
+        scope = created["scope"]
+        await daemon._handle_workspace_link(
+            {
+                "scope": scope,
+                "name": "ul",
+                "host_path": "/a",
+                "mount_path": "/mnt/a",
+            }
+        )
+        result = await daemon._handle_workspace_unlink(
+            {"scope": scope, "name": "ul", "mount_path": "/mnt/a"}
+        )
+        assert result["status"] == "unlinked"
+        info = await daemon._handle_workspace_inspect({"scope": scope, "name": "ul"})
+        assert info["links"] == []
+    finally:
+        await daemon.stop()
+
+
+async def test_workspace_unlink_no_match(daemon: Daemon) -> None:
+    """workspace.unlink raises when mount_path not found."""
+    await daemon.start()
+    try:
+        created = await daemon._handle_workspace_create({"name": "nm"})
+        with pytest.raises(KeyError, match="no link at mount_path"):
+            await daemon._handle_workspace_unlink(
+                {
+                    "scope": created["scope"],
+                    "name": "nm",
+                    "mount_path": "/nonexistent",
+                }
+            )
+    finally:
+        await daemon.stop()
+
+
+async def test_workspace_unlink_not_found(daemon: Daemon) -> None:
+    """workspace.unlink on nonexistent workspace raises KeyError."""
+    await daemon.start()
+    try:
+        with pytest.raises(KeyError, match="workspace not found"):
+            await daemon._handle_workspace_unlink(
+                {
+                    "scope": uuid4().hex,
+                    "name": "nope",
+                    "mount_path": "/x",
+                }
+            )
+    finally:
+        await daemon.stop()
+
+
+async def test_workspace_inspect(daemon: Daemon) -> None:
+    """workspace.inspect returns full workspace details."""
+    await daemon.start()
+    try:
+        created = await daemon._handle_workspace_create({"name": "look"})
+        scope = created["scope"]
+        info = await daemon._handle_workspace_inspect({"scope": scope, "name": "look"})
+        assert info["name"] == "look"
+        assert info["scope"] == scope
+        assert "root_path" in info
+        assert isinstance(info["network_access"], bool)
+        assert "created_at" in info
+        assert info["links"] == []
+    finally:
+        await daemon.stop()
+
+
+async def test_workspace_inspect_with_links(daemon: Daemon) -> None:
+    """workspace.inspect includes link details."""
+    await daemon.start()
+    try:
+        created = await daemon._handle_workspace_create({"name": "lk"})
+        scope = created["scope"]
+        await daemon._handle_workspace_link(
+            {
+                "scope": scope,
+                "name": "lk",
+                "host_path": "/x",
+                "mount_path": "/y",
+                "mode": "rw",
+            }
+        )
+        await daemon._handle_workspace_link(
+            {
+                "scope": scope,
+                "name": "lk",
+                "host_path": "/p",
+                "mount_path": "/q",
+            }
+        )
+        info = await daemon._handle_workspace_inspect({"scope": scope, "name": "lk"})
+        assert len(info["links"]) == 2
+    finally:
+        await daemon.stop()
+
+
+async def test_workspace_inspect_not_found(daemon: Daemon) -> None:
+    """workspace.inspect on nonexistent workspace raises KeyError."""
+    await daemon.start()
+    try:
+        with pytest.raises(KeyError, match="workspace not found"):
+            await daemon._handle_workspace_inspect(
+                {"scope": uuid4().hex, "name": "nope"}
+            )
+    finally:
+        await daemon.stop()

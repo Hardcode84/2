@@ -90,6 +90,9 @@ class Daemon:
             "workspace.create": self._handle_workspace_create,
             "workspace.list": self._handle_workspace_list,
             "workspace.delete": self._handle_workspace_delete,
+            "workspace.link": self._handle_workspace_link,
+            "workspace.unlink": self._handle_workspace_unlink,
+            "workspace.inspect": self._handle_workspace_inspect,
         }
 
     @property
@@ -373,6 +376,62 @@ class Daemon:
         ws_name = params["name"]
         self._ws_store.delete(scope, ws_name)
         return {"status": "deleted", "scope": scope.hex, "name": ws_name}
+
+    async def _handle_workspace_link(self, params: dict[str, Any]) -> dict[str, Any]:
+        scope = UUID(params["scope"])
+        ws_name = params["name"]
+        try:
+            ws = self._ws_store.load(scope, ws_name)
+        except FileNotFoundError:
+            raise KeyError(f"workspace not found: {scope.hex}/{ws_name}") from None
+        link = LinkSpec(
+            host_path=Path(params["host_path"]),
+            mount_path=Path(params["mount_path"]),
+            mode=params.get("mode", "ro"),
+        )
+        ws.links.append(link)
+        self._ws_store.save(ws)
+        return {"status": "linked", "scope": scope.hex, "name": ws_name}
+
+    async def _handle_workspace_unlink(self, params: dict[str, Any]) -> dict[str, Any]:
+        scope = UUID(params["scope"])
+        ws_name = params["name"]
+        mount_path = Path(params["mount_path"])
+        try:
+            ws = self._ws_store.load(scope, ws_name)
+        except FileNotFoundError:
+            raise KeyError(f"workspace not found: {scope.hex}/{ws_name}") from None
+        before = len(ws.links)
+        ws.links = [lk for lk in ws.links if lk.mount_path != mount_path]
+        if len(ws.links) == before:
+            raise KeyError(
+                f"no link at mount_path {mount_path} in {scope.hex}/{ws_name}"
+            ) from None
+        self._ws_store.save(ws)
+        return {"status": "unlinked", "scope": scope.hex, "name": ws_name}
+
+    async def _handle_workspace_inspect(self, params: dict[str, Any]) -> dict[str, Any]:
+        scope = UUID(params["scope"])
+        ws_name = params["name"]
+        try:
+            ws = self._ws_store.load(scope, ws_name)
+        except FileNotFoundError:
+            raise KeyError(f"workspace not found: {scope.hex}/{ws_name}") from None
+        return {
+            "name": ws.name,
+            "scope": ws.scope.hex,
+            "root_path": str(ws.root_path),
+            "network_access": ws.network_access,
+            "created_at": ws.created_at,
+            "links": [
+                {
+                    "host_path": str(lk.host_path),
+                    "mount_path": str(lk.mount_path),
+                    "mode": lk.mode,
+                }
+                for lk in ws.links
+            ],
+        }
 
     # -- Helpers ---------------------------------------------------------------
 
