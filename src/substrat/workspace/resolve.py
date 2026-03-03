@@ -6,11 +6,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from uuid import UUID
 
-from substrat.agent.message import USER
-from substrat.agent.node import AgentNode
-from substrat.agent.tree import AgentTree
+from substrat.model import USER
 
 _DOT_SEGMENTS = frozenset({".", ".."})
 
@@ -22,9 +21,11 @@ def _reject_dots(segment: str, ref: str) -> None:
 
 
 def resolve(
-    caller: AgentNode,
+    caller_id: UUID,
     ref: str,
-    tree: AgentTree,
+    *,
+    parent_id: UUID | None,
+    child_lookup: Callable[[str], UUID],
 ) -> tuple[UUID, str]:
     """Resolve a workspace reference to (scope, local_name).
 
@@ -41,7 +42,7 @@ def resolve(
 
     if "/" not in ref and not ref.startswith(".."):
         _reject_dots(ref, ref)
-        return (caller.id, ref)
+        return (caller_id, ref)
 
     parts = ref.split("/")
 
@@ -55,33 +56,38 @@ def resolve(
     _reject_dots(name, ref)
 
     if head == "..":
-        parent = tree.parent(caller.id)
-        scope = parent.id if parent else USER
+        scope = parent_id if parent_id is not None else USER
         return (scope, name)
 
     _reject_dots(head, ref)
     # Child reference.
-    child = tree.child_by_name(caller.id, head)
-    return (child.id, name)
+    child_id = child_lookup(head)
+    return (child_id, name)
 
 
-def visible_scopes(caller: AgentNode, tree: AgentTree) -> set[UUID]:
+def visible_scopes(
+    caller_id: UUID,
+    children: Sequence[UUID],
+    parent_id: UUID | None,
+) -> set[UUID]:
     """Scopes the caller can read workspaces from.
 
     Own + children + parent (or USER for roots).
     """
-    scopes: set[UUID] = {caller.id}
-    scopes.update(caller.children)
-    parent = tree.parent(caller.id)
-    scopes.add(parent.id if parent else USER)
+    scopes: set[UUID] = {caller_id}
+    scopes.update(children)
+    scopes.add(parent_id if parent_id is not None else USER)
     return scopes
 
 
-def mutable_scopes(caller: AgentNode, tree: AgentTree) -> set[UUID]:
+def mutable_scopes(
+    caller_id: UUID,
+    children: Sequence[UUID],
+) -> set[UUID]:
     """Scopes the caller can create/modify/delete workspaces in.
 
     Own + children. Parent scope is visible but read-only.
     """
-    scopes: set[UUID] = {caller.id}
-    scopes.update(caller.children)
+    scopes: set[UUID] = {caller_id}
+    scopes.update(children)
     return scopes

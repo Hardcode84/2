@@ -23,12 +23,11 @@ from substrat.agent.inbox import Inbox
 from substrat.agent.message import (
     MessageEnvelope,
     MessageKind,
-    sentinel_name,
 )
 from substrat.agent.node import AgentNode
 from substrat.agent.router import RoutingError, resolve_broadcast, validate_route
 from substrat.agent.tree import AgentTree
-from substrat.model import ToolDef, ToolParam
+from substrat.model import ToolDef, ToolParam, sentinel_name
 
 if TYPE_CHECKING:
     from substrat.workspace.mapping import WorkspaceMapping
@@ -327,12 +326,17 @@ class ToolHandler:
 
             if self._ws_store is None or self._ws_mapping is None:
                 return {"error": "workspace tools not available"}
-            caller = self._tree.get(self._caller_id)
+            caller, parent_id, child_lookup = self._resolve_ctx()
             try:
-                scope, ws_name = resolve(caller, workspace, self._tree)
+                scope, ws_name = resolve(
+                    caller.id,
+                    workspace,
+                    parent_id=parent_id,
+                    child_lookup=child_lookup,
+                )
             except (ValueError, KeyError) as exc:
                 return {"error": str(exc)}
-            vis = visible_scopes(caller, self._tree)
+            vis = visible_scopes(caller.id, caller.children, parent_id)
             if scope not in vis:
                 return {"error": f"workspace {workspace!r} not visible"}
             if not self._ws_store.exists(scope, ws_name):
@@ -423,9 +427,9 @@ class ToolHandler:
             store, _mapping = self._require_ws_deps()
         except ToolError as exc:
             return {"error": str(exc)}
-        caller = self._tree.get(self._caller_id)
-        vis = visible_scopes(caller, self._tree)
-        mut = mutable_scopes(caller, self._tree)
+        caller, parent_id, _child_lookup = self._resolve_ctx()
+        vis = visible_scopes(caller.id, caller.children, parent_id)
+        mut = mutable_scopes(caller.id, caller.children)
         workspaces = [
             {
                 "name": ws.name,
@@ -461,17 +465,22 @@ class ToolHandler:
             validate_name(name)
         except ValueError as exc:
             return {"error": str(exc)}
-        caller = self._tree.get(self._caller_id)
+        caller, parent_id, child_lookup = self._resolve_ctx()
         scope = caller.id
         if store.exists(scope, name):
             return {"error": f"workspace {name!r} already exists in own scope"}
         links: list[LinkSpec] = []
         if view_of is not None:
             try:
-                src_scope, src_name = resolve(caller, view_of, self._tree)
+                src_scope, src_name = resolve(
+                    caller.id,
+                    view_of,
+                    parent_id=parent_id,
+                    child_lookup=child_lookup,
+                )
             except (ValueError, KeyError) as exc:
                 return {"error": str(exc)}
-            vis = visible_scopes(caller, self._tree)
+            vis = visible_scopes(caller.id, caller.children, parent_id)
             if src_scope not in vis:
                 return {"error": f"workspace {view_of!r} not visible"}
             try:
@@ -503,12 +512,17 @@ class ToolHandler:
             store, mapping = self._require_ws_deps()
         except ToolError as exc:
             return {"error": str(exc)}
-        caller = self._tree.get(self._caller_id)
+        caller, parent_id, child_lookup = self._resolve_ctx()
         try:
-            scope, local_name = resolve(caller, name, self._tree)
+            scope, local_name = resolve(
+                caller.id,
+                name,
+                parent_id=parent_id,
+                child_lookup=child_lookup,
+            )
         except (ValueError, KeyError) as exc:
             return {"error": str(exc)}
-        mut = mutable_scopes(caller, self._tree)
+        mut = mutable_scopes(caller.id, caller.children)
         if scope not in mut:
             return {"error": f"workspace {name!r} is not in a mutable scope"}
         if not store.exists(scope, local_name):
@@ -548,7 +562,7 @@ class ToolHandler:
             store, mapping = self._require_ws_deps()
         except ToolError as exc:
             return {"error": str(exc)}
-        caller = self._tree.get(self._caller_id)
+        caller, parent_id, child_lookup = self._resolve_ctx()
         # Caller must have a workspace assigned.
         caller_ws_key = mapping.get(self._caller_id)
         if caller_ws_key is None:
@@ -559,10 +573,15 @@ class ToolHandler:
             return {"error": f"source path {source!r} does not exist"}
         # Resolve target workspace.
         try:
-            scope, local_name = resolve(caller, workspace, self._tree)
+            scope, local_name = resolve(
+                caller.id,
+                workspace,
+                parent_id=parent_id,
+                child_lookup=child_lookup,
+            )
         except (ValueError, KeyError) as exc:
             return {"error": str(exc)}
-        mut = mutable_scopes(caller, self._tree)
+        mut = mutable_scopes(caller.id, caller.children)
         if scope not in mut:
             return {"error": f"workspace {workspace!r} is not in a mutable scope"}
         try:
@@ -585,12 +604,17 @@ class ToolHandler:
             store, _mapping = self._require_ws_deps()
         except ToolError as exc:
             return {"error": str(exc)}
-        caller = self._tree.get(self._caller_id)
+        caller, parent_id, child_lookup = self._resolve_ctx()
         try:
-            scope, local_name = resolve(caller, workspace, self._tree)
+            scope, local_name = resolve(
+                caller.id,
+                workspace,
+                parent_id=parent_id,
+                child_lookup=child_lookup,
+            )
         except (ValueError, KeyError) as exc:
             return {"error": str(exc)}
-        mut = mutable_scopes(caller, self._tree)
+        mut = mutable_scopes(caller.id, caller.children)
         if scope not in mut:
             return {"error": f"workspace {workspace!r} is not in a mutable scope"}
         try:
@@ -690,6 +714,17 @@ class ToolHandler:
         if self._ws_store is None or self._ws_mapping is None:
             raise ToolError("workspace tools not available")
         return self._ws_store, self._ws_mapping
+
+    def _resolve_ctx(self) -> tuple[AgentNode, UUID | None, Callable[[str], UUID]]:
+        """Pre-compute plain data needed by workspace resolve functions."""
+        caller = self._tree.get(self._caller_id)
+        parent = self._tree.parent(self._caller_id)
+        parent_id = parent.id if parent else None
+
+        def child_lookup(name: str) -> UUID:
+            return self._tree.child_by_name(self._caller_id, name).id
+
+        return caller, parent_id, child_lookup
 
     def _scope_label(self, scope: UUID, caller: AgentNode) -> str:
         """Map a scope UUID to a human-readable label for the caller."""

@@ -10,23 +10,11 @@ from uuid import UUID, uuid4
 
 from substrat import now_iso
 
-# Daemon and CLI get deterministic UUIDs so they serialise cleanly.
-SYSTEM: UUID = UUID(int=0)
-USER: UUID = UUID(int=1)
-_SENTINELS: frozenset[UUID] = frozenset({SYSTEM, USER})
-
-
-def is_sentinel(agent_id: UUID) -> bool:
-    """True for SYSTEM and USER pseudo-identities."""
-    return agent_id in _SENTINELS
-
-
-_SENTINEL_NAMES: dict[UUID, str] = {SYSTEM: "SYSTEM", USER: "USER"}
-
-
-def sentinel_name(agent_id: UUID) -> str | None:
-    """Human-readable name for sentinel UUIDs, or None for real agents."""
-    return _SENTINEL_NAMES.get(agent_id)
+# Re-export sentinels so existing `from substrat.agent.message import USER` works.
+from substrat.model import SYSTEM as SYSTEM
+from substrat.model import USER as USER
+from substrat.model import is_sentinel as is_sentinel
+from substrat.model import sentinel_name as sentinel_name
 
 
 class MessageKind(enum.Enum):

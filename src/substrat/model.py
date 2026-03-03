@@ -8,6 +8,26 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
+from uuid import UUID
+
+# Daemon and CLI get deterministic UUIDs so they serialise cleanly.
+SYSTEM: UUID = UUID(int=0)
+USER: UUID = UUID(int=1)
+_SENTINELS: frozenset[UUID] = frozenset({SYSTEM, USER})
+
+
+def is_sentinel(agent_id: UUID) -> bool:
+    """True for SYSTEM and USER pseudo-identities."""
+    return agent_id in _SENTINELS
+
+
+_SENTINEL_NAMES: dict[UUID, str] = {SYSTEM: "SYSTEM", USER: "USER"}
+
+
+def sentinel_name(agent_id: UUID) -> str | None:
+    """Human-readable name for sentinel UUIDs, or None for real agents."""
+    return _SENTINEL_NAMES.get(agent_id)
+
 
 # Sentinel for "no default value" in ToolParam.
 _MISSING: Any = object()
