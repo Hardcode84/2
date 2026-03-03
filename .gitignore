@@ -34,8 +34,5 @@ venv/
 .DS_Store
 Thumbs.db
 
-# Scratch.
-TODO.md
-
 # Substrat runtime.
 .substrat/

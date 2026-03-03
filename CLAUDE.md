@@ -38,5 +38,5 @@ For non-trivial changes, propose a parallel multi-agent review before committing
 - Small, focused commits. One logical change per commit. If you're wondering whether to split — split.
 - Stage files first, then run `pre-commit` — it only checks staged files. Fix issues and re-stage before committing.
 - Sign commits: `git commit -s`.
-- Do not commit TODO files, scratch notes, or other ephemera.
+- `TODO.md` is tracked. Update it when completing or adding work items.
 - Commit messages should be descriptive, or at least funny. Not both is acceptable. Neither is not.
