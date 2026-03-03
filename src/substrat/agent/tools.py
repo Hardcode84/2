@@ -59,7 +59,21 @@ AGENT_TOOLS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         "check_inbox",
-        "Retrieve pending async messages.",
+        "Retrieve pending async messages. Optional filters narrow results.",
+        (
+            ToolParam(
+                "sender",
+                "string",
+                "Only return messages from this agent name.",
+                required=False,
+            ),
+            ToolParam(
+                "kind",
+                "string",
+                "Message kind filter (request/response/notification/multicast).",
+                required=False,
+            ),
+        ),
     ),
     ToolDef(
         "spawn_agent",
@@ -242,12 +256,34 @@ class ToolHandler:
             "recipient_count": len(sibling_ids),
         }
 
-    def check_inbox(self) -> dict[str, Any]:
-        """Drain the caller's inbox and return messages."""
+    def check_inbox(
+        self,
+        *,
+        sender: str | None = None,
+        kind: str | None = None,
+    ) -> dict[str, Any]:
+        """Drain the caller's inbox and return messages.
+
+        Optional filters narrow which messages are collected; unmatched
+        messages stay in the inbox for later.
+        """
         inbox = self._inboxes.get(self._caller_id)
         if inbox is None:
             return {"messages": []}
-        messages = inbox.collect()
+        # Resolve optional filters.
+        sender_id: UUID | None = None
+        if sender is not None:
+            try:
+                sender_id = self._resolve_name(sender).id
+            except ToolError as exc:
+                return {"error": str(exc)}
+        kind_enum: MessageKind | None = None
+        if kind is not None:
+            try:
+                kind_enum = MessageKind(kind)
+            except ValueError:
+                return {"error": f"unknown message kind: {kind!r}"}
+        messages = inbox.collect(sender=sender_id, kind=kind_enum)
         for m in messages:
             self._log_event(
                 self._caller_id,

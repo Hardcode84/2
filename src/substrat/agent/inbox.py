@@ -7,8 +7,9 @@
 from __future__ import annotations
 
 from collections import deque
+from uuid import UUID
 
-from substrat.agent.message import MessageEnvelope
+from substrat.agent.message import MessageEnvelope, MessageKind
 
 
 class Inbox:
@@ -21,15 +22,35 @@ class Inbox:
         """Append a message to the inbox."""
         self._queue.append(envelope)
 
-    def collect(self) -> list[MessageEnvelope]:
-        """Drain all messages in FIFO order. Inbox is empty afterwards.
+    def collect(
+        self,
+        *,
+        sender: UUID | None = None,
+        kind: MessageKind | None = None,
+    ) -> list[MessageEnvelope]:
+        """Drain messages in FIFO order, optionally filtering.
 
-        Not atomic — assumes single-threaded access. The daemon wraps
-        this with an asyncio queue for concurrent use.
+        With no filters, drains everything (fast path). With filters,
+        pops matching messages and leaves the rest in the deque.
+
+        Not atomic — assumes single-threaded access.
         """
-        items = list(self._queue)
-        self._queue.clear()
-        return items
+        if sender is None and kind is None:
+            items = list(self._queue)
+            self._queue.clear()
+            return items
+        # Filtered path: iterate once, partition into matched/kept.
+        matched: list[MessageEnvelope] = []
+        kept: deque[MessageEnvelope] = deque()
+        for envelope in self._queue:
+            if (sender is not None and envelope.sender != sender) or (
+                kind is not None and envelope.kind != kind
+            ):
+                kept.append(envelope)
+            else:
+                matched.append(envelope)
+        self._queue = kept
+        return matched
 
     def peek(self) -> list[MessageEnvelope]:
         """Return all messages without removing them."""
