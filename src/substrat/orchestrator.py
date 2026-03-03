@@ -9,8 +9,9 @@ from __future__ import annotations
 import contextlib
 import logging
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from substrat.agent.inbox import Inbox
 from substrat.agent.message import MessageEnvelope, MessageKind
@@ -82,7 +83,7 @@ class Orchestrator:
         *,
         provider: str | None = None,
         model: str | None = None,
-        workspace: str | None = None,
+        workspace: tuple[UUID, str] | None = None,
     ) -> AgentNode:
         """Create a root agent with a backing session.
 
@@ -92,9 +93,25 @@ class Orchestrator:
         prov = provider or self._default_provider
         mdl = model or self._default_model
 
+        # Resolve workspace → wrap_command + path.
+        ws_path, wrap_cmd = self._resolve_workspace(workspace)
+
+        node = AgentNode(
+            session_id=uuid4(),
+            name=name,
+            instructions=instructions,
+            workspace=workspace,
+        )
         prompt = build_prompt(instructions)
-        session = await self._scheduler.create_session(prov, mdl, prompt)
-        node = AgentNode(session_id=session.id, name=name, instructions=instructions)
+        session = await self._scheduler.create_session(
+            prov,
+            mdl,
+            prompt,
+            workspace=ws_path,
+            wrap_command=wrap_cmd,
+            agent_id=node.id,
+        )
+        node.session_id = session.id
 
         try:
             self._tree.add(node)
@@ -102,6 +119,10 @@ class Orchestrator:
             await self._scheduler.terminate_session(session.id)
             raise
 
+        if workspace is not None and self._ws_mapping is not None:
+            self._ws_mapping.assign(node.id, workspace[0], workspace[1])
+
+        ws_data = [workspace[0].hex, workspace[1]] if workspace else None
         self._log_lifecycle(
             session.id,
             "agent.created",
@@ -110,7 +131,7 @@ class Orchestrator:
                 "name": node.name,
                 "parent_session_id": None,
                 "instructions": node.instructions,
-                "workspace": None,
+                "workspace": ws_data,
             },
         )
 
@@ -161,6 +182,22 @@ class Orchestrator:
 
     # -- Private --------------------------------------------------------------
 
+    def _resolve_workspace(
+        self,
+        ws_key: tuple[UUID, str] | None,
+    ) -> tuple[Path | None, CommandWrapper | None]:
+        """Look up workspace and build wrap_command. Returns (path, wrapper)."""
+        if ws_key is None:
+            return None, None
+        if self._ws_store is None:
+            raise ValueError("workspace store not configured")
+        scope, ws_name = ws_key
+        ws = self._ws_store.load(scope, ws_name)
+        wrap_cmd = None
+        if self._wrap_factory is not None:
+            wrap_cmd = self._wrap_factory(ws)
+        return ws.root_path, wrap_cmd
+
     def _make_handler(
         self,
         agent_id: UUID,
@@ -203,11 +240,15 @@ class Orchestrator:
 
         def callback(child: AgentNode) -> DeferredWork:
             async def do_spawn() -> None:
+                ws_path, wrap_cmd = self._resolve_workspace(child.workspace)
                 prompt = build_prompt(child.instructions)
                 session = await self._scheduler.create_session(
                     provider,
                     model,
                     prompt,
+                    workspace=ws_path,
+                    wrap_command=wrap_cmd,
+                    agent_id=child.id,
                 )
                 child.session_id = session.id
                 # Log after session created so the event goes to the real log.
@@ -353,7 +394,9 @@ class Orchestrator:
                 prov = info["session"].provider_name or self._default_provider
                 mdl = info["session"].model or self._default_model
                 self._handlers[node.id] = self._make_handler(node.id, prov, mdl)
-                self._scheduler.restore_session(info["session"])
+                # Rebuild wrap_command for agents with workspaces.
+                _, wrap_cmd = self._resolve_workspace(ws_tuple)
+                self._scheduler.restore_session(info["session"], wrap_command=wrap_cmd)
                 placed.add(node.id)
                 del remaining[sid]
                 progress = True

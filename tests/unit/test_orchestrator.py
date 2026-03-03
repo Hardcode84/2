@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -18,6 +18,9 @@ from substrat.orchestrator import Orchestrator
 from substrat.scheduler import TurnScheduler
 from substrat.session import SessionStore
 from substrat.session.multiplexer import SessionMultiplexer
+from substrat.workspace.mapping import WorkspaceMapping
+from substrat.workspace.model import Workspace
+from substrat.workspace.store import WorkspaceStore
 
 # -- Fakes -----------------------------------------------------------------
 
@@ -180,6 +183,41 @@ async def test_create_root_agent_unknown_provider(
     )
     with pytest.raises(ValueError, match="unknown provider"):
         await o.create_root_agent("x", "y")
+
+
+async def test_create_root_agent_with_workspace(tmp_path: Path) -> None:
+    """Root agent with workspace gets wrap_command and ws_mapping entry."""
+    ws_root = tmp_path / "workspaces"
+    ws_store = WorkspaceStore(ws_root)
+    ws_mapping = WorkspaceMapping()
+    scope = uuid4()
+    ws = Workspace(name="env", scope=scope, root_path=tmp_path / "ws-root")
+    (tmp_path / "ws-root").mkdir()
+    ws_store.save(ws)
+
+    factory_calls: list[Workspace] = []
+
+    def fake_factory(w: Workspace) -> object:
+        factory_calls.append(w)
+        return lambda cmd, binds, env: cmd
+
+    store = SessionStore(tmp_path / "sessions")
+    mux = SessionMultiplexer(store, max_slots=4)
+    prov = FakeProvider()
+    sched = TurnScheduler(providers={"fake": prov}, mux=mux, store=store)
+    o = Orchestrator(
+        sched,
+        default_provider="fake",
+        default_model="m",
+        ws_store=ws_store,
+        ws_mapping=ws_mapping,
+        wrap_command_factory=fake_factory,
+    )
+    node = await o.create_root_agent("w", "i", workspace=(scope, "env"))
+    assert node.workspace == (scope, "env")
+    assert ws_mapping.get(node.id) == (scope, "env")
+    assert len(factory_calls) == 1
+    assert factory_calls[0].name == "env"
 
 
 # -- run_turn ---------------------------------------------------------------

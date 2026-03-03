@@ -239,15 +239,32 @@ class Daemon:
         instructions = params.get("instructions") or ""
         provider = params.get("provider")
         model = params.get("model")
-        ws_name = params.get("workspace")
+        ws_key = self._resolve_ws_param(params.get("workspace"))
         node = await self._orch.create_root_agent(
             name,
             instructions,
             provider=provider,
             model=model,
-            workspace=ws_name,
+            workspace=ws_key,
         )
         return {"agent_id": node.id.hex, "name": node.name}
+
+    def _resolve_ws_param(self, raw: Any) -> tuple[UUID, str] | None:
+        """Resolve workspace param to (scope, name) key.
+
+        Accepts None, a dict with scope+name, or a plain name string
+        (scans the store for the first match).
+        """
+        if raw is None:
+            return None
+        if isinstance(raw, dict):
+            return UUID(raw["scope"]), raw["name"]
+        # Plain name — scan for first match.
+        ws_name = str(raw)
+        for ws in self._ws_store.scan():
+            if ws.name == ws_name:
+                return ws.scope, ws.name
+        raise ValueError(f"workspace not found: {ws_name}")
 
     async def _h_agent_list(self, params: dict[str, Any]) -> dict[str, Any]:
         nodes = []
