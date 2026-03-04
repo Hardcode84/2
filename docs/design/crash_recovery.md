@@ -336,12 +336,17 @@ All three fuzzers use Hypothesis `RuleBasedStateMachine`. This gives us:
 #### Lifecycle fuzzer (in-memory)
 
 Lives in `tests/stress/test_orchestrator_fuzz.py`. Exercises the
-orchestrator's public API with random sequences of `create_root`,
-`spawn_child`, `run_turn`, and `terminate_leaf`. Uses a small name alphabet
-(5 names) to force collisions. Shadow state tracks alive agents and
-parent-child links; invariants verify the real tree matches. Multiplexer
-slots are set low (3) to force the eviction/suspend/restore path. No
-persistence, no crash simulation — pure state machine correctness.
+orchestrator's public API with random sequences of lifecycle operations
+(create, spawn, turn, terminate), messaging (send, broadcast, complete,
+poke, check_inbox), and ChaosProvider failure injection. The wake loop
+runs throughout — message delivery triggers real wake turns under random
+interleaving. Shadow state tracks alive agents, parent-child links, and
+chaos-backed agents; invariants verify tree consistency, registry sync,
+all-IDLE, and inbox emptiness for non-chaos agents. Small name alphabet
+(5 names) forces collisions. Low multiplexer slots (3) force eviction.
+No persistence, no crash simulation — pure state machine correctness.
+
+Full wake/chaos fuzzing details: [wake.md — Fuzzing Strategy](wake.md#fuzzing-strategy).
 
 Settings: 200 examples, 30 steps per example (`stateful_step_count`),
 `deadline=None`. Gated behind `--run-stress`.

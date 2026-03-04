@@ -228,7 +228,7 @@ same recipient produce two `_notify_wake` calls.
 - Inbox empty (pre-`begin_turn` check via `Inbox.__bool__`).
 - No handler registered (session not ready — pending spawn).
 - `begin_turn()` raises `AgentStateError` (defensive).
-- Inbox empty after drain (post-`begin_turn` check via `collect()`).
+- Inbox empty after drain (post-`begin_turn` check via `_format_wake_prompt` / `peek()`).
 
 No wake is "lost". Two mechanisms ensure pending messages get processed:
 
@@ -389,82 +389,104 @@ provider's.
 
 ## Fuzzing Strategy
 
-The stateful fuzzer (`test_orchestrator_fuzz.py`) needs to exercise wake failure
-paths under random interleaving. The current binary FakeProvider/FlakyProvider
-split can't reach most failure interleavings — a single ChaosProvider replaces
-both.
+The stateful fuzzer (`test_orchestrator_fuzz.py`) exercises wake failure paths
+under random interleaving. ChaosProvider injects Hypothesis-controlled failures
+into the provider boundary. The wake loop runs throughout the test.
 
 ### ChaosProvider
 
-A provider whose failures are controlled by Hypothesis. All randomness lives in
-Hypothesis strategies so shrinking, replay, and `derandomize=True` work.
+Single provider replacement for the old FakeProvider/FlakyProvider split. All
+randomness lives in Hypothesis strategies — shrinking, replay, and
+`derandomize=True` work correctly.
 
-**Failure surface.** Methods that talk to the agent subprocess — the network
-boundary:
+**Failure surface.** Methods that talk to the agent subprocess:
 
 | Method | Failure mode |
 |-----------|----------------------------------------------|
 | `create()` | Spawn fails — deferred drain cleanup path. |
-| `send()` | Turn fails — IDLE rollback. Can also yield partial chunks before crashing. |
-| `suspend()` | Eviction fails — session stays in multiplexer slots (rollback). |
+| `send()` | Turn fails — IDLE rollback. Partial send: yield N chunks, then crash. |
+| `suspend()` | Eviction fails — multiplexer rollback. |
 | `restore()` | Session can't resume from suspension. |
 
-`stop()` is best-effort (already wrapped in try/except). `models()` is
-metadata, never fails. Neither is in scope.
+`stop()` is best-effort, never fails. Not in scope.
 
-**Per-provider, not per-session.** All sessions share the same network. A
-prolonged outage fails every session, not just one.
+**Per-provider, not per-session.** All sessions share one schedule (same
+network). A prolonged outage fails every session, not just one.
 
-**Schedule.** Hypothesis draws a failure schedule upfront as a deque of
-outcomes. Each failing method pops the next entry; empty deque means succeed.
-Two modes:
+**Schedule.** Hypothesis draws a failure schedule in `@initialize` as a deque
+of outcomes (`st.lists(st.one_of(False, True, int))`). Each provider method
+pops the next entry; empty deque = succeed. Entries: `False` (succeed), `True`
+(fail immediately), `int N` (yield N chunks then crash — partial send).
+Children of chaos-backed agents inherit the chaos provider.
 
-- **Intermittent.** `st.lists(st.booleans())` — True = fail. Hypothesis
-  controls the exact sequence, can shrink to the minimal failing case.
-- **Prolonged.** `st.integers(min_value=1, max_value=N)` — fail the next K
-  consecutive calls, then recover. Models a network outage window.
+### Wake loop integration
 
-**Partial send.** A schedule entry can be `(fail_after_chunks=N)` instead of a
-plain bool. The generator yields N chunks, then raises. Exercises the non-zero
-exit after partial output path.
+The fuzzer runs the wake loop throughout each test case. A persistent
+`asyncio` event loop (created in `__init__`, closed in `teardown`) keeps the
+wake loop background task alive across synchronous Hypothesis rule invocations.
 
-### Fuzzer rules
+```python
+def __init__(self):
+    self._loop = asyncio.new_event_loop()
+    ...
 
-The current `run_turn` / `run_turn_flaky` split generalizes into a single rule
-that handles both outcomes via try/except and updates shadow state accordingly.
+def _run(self, coro):
+    return self._loop.run_until_complete(coro)
+```
 
-**Root retry.** A new rule simulates the human operator: pick a failed root
-agent, call `run_turn(agent_id, "retry")`. This is the top-level recovery path
-— no poke tool needed, just another turn.
+`start_wake_loop()` is called inside `seed_agent` (the `@initialize` rule).
+`stop_wake_loop()` runs in `teardown`.
 
-**Non-root retry.** Blocked on parent error notification and `poke` tool
-landing. Once those exist, a rule where the parent calls `poke(child_name)`
-after receiving an ERROR message exercises the full cascade.
+After any rule that triggers wakes, `_drain_wakes()` yields to the event loop
+until the queue is empty and all agents are IDLE:
 
-**Wake loop.** The fuzzer currently doesn't call `start_wake_loop`. Running the
-async wake loop inside synchronous Hypothesis rules requires pumping the event
-loop between steps (via `nest_asyncio` or manual `_process_wake` calls). Until
-the wake loop is integrated, explicit `run_turn` calls are the only way to
-exercise failure paths — wake-triggered failures remain untested under random
-interleaving.
+```python
+async def _drain_wakes(self):
+    for _ in range(5000):
+        await asyncio.sleep(0)
+        if not self.orch._wake_queue.empty():
+            continue
+        if not self._all_idle():
+            continue
+        await asyncio.sleep(0)
+        if self.orch._wake_queue.empty():
+            return
+```
+
+Rules needing drain: `run_turn`, `send_message_to_child`, `broadcast_to_team`,
+`complete_agent`, `poke_child`. Rules that don't trigger wakes (create, spawn,
+terminate, check_inbox) skip the drain.
+
+### Rules and wake paths
+
+| Rule | Wake path exercised |
+|------|---------------------|
+| `run_turn` | Explicit turn → `_drain_deferred` → post-spawn child wakes → `_rewake_if_pending`. |
+| `send_message_to_child` | `_deliver()` → `_wake_callback(child)` → child wake turn → possible chaos fail → ERROR to parent → parent wake → cascade. |
+| `broadcast_to_team` | Multi-sibling wake — each sibling runs independently. |
+| `complete_agent` | RESPONSE to parent → parent wake. Self-termination via deferred drain. |
+| `poke_child` | Re-wake frozen child (randomized target via `st.sampled_from`). |
+| `check_inbox` | Concurrent inbox drain — tests `_format_wake_prompt` empty-inbox guard. |
 
 ### Shadow model
 
-With ChaosProvider, the fuzzer can't predict whether a turn succeeds. The
-shadow model must handle both outcomes:
+Tracks `alive`, `children`, `pending_children`, `parents_needing_drain`, and
+`chaos_agents`. Wake turns don't invoke tools, so no agents are created or
+destroyed during wake processing — `alive` is stable through `_drain_wakes`.
 
-```
-try:
-    _run(self.orch.run_turn(agent, "go"))
-    # Success — drain shadow state as usual.
-except RuntimeError:
-    pass
-# Agent must be IDLE either way.
-assert node.state == AgentState.IDLE
-```
+`_shadow_drain` reconciles after `run_turn`: checks which pending children
+survived deferred `create()` (chaos failures clean up orphans from the tree).
 
-Children of Chaos-backed agents inherit the Chaos provider. The shadow model
-must track this (the flaky inheritance bug that already bit us once).
+### Invariants
+
+After every step (including wake drain):
+
+- **`shadow_matches_tree`** — shadow alive set = real tree nodes.
+- **`parent_child_consistency`** — shadow children map = real tree links.
+- **`all_idle_or_terminated`** — no agent stuck in BUSY.
+- **`registries_in_sync`** — tree, handler, and inbox registries agree.
+- **`deferred_queues_empty`** — no undrained deferred work on materialized agents.
+- **`non_chaos_inboxes_empty`** — FakeProvider always succeeds, so non-chaos agents must have empty inboxes after wake drain. Any leftover message is a real bug.
 
 ---
 
