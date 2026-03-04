@@ -596,6 +596,41 @@ def test_complete_fires_wake_on_parent(fix: ToolFixture) -> None:
     assert fix.root.id in woken
 
 
+# --- poke ---
+
+
+def test_poke_alive_child(fix: ToolFixture) -> None:
+    """Poke enqueues wake for a direct child."""
+    woken: list[UUID] = []
+    handler = ToolHandler(
+        fix.tree, fix.inboxes, fix.root.id, wake_callback=woken.append
+    )
+    result = handler.poke("alice")
+    assert result == {"status": "poked", "agent_id": str(fix.alice.id)}
+    assert woken == [fix.alice.id]
+
+
+def test_poke_nonexistent_child(fix: ToolFixture) -> None:
+    """Poke with unknown child name returns error."""
+    result = fix.h_root.poke("nobody")
+    assert "error" in result
+    assert "no child" in result["error"]
+
+
+def test_poke_non_child(fix: ToolFixture) -> None:
+    """Poke only works on direct children, not siblings or parent."""
+    result = fix.h_alice.poke("bob")
+    assert "error" in result
+    assert "no child" in result["error"]
+
+
+def test_poke_without_wake_callback(fix: ToolFixture) -> None:
+    """Poke without wake callback still succeeds (no-op wake)."""
+    handler = ToolHandler(fix.tree, fix.inboxes, fix.root.id)
+    result = handler.poke("alice")
+    assert result["status"] == "poked"
+
+
 # --- wake callback ---
 
 

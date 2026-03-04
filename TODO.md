@@ -48,8 +48,8 @@ Design: [docs/design/wake.md — Wake Failure Handling](docs/design/wake.md)
 - [x] Bug: `_process_wake` has no try/except around `_execute_turn` — one child crash kills the wake loop for all agents
 - [x] Peek-then-drain: `_format_wake_prompt` uses `peek()`, drain via `collect()` only after turn succeeds — messages preserved on failure
 - [ ] Parent error notification: deliver `MessageKind.ERROR` to parent inbox on wake-turn failure, include exception + consumed message summaries
-- [ ] `poke` tool: re-wake child without sending a message — retries failed turn with original inbox contents
-- [ ] MCP catalog entry for `poke`
+- [x] `poke` tool: re-wake child without sending a message — retries failed turn with original inbox contents
+- [x] MCP catalog entry for `poke`
 
 ## Daemon — Bugs
 - [x] `tool.call` allows calling arbitrary ToolHandler methods via getattr — whitelisted against ALL_TOOLS names (6de69e8)

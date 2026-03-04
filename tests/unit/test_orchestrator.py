@@ -33,12 +33,16 @@ class FakeProviderSession:
         self,
         chunks: list[str] | None = None,
         prompt_log: list[str] | None = None,
+        provider: FakeProvider | None = None,
     ) -> None:
         self._chunks = chunks if chunks is not None else ["ok"]
         self._prompt_log = prompt_log
+        self._provider = provider
         self.stopped = False
 
     async def send(self, message: str) -> AsyncGenerator[str, None]:
+        if self._provider is not None and self._provider._error_on_send:
+            raise RuntimeError("send failed")
         if self._prompt_log is not None:
             self._prompt_log.append(message)
         for chunk in self._chunks:
@@ -80,9 +84,7 @@ class FakeProvider:
         **kwargs: object,
     ) -> FakeProviderSession:
         self.created.append((model, system_prompt))
-        if self._error_on_send:
-            return ErrorProviderSession()
-        return FakeProviderSession(self._chunks, self.prompts)
+        return FakeProviderSession(self._chunks, self.prompts, provider=self)
 
     def models(self) -> list[str]:
         return ["test-model"]
@@ -93,7 +95,7 @@ class FakeProvider:
         log: EventLog | None = None,
         **kwargs: object,
     ) -> FakeProviderSession:
-        return FakeProviderSession(self._chunks, self.prompts)
+        return FakeProviderSession(self._chunks, self.prompts, provider=self)
 
 
 # -- Fixtures ---------------------------------------------------------------
@@ -781,6 +783,52 @@ async def test_wake_failure_does_not_kill_loop(
         assert any("after crash" in p for p in good_prov.prompts)
         # Bad kid's inbox is preserved.
         assert len(o.inboxes[bad_kid.id]) > 0
+    finally:
+        await o.stop_wake_loop()
+
+
+async def test_poke_retries_failed_wake(
+    store: SessionStore,
+    mux: SessionMultiplexer,
+) -> None:
+    """Poke after wake failure retries the turn with preserved inbox."""
+    prov = FakeProvider()
+    sched = TurnScheduler(providers={"fake": prov}, mux=mux, store=store)
+    o = Orchestrator(sched, default_provider="fake", default_model="m")
+    o.start_wake_loop()
+    try:
+        parent = await o.create_root_agent("parent", "p")
+        handler = o.get_handler(parent.id)
+        handler.spawn_agent("child", "ci")
+        await o.run_turn(parent.id, "drain spawn")
+
+        child = o.tree.children(parent.id)[0]
+
+        # Make provider fail, then send message to trigger wake.
+        prov._error_on_send = True
+        handler = o.get_handler(parent.id)
+        handler.send_message("child", "important work")
+
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        # Child failed — inbox preserved.
+        assert len(o.inboxes[child.id]) > 0
+        assert child.state == AgentState.IDLE
+
+        # Fix the provider and poke the child.
+        prov._error_on_send = False
+        prov.prompts.clear()
+        handler = o.get_handler(parent.id)
+        result = handler.poke("child")
+        assert result["status"] == "poked"
+
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        # Child's wake succeeded — inbox drained.
+        assert any("important work" in p for p in prov.prompts)
+        assert len(o.inboxes[child.id]) == 0
     finally:
         await o.stop_wake_loop()
 

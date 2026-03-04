@@ -4,7 +4,7 @@
 
 """Tool catalog and logic layer.
 
-AGENT_TOOLS is the catalog of Substrat's six agent-facing tools.
+AGENT_TOOLS is the catalog of Substrat's seven agent-facing tools.
 ToolHandler implements agent tools as pure operations on the agent tree
 and inboxes. Workspace validation is injected as a callable.
 """
@@ -84,6 +84,11 @@ AGENT_TOOLS: tuple[ToolDef, ...] = (
         "complete",
         "Send result to parent and self-terminate. Leaf agents only.",
         (ToolParam("result", "string", "Final result to deliver."),),
+    ),
+    ToolDef(
+        "poke",
+        "Re-wake a child agent without sending a message. Retries a failed wake turn.",
+        (ToolParam("agent_name", "string", "Name of a direct child."),),
     ),
 )
 
@@ -315,6 +320,20 @@ class ToolHandler:
             "status": "completing",
             "message_id": str(envelope.id),
         }
+
+    def poke(self, agent_name: str) -> dict[str, Any]:
+        """Re-wake a child without sending a message.
+
+        Enqueues a wake notification. If the child is IDLE with pending
+        messages, the wake loop retries the turn. Otherwise silently skipped.
+        """
+        try:
+            child = self._resolve_child_name(agent_name)
+        except ToolError as exc:
+            return {"error": str(exc)}
+        if self._wake_callback is not None:
+            self._wake_callback(child.id)
+        return {"status": "poked", "agent_id": str(child.id)}
 
     def drain_deferred(self) -> list[DeferredWork]:
         """Return and clear accumulated deferred callbacks."""

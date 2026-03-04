@@ -25,6 +25,12 @@ changes) take effect after your current turn ends. If another agent sends you
 a message while you are idle, you will be woken automatically — no need to
 poll check_inbox.
 
+If a child agent crashes during a wake-triggered turn (provider error, timeout,
+etc.), its messages are preserved in its inbox and it goes back to idle. You
+can retry it with poke(child_name) — the child re-processes the same messages
+as if the crash never happened. You can also inspect it, send new instructions,
+or terminate it. If you do nothing, the branch stays frozen.
+
 When your work is done, call complete(result) to deliver your output to your
 parent and self-terminate.
 
@@ -48,6 +54,9 @@ parent and self-terminate.
   instructions — the child cannot read your conversation history. Optionally
   assign a workspace by name.
 - **inspect_agent**(name): Check a child's state and recent activity.
+- **poke**(agent_name): Re-wake a child without sending a new message. Use
+  this after a child crashes — the child retries its turn with the original
+  inbox contents. From the child's perspective, the crash never happened.
 - **complete**(result): Send your result to your parent and terminate. Use
   this when your work is done. Only available if you have no active children.
 
