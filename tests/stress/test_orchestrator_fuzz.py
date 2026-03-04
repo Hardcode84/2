@@ -223,6 +223,9 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         self.parents_needing_drain.add(agent)
         self.children[agent].add(child_id)
         self.children[child_id] = set()
+        # Children inherit the parent's provider — flaky begets flaky.
+        if agent in self.flaky_agents:
+            self.flaky_agents.add(child_id)
         return child_id
 
     @precondition(lambda self: bool(self.alive))

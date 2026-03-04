@@ -155,7 +155,7 @@ Design: [docs/design/wake.md — Wake Failure Handling](docs/design/wake.md)
 
 ## Orchestrator Fuzzer Gaps
 The stateful fuzzer (`test_orchestrator_fuzz.py`) covers lifecycle interleavings but has blind spots around failure injection and agent coordination under stress.
-- [ ] Shadow state bug: children of flaky agents inherit flaky provider but aren't in `flaky_agents` — `run_turn` picks one, unhandled RuntimeError crashes the fuzzer
+- [x] Shadow state bug: children of flaky agents inherit flaky provider but aren't in `flaky_agents` — `run_turn` picks one, unhandled RuntimeError crashes the fuzzer
 - [ ] ChaosProvider: probabilistic failures instead of binary always-pass/always-fail — configurable failure rates for send/suspend/stop/create, lets hypothesis explore failure interleavings the current model can't reach
 - [ ] Wake loop: fuzzer doesn't call `start_wake_loop` — message delivery → wake → turn → fail → re-wake path is completely untested under random interleaving
 - [ ] `complete()` rule: child calls complete (message parent + self-terminate) not exercised — interleaving with parent turns, sibling messages, and provider failures unexplored
