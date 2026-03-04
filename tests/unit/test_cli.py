@@ -582,3 +582,108 @@ def test_daemon_start_permission_error(tmp_path: Path) -> None:
         result = runner.invoke(app, ["daemon", "start", "--root", str(tmp_path)])
     assert result.exit_code == 0
     assert "already running" in result.output
+
+
+# -- CLI edge cases (formerly missing coverage) --------------------------------
+
+
+def test_daemon_start_socket_timeout_warning(tmp_path: Path) -> None:
+    """daemon start warns when socket never appears."""
+    with (
+        patch("substrat.cli.app.subprocess.Popen"),
+        patch("substrat.cli.app.time.sleep"),
+    ):
+        # No socket created — loop times out.
+        result = runner.invoke(app, ["daemon", "start", "--root", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "may not have started" in result.output
+
+
+def test_daemon_status_stale_pid(tmp_path: Path) -> None:
+    """daemon status with stale PID file prints 'stopped'."""
+    pid_file = tmp_path / "daemon.pid"
+    pid_file.write_text("99999999")  # Almost certainly dead.
+    result = runner.invoke(app, ["daemon", "status", "--root", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "stopped" in result.output
+
+
+def test_daemon_status_live_pid_no_socket(tmp_path: Path) -> None:
+    """daemon status with live PID but missing socket says 'socket missing'."""
+    pid_file = tmp_path / "daemon.pid"
+    pid_file.write_text(str(os.getpid()))
+    # No socket file.
+    result = runner.invoke(app, ["daemon", "status", "--root", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "socket missing" in result.output
+
+
+def test_agent_list_shows_parent() -> None:
+    """agent list displays parent_id for child agents."""
+    with patch("substrat.cli.app.sync_call") as mock:
+        mock.return_value = {
+            "agents": [
+                {
+                    "agent_id": "aaa",
+                    "name": "parent",
+                    "state": "idle",
+                    "parent_id": None,
+                },
+                {
+                    "agent_id": "bbb",
+                    "name": "child",
+                    "state": "idle",
+                    "parent_id": "aaa",
+                },
+            ]
+        }
+        result = runner.invoke(app, ["agent", "list"])
+    assert result.exit_code == 0
+    assert "parent=aaa" in result.output
+
+
+def test_agent_inspect_shows_inbox() -> None:
+    """agent inspect displays inbox messages."""
+    with patch("substrat.cli.app.sync_call") as mock:
+        mock.return_value = {
+            "name": "bob",
+            "state": "waiting",
+            "children": [],
+            "inbox": [
+                {
+                    "from": "aaa111",
+                    "text": "hello from alice, how are you doing today?",
+                },
+            ],
+        }
+        result = runner.invoke(app, ["agent", "inspect", "bbb222"])
+    assert result.exit_code == 0
+    assert "inbox:" in result.output
+    assert "from=aaa111" in result.output
+    assert "hello from alice" in result.output
+
+
+def test_daemon_start_popen_args(tmp_path: Path) -> None:
+    """daemon start passes correct arguments to Popen."""
+    sock = tmp_path / "daemon.sock"
+    sock.touch()
+    with patch("substrat.cli.app.subprocess.Popen") as mock_popen:
+        runner.invoke(
+            app,
+            [
+                "daemon",
+                "start",
+                "--root",
+                str(tmp_path),
+                "--model",
+                "gpt-5",
+                "--max-slots",
+                "8",
+            ],
+        )
+    cmd = mock_popen.call_args[0][0]
+    assert "--model" in cmd
+    assert "gpt-5" in cmd
+    assert "--max-slots" in cmd
+    assert "8" in cmd
+    assert "--root" in cmd

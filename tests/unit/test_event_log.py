@@ -163,3 +163,63 @@ def test_durable_after_log(log_path: Path) -> None:
         os.close(fd)
     assert b"durable.event" in data
     log.close()
+
+
+# --- edge cases ---------------------------------------------------------------
+
+
+def test_double_open_still_works(log_path: Path) -> None:
+    """Second open() replaces the fd; log still works after."""
+    log = EventLog(log_path)
+    log.open()
+    log.log("before.reopen")
+    log.open()
+    log.log("after.reopen")
+    log.close()
+    lines = log_path.read_text().strip().split("\n")
+    events = [json.loads(line)["event"] for line in lines]
+    assert "before.reopen" in events
+    assert "after.reopen" in events
+
+
+def test_double_close_is_safe(log_path: Path) -> None:
+    """Calling close() twice does not raise."""
+    log = EventLog(log_path)
+    log.open()
+    log.log("one")
+    log.close()
+    log.close()  # Should not raise.
+
+
+def test_empty_pending_file_removed(log_path: Path) -> None:
+    """An empty .pending file is cleaned up on open, not appended."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.with_suffix(".pending").write_bytes(b"")
+    log = EventLog(log_path)
+    log.open()
+    log.close()
+    assert not log_path.with_suffix(".pending").exists()
+    # Main log should be empty or not exist.
+    if log_path.exists():
+        assert log_path.read_text().strip() == ""
+
+
+def test_large_entry(log_path: Path) -> None:
+    """Entry larger than a page (4096) is written correctly."""
+    log = EventLog(log_path)
+    log.open()
+    big_value = "x" * 10000
+    log.log("big", {"payload": big_value})
+    log.close()
+    entry = json.loads(log_path.read_text().strip())
+    assert entry["data"]["payload"] == big_value
+
+
+def test_log_after_close_raises(log_path: Path) -> None:
+    """Writing after close raises RuntimeError."""
+    log = EventLog(log_path)
+    log.open()
+    log.log("ok")
+    log.close()
+    with pytest.raises(RuntimeError, match="not open"):
+        log.log("nope")

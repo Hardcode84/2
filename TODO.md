@@ -84,9 +84,9 @@ Design: [docs/design/wake.md — Wake Failure Handling](docs/design/wake.md)
 - [x] workspace=Path("/tmp") hardcoded in CursorAgentProvider.create() — now uses tempfile.mkdtemp(), private_workspace flag, cleanup on stop()
 - [x] System prompt sent as first message — cursor-agent now writes .mdc rules instead, survives context compaction
 - [x] System prompt persisted in suspend state — CursorSession.suspend() saves it, restore() re-writes .mdc (38a3270)
-- [ ] Mixed logging patterns (direct log.log() vs @log_method) undocumented
+- [x] Mixed logging patterns (direct log.log() vs @log_method) — documented in session.md known gaps
 - [x] _build_args_dict doesn't enforce serialization contract on args — unified _serialize_value applied to args and results
-- [ ] base64 encoding for bytes not documented in serialization contract (session.md)
+- [x] base64 encoding for bytes not documented in serialization contract — added to session.md
 - [x] transcript.txt companion log not implemented — removed; human-readable output reconstructed on demand via `daemon log` / `daemon watch`
 
 ## Design Gaps
@@ -122,16 +122,16 @@ Design: [docs/design/wake.md — Wake Failure Handling](docs/design/wake.md)
 - [x] test_tools.py — tool handler unit tests (routing, messaging, spawn, workspace tools, wake callback, complete, inbox filtering)
 
 ## Tests — Missing Coverage
-- [ ] EventLog: double open (leaks first fd), double close, empty pending file, large entry (>page size), log after close
-- [ ] Decorator: keyword-only args, default values omitted, empty generator (yields nothing), before=True/after=False, before=False/after=False
+- [x] EventLog: double open, double close, empty pending file, large entry (>page size), log after close
+- [x] Decorator: keyword-only args, default values omitted, empty generator (yields nothing), before=True/after=False, before=False/after=False
 - [ ] Daemon: malformed JSON over UDS, empty request body, missing required fields, invalid UUID strings
 - [x] Daemon: concurrent tool.call during run_turn — ScriptedProvider + test_tool_callbacks.py (a2998ea)
 - [ ] Daemon: _cleanup_stale branch with no PID file + orphaned socket
-- [ ] Daemon: handler raising unexpected Exception → ERR_INTERNAL mapping
+- [x] Daemon: handler raising unexpected Exception → ERR_INTERNAL mapping
 - [ ] CLI: daemon stop with a live process (actual SIGTERM + socket disappear flow)
-- [ ] CLI: daemon start socket wait timeout warning path
-- [ ] CLI: daemon status with stale PID, status with live PID but missing socket
-- [ ] CLI: weak assertions — agent list parent display, Popen args in daemon start, inspect inbox formatting
+- [x] CLI: daemon start socket wait timeout warning path
+- [x] CLI: daemon status with stale PID, status with live PID but missing socket
+- [x] CLI: weak assertions — agent list parent display, Popen args in daemon start, inspect inbox formatting
 - [x] FakeProvider hides streaming latency — ScriptedProvider in tests/helpers.py yields control mid-turn (a2998ea)
 - [x] Session store, multiplexer, agent tree, messaging
 - [x] test_session_store.py

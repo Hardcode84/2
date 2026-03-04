@@ -130,3 +130,86 @@ async def test_non_serializable_args_do_not_crash(event_log: EventLog) -> None:
     assert events[0]["event"] == "create"
     assert events[0]["data"]["workspace"] == "/tmp/ws"
     assert events[0]["data"]["agent_id"] == "12345678-1234-5678-1234-567812345678"
+
+
+# --- decorator edge cases -----------------------------------------------------
+
+
+class EdgeSession:
+    """Extra methods for decorator edge case tests."""
+
+    def __init__(self, log: EventLog | None = None) -> None:
+        self._log = log
+
+    @log_method(before=True, after=True)
+    async def kwonly(self, *, label: str, count: int = 1) -> str:
+        return f"{label}:{count}"
+
+    @log_method(after=True)
+    async def empty_gen(self, tag: str) -> AsyncGenerator[str, None]:
+        return
+        yield  # Make it a generator.
+
+    @log_method(before=True, after=False)
+    async def before_only(self, x: int) -> int:
+        return x * 2
+
+    @log_method(before=False, after=False)
+    async def no_logging(self, x: int) -> int:
+        return x + 1
+
+
+@pytest.mark.asyncio
+async def test_keyword_only_args(event_log: EventLog) -> None:
+    """Keyword-only args and defaults are captured correctly."""
+    s = EdgeSession(log=event_log)
+    result = await s.kwonly(label="hi", count=3)
+    assert result == "hi:3"
+    events = _read_events(event_log)
+    assert len(events) == 2
+    assert events[0]["data"]["label"] == "hi"
+    assert events[0]["data"]["count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_default_values_omitted(event_log: EventLog) -> None:
+    """Default kwarg values not passed explicitly are absent from the log."""
+    s = EdgeSession(log=event_log)
+    await s.kwonly(label="yo")
+    events = _read_events(event_log)
+    assert events[0]["data"]["label"] == "yo"
+    assert "count" not in events[0]["data"]
+
+
+@pytest.mark.asyncio
+async def test_empty_generator(event_log: EventLog) -> None:
+    """Generator that yields nothing still logs empty result."""
+    s = EdgeSession(log=event_log)
+    chunks = [c async for c in s.empty_gen("t")]
+    assert chunks == []
+    events = _read_events(event_log)
+    assert len(events) == 1
+    assert events[0]["data"]["result"] == ""
+
+
+@pytest.mark.asyncio
+async def test_before_only(event_log: EventLog) -> None:
+    """before=True, after=False logs only the call, not the result."""
+    s = EdgeSession(log=event_log)
+    result = await s.before_only(5)
+    assert result == 10
+    events = _read_events(event_log)
+    assert len(events) == 1
+    assert events[0]["event"] == "before_only"
+
+
+@pytest.mark.asyncio
+async def test_no_logging(event_log: EventLog) -> None:
+    """before=False, after=False produces no log entries."""
+    s = EdgeSession(log=event_log)
+    result = await s.no_logging(5)
+    assert result == 6
+    # Log should be empty — close and check.
+    event_log.close()
+    content = event_log._path.read_text().strip()
+    assert content == ""

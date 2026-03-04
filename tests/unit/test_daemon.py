@@ -11,7 +11,7 @@ from uuid import uuid4
 
 import pytest
 
-from substrat.daemon import ERR_INVALID, ERR_METHOD, ERR_NOT_FOUND, Daemon
+from substrat.daemon import ERR_INTERNAL, ERR_INVALID, ERR_METHOD, ERR_NOT_FOUND, Daemon
 from substrat.model import LinkSpec
 from substrat.rpc import RpcError, async_call
 from substrat.workspace.model import Workspace
@@ -364,6 +364,23 @@ async def test_agent_state_error_returns_invalid(daemon: Daemon) -> None:
             )
         assert exc_info.value.code == ERR_INVALID
         node.end_turn()  # Cleanup.
+    finally:
+        await daemon.stop()
+
+
+async def test_unexpected_exception_returns_internal(daemon: Daemon) -> None:
+    """Unhandled Exception from a handler maps to ERR_INTERNAL."""
+    await daemon.start()
+    try:
+        # Monkey-patch a handler to raise a generic Exception.
+        async def _boom(params: dict) -> dict:  # type: ignore[type-arg]
+            raise RuntimeError("kaboom")
+
+        daemon._handlers["agent.list"] = _boom
+        with pytest.raises(RpcError) as exc_info:
+            await async_call(str(daemon.socket_path), "agent.list", {})
+        assert exc_info.value.code == ERR_INTERNAL
+        assert "kaboom" in exc_info.value.message
     finally:
         await daemon.stop()
 

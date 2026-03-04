@@ -64,8 +64,9 @@ On daemon startup, sessions found in `ACTIVE` state are moved to `SUSPENDED`
 All data that enters the event log must be JSON-serializable from plain
 types: strings, numbers, bools, lists, dicts. No opaque Python objects, no
 datetimes-as-objects, no UUIDs-as-objects. UUIDs are stored as hex strings,
-timestamps as ISO 8601 strings. This ensures the log is stable across Python
-versions and can be read by external tools.
+timestamps as ISO 8601 strings, bytes as base64-encoded strings (via
+`_serialize_value` in the `@log_method` decorator). This ensures the log is
+stable across Python versions and can be read by external tools.
 
 ## Multiplexing
 
@@ -161,3 +162,9 @@ scheduler.
   is deliberately log-unaware. Provider-level `@log_method` events are lost for
   restored sessions. The scheduler's own `turn.start`/`turn.complete` events
   still work. Fix when the daemon layer owns log routing.
+- **Two logging patterns coexist.** `@log_method` decorates provider session
+  methods (create, send, suspend, restore, stop) — automatic before/after
+  logging with arg serialization. `log.log()` is used directly in the
+  scheduler for orchestration events (turn.start, turn.complete,
+  session.restored, suspend.result). Rule of thumb: provider internals use the
+  decorator, orchestration milestones use direct calls.
