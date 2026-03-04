@@ -156,29 +156,15 @@ Design: [docs/design/wake.md — Wake Failure Handling](docs/design/wake.md)
 ## Orchestrator Fuzzer Gaps
 The stateful fuzzer (`test_orchestrator_fuzz.py`) covers lifecycle interleavings but has blind spots around failure injection and agent coordination under stress.
 - [x] Shadow state bug: children of flaky agents inherit flaky provider but aren't in `flaky_agents` — `run_turn` picks one, unhandled RuntimeError crashes the fuzzer
-- [ ] ChaosProvider: probabilistic failures instead of binary always-pass/always-fail — configurable failure rates for send/suspend/stop/create, lets hypothesis explore failure interleavings the current model can't reach
+- [x] ChaosProvider: Hypothesis-controlled failure schedule (deque of outcomes: False/True/int), replaces binary FlakyProvider — covers create/send/suspend/restore failures with partial-send support
 - [ ] Wake loop: fuzzer doesn't call `start_wake_loop` — message delivery → wake → turn → fail → re-wake path is completely untested under random interleaving
 - [x] `complete()` rule: child calls complete (message parent + self-terminate) — interleaving with parent turns, sibling messages, and provider failures
-- [ ] Eviction failure paths: no provider whose suspend() or stop() can fail — the eviction rollback fix has zero fuzzer coverage
-- [ ] Spawn failure interleaving: provider.create() failure during deferred drain only unit-tested — needs random interleaving with concurrent messaging and termination
+- [x] Eviction failure paths: ChaosProvider suspend() can fail during eviction — exercises multiplexer rollback under random interleaving
+- [x] Spawn failure interleaving: ChaosProvider create() failure during deferred drain — shadow model reconciles orphaned children against real tree
 - [ ] Multiplexer invariants: no check that evicted sessions land in SUSPENDED state in the store or that restore round-trips correctly after eviction
 
-### ChaosProvider Design
-Replaces binary FakeProvider/FlakyProvider with a single provider whose failures are controlled by Hypothesis.
-
-**Failure surface.** Methods that talk to the agent subprocess: `create()`, `send()`, `suspend()`, `restore()`. These are the network boundary — any of them can fail. `stop()` is best-effort (already wrapped in try/except). `models()` is metadata, never fails.
-
-**Failure schedule.** Per-provider, not per-session — all sessions share the same network. Hypothesis draws the schedule upfront so shrinking and replay work. Two modes:
-- **Intermittent:** `st.lists(st.booleans())` — each call pops the next bool; True = fail. Hypothesis controls the exact sequence.
-- **Prolonged:** `st.integers(min_value=1, max_value=N)` — fail the next K consecutive calls, then recover. Models a network outage window.
-
-The provider holds a deque of outcomes. Each failing method pops from the deque; empty deque = succeed. This keeps all randomness in Hypothesis strategies, not in `random`.
-
-**Partial send.** `send()` can yield chunks before crashing — exercises the "non-zero exit after partial output" path. Schedule entry can be `(fail_after_chunks=N)` instead of plain bool.
-
-**Shadow model impact.** The fuzzer can't predict whether a Chaos-backed turn succeeds — it must handle both outcomes. Rules that call `run_turn` on a Chaos agent try/except and update shadow state accordingly (same pattern as current `run_turn_flaky`, but generalized).
-
-**Root retry.** Top-level "user" pokes failed root agents — just another `run_turn(agent_id, "retry")` rule. For non-root agents, parent error notification + poke tool handle retry (blocked on those features landing first).
+### ChaosProvider Design (implemented)
+See `tests/stress/test_orchestrator_fuzz.py`. ChaosProvider + ChaosProviderSession with Hypothesis-controlled deque schedule (False=succeed, True=fail, int=partial send). Per-provider shared schedule, drawn upfront via `@initialize`. Shadow model reconciles via `_shadow_drain` — checks which pending children survived deferred create().
 
 ## E2E — Blockers
 Code bugs that prevent the full stack from working end-to-end.

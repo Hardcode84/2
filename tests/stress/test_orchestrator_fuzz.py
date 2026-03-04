@@ -16,6 +16,8 @@ shrinking, replay, and ``derandomize=True`` work correctly.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+from collections import deque
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
@@ -59,14 +61,6 @@ class FakeProviderSession:
         pass
 
 
-class FlakyProviderSession(FakeProviderSession):
-    """Provider session whose send() always raises."""
-
-    async def send(self, message: str) -> AsyncGenerator[str, None]:
-        raise RuntimeError("flaky send")
-        yield ""  # noqa: RUF027  # Unreachable, makes it a generator.
-
-
 class FakeProvider:
     """Provider that always succeeds."""
 
@@ -92,12 +86,59 @@ class FakeProvider:
         return FakeProviderSession()
 
 
-class FlakyProvider:
-    """Provider whose sessions always fail on send()."""
+class ChaosProviderSession:
+    """Session whose operations consult a shared failure schedule.
+
+    Each method pops one entry from the provider's schedule deque:
+    - False → succeed.
+    - True  → raise immediately.
+    - int   → partial send (yield N chunks, then raise).
+    Non-False entries in create/suspend/restore just mean "fail" —
+    the int distinction only matters for send().
+    """
+
+    def __init__(self, provider: ChaosProvider) -> None:
+        self._provider = provider
+
+    async def send(self, message: str) -> AsyncGenerator[str, None]:
+        outcome = self._provider._pop()
+        if outcome is False:
+            yield "ok"
+            return
+        if outcome is True:
+            raise RuntimeError("chaos: send failed")
+        # int — partial send: yield N chunks, then crash.
+        for i in range(outcome):  # type: ignore[arg-type]
+            yield f"chunk-{i}"
+        raise RuntimeError("chaos: send crashed after partial output")
+
+    async def suspend(self) -> bytes:
+        if self._provider._pop() is not False:
+            raise RuntimeError("chaos: suspend failed")
+        return b"s"
+
+    async def stop(self) -> None:
+        pass  # Best-effort, never fails by design.
+
+
+class ChaosProvider:
+    """Provider with Hypothesis-controlled failure schedule.
+
+    All sessions share one schedule (same network). Methods pop outcomes
+    from a deque; empty deque = succeed. Entries: False (succeed),
+    True (fail), int (partial send — yield N chunks then crash).
+    """
+
+    def __init__(self) -> None:
+        self._schedule: deque[bool | int] = deque()
 
     @property
     def name(self) -> str:
-        return "flaky"
+        return "chaos"
+
+    def _pop(self) -> bool | int:
+        """Pop next outcome. Empty schedule = succeed."""
+        return self._schedule.popleft() if self._schedule else False
 
     async def create(
         self,
@@ -105,16 +146,20 @@ class FlakyProvider:
         system_prompt: str,
         log: EventLog | None = None,
         **kwargs: object,
-    ) -> FlakyProviderSession:
-        return FlakyProviderSession()
+    ) -> ChaosProviderSession:
+        if self._pop() is not False:
+            raise RuntimeError("chaos: create failed")
+        return ChaosProviderSession(self)
 
     async def restore(
         self,
         state: bytes,
         log: EventLog | None = None,
         **kwargs: object,
-    ) -> FlakyProviderSession:
-        return FlakyProviderSession()
+    ) -> ChaosProviderSession:
+        if self._pop() is not False:
+            raise RuntimeError("chaos: restore failed")
+        return ChaosProviderSession(self)
 
 
 # -- Helpers ---------------------------------------------------------------
@@ -138,6 +183,13 @@ def _run(coro: Any) -> Any:
 # -- State machine ---------------------------------------------------------
 
 
+_CHAOS_ENTRY = st.one_of(
+    st.just(False),
+    st.just(True),
+    st.integers(min_value=1, max_value=3),
+)
+
+
 class OrchestratorStateMachine(RuleBasedStateMachine):
     """Fuzz the orchestrator with random lifecycle operations.
 
@@ -153,10 +205,11 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         super().__init__()
         self._tmp = Path(f"/tmp/substrat-fuzz-{id(self)}")
         self._tmp.mkdir(parents=True, exist_ok=True)
+        self.chaos_provider = ChaosProvider()
         store = SessionStore(self._tmp / "sessions")
         mux = SessionMultiplexer(store, max_slots=3)
         scheduler = TurnScheduler(
-            providers={"fake": FakeProvider(), "flaky": FlakyProvider()},
+            providers={"fake": FakeProvider(), "chaos": self.chaos_provider},
             mux=mux,
             store=store,
         )
@@ -173,8 +226,8 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         self.parents_needing_drain: set[UUID] = set()
         # Parent → children mapping (shadow of tree).
         self.children: dict[UUID, set[UUID]] = {}
-        # Agents created with the flaky provider (send always fails).
-        self.flaky_agents: set[UUID] = set()
+        # Agents backed by the chaos provider.
+        self.chaos_agents: set[UUID] = set()
 
     def teardown(self) -> None:
         import shutil
@@ -186,9 +239,13 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
     # Small name alphabet to force collisions.
     _NAMES = st.sampled_from(["a", "b", "c", "d", "e"])
 
-    @initialize(target=agents)
-    def seed_agent(self) -> UUID:
-        """Create the first root agent so other rules have something to work with."""
+    @initialize(
+        target=agents,
+        chaos_schedule=st.lists(_CHAOS_ENTRY, max_size=50),
+    )
+    def seed_agent(self, chaos_schedule: list[bool | int]) -> UUID:
+        """Create the first root agent and load the chaos failure schedule."""
+        self.chaos_provider._schedule = deque(chaos_schedule)
         node = _run(self.orch.create_root_agent("seed", "init"))
         self.alive.add(node.id)
         self.children[node.id] = set()
@@ -196,11 +253,11 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
 
     @rule(target=agents, name=_NAMES)
     def create_root(self, name: str) -> UUID:
-        """Try to create a root agent. May collide on name."""
+        """Try to create a root agent. May collide on name or hit chaos eviction."""
         try:
             node = _run(self.orch.create_root_agent(name, "inst"))
-        except ValueError:
-            # Name collision — expected.
+        except (ValueError, RuntimeError):
+            # Name collision or chaos eviction failure during mux.put.
             return UUID(int=0)  # Dummy, won't match any alive agent.
         self.alive.add(node.id)
         self.children[node.id] = set()
@@ -223,28 +280,30 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         self.parents_needing_drain.add(agent)
         self.children[agent].add(child_id)
         self.children[child_id] = set()
-        # Children inherit the parent's provider — flaky begets flaky.
-        if agent in self.flaky_agents:
-            self.flaky_agents.add(child_id)
+        # Children inherit the parent's provider — chaos begets chaos.
+        if agent in self.chaos_agents:
+            self.chaos_agents.add(child_id)
         return child_id
 
     @precondition(lambda self: bool(self.alive))
     @rule(agent=agents)
     def run_turn(self, agent: UUID) -> None:
-        """Run a turn on a living idle agent."""
+        """Run a turn on a living idle agent.
+
+        Chaos agents may fail (send, eviction suspend, restore). Any
+        outcome is valid as long as the agent ends up IDLE and the tree
+        stays consistent.
+        """
         if agent not in self.alive or agent in self.pending_children:
-            return
-        if agent in self.flaky_agents:
             return
         node = self.orch.tree.get(agent)
         if node.state != AgentState.IDLE:
             return
-        _run(self.orch.run_turn(agent, "go"))
-        # Deferred drained — children now have real sessions and handlers.
-        if agent in self.parents_needing_drain:
-            self.parents_needing_drain.discard(agent)
-            for child_id in self.children[agent]:
-                self.pending_children.discard(child_id)
+        with contextlib.suppress(RuntimeError):
+            _run(self.orch.run_turn(agent, "go"))
+        # Agent must be IDLE regardless of success or failure.
+        assert node.state == AgentState.IDLE
+        self._shadow_drain(agent)
 
     @precondition(lambda self: bool(self.alive))
     @rule(agent=agents)
@@ -263,47 +322,24 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
             return
         _run(self.orch.terminate_agent(agent))
         self.alive.discard(agent)
+        self.chaos_agents.discard(agent)
         # Remove from parent's children set.
         for _parent_id, kids in self.children.items():
             kids.discard(agent)
         del self.children[agent]
 
     @rule(target=agents, name=_NAMES)
-    def create_flaky_root(self, name: str) -> UUID:
-        """Create a root agent backed by the flaky provider."""
+    def create_chaos_root(self, name: str) -> UUID:
+        """Create a root agent with the chaos provider. create() may fail."""
         try:
-            node = _run(self.orch.create_root_agent(name, "flaky", provider="flaky"))
-        except ValueError:
+            node = _run(self.orch.create_root_agent(name, "chaos", provider="chaos"))
+        except (ValueError, RuntimeError):
+            # Name collision or chaos create() failure.
             return UUID(int=0)
         self.alive.add(node.id)
         self.children[node.id] = set()
-        self.flaky_agents.add(node.id)
+        self.chaos_agents.add(node.id)
         return node.id
-
-    @precondition(lambda self: bool(self.flaky_agents & self.alive))
-    @rule(agent=agents)
-    def run_turn_flaky(self, agent: UUID) -> None:
-        """Run a turn on a flaky agent — expects error, verifies IDLE rollback."""
-        if agent not in self.flaky_agents or agent not in self.alive:
-            return
-        if agent in self.pending_children:
-            return
-        node = self.orch.tree.get(agent)
-        if node.state != AgentState.IDLE:
-            return
-        try:
-            _run(self.orch.run_turn(agent, "go"))
-            # Should not reach here.
-            assert False, "flaky provider should have raised"  # noqa: B011
-        except RuntimeError:
-            pass
-        # Agent must be back to IDLE despite the error.
-        assert node.state == AgentState.IDLE
-        # Deferred work is drained on error too — update shadow state.
-        if agent in self.parents_needing_drain:
-            self.parents_needing_drain.discard(agent)
-            for child_id in self.children[agent]:
-                self.pending_children.discard(child_id)
 
     @precondition(lambda self: bool(self.alive))
     @rule(agent=agents)
@@ -380,7 +416,7 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
             _run(work())
         # Update shadow state — agent is gone.
         self.alive.discard(agent)
-        self.flaky_agents.discard(agent)
+        self.chaos_agents.discard(agent)
         for _pid, kids in self.children.items():
             kids.discard(agent)
         del self.children[agent]
@@ -400,6 +436,28 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         handler = self.orch.get_handler(agent)
         result = handler.poke(child_node.name)
         assert result["status"] == "poked"
+
+    # -- Shadow helpers ----------------------------------------------------
+
+    def _shadow_drain(self, agent: UUID) -> None:
+        """Reconcile shadow state after deferred drain.
+
+        On the success path, all pending children are materialized.
+        On the chaos-failure path, some children's create() may have
+        failed — do_spawn cleans them from the tree, so we reconcile
+        by checking which pending children still exist.
+        """
+        if agent not in self.parents_needing_drain:
+            return
+        self.parents_needing_drain.discard(agent)
+        for child_id in list(self.children[agent]):
+            self.pending_children.discard(child_id)
+            # Child's deferred create() may have failed and been cleaned up.
+            if child_id not in self.orch.tree:
+                self.alive.discard(child_id)
+                self.children[agent].discard(child_id)
+                self.chaos_agents.discard(child_id)
+                del self.children[child_id]
 
     # -- Invariants --------------------------------------------------------
 
