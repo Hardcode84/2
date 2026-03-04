@@ -108,7 +108,7 @@ Design: [docs/design/wake.md — Wake Failure Handling](docs/design/wake.md)
 
 ## Stale Docs
 - [x] tool_integration.md still describes daemon_dispatch as a stub — updated with full workspace tool catalog (e43d312)
-- [ ] implementation.md lists agent attach, session commands, workspace commands as if they exist — they don't yet
+- [x] implementation.md lists agent attach, session commands, workspace commands as if they exist — updated to reflect actual CLI surface
 
 ## Tests — Existing
 - [x] test_provider_base.py

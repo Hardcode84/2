@@ -74,24 +74,22 @@ See [design/daemon.md](design/daemon.md) for details.
 Typer-based. Most commands map 1:1 to daemon RPC methods.
 
 ```
-substrat daemon start|stop|status
+substrat daemon start|stop|status|watch
 
 substrat agent create [--provider cursor-agent] [--name <name>]
 substrat agent list
-substrat agent attach <agent-id>       # Interactive REPL.
 substrat agent inspect <agent-id>
 substrat agent send <agent-id> <message>
+substrat agent terminate <agent-id>
 
-substrat session list|suspend|resume|delete <uuid>
-
-substrat workspace create|list|link|delete
+substrat workspace create|list|delete|link|unlink|view|inspect
 ```
 
 `agent create` is the primary entry point — creates a root agent and its
-backing session in one step. Session commands exist for low-level control.
+backing session in one step.
 
-`agent attach` opens a long-lived bidirectional stream (daemon pushes agent
-output, CLI sends user input). Ctrl-C detaches without killing the agent.
+**Not yet implemented:** `agent attach` (bidirectional streaming REPL),
+`session list|suspend|resume|delete` (low-level session management).
 
 ---
 
