@@ -225,6 +225,13 @@ class Daemon:
         sock = self._sock_path
         ws_store = self._ws_store
 
+        # Write socket path outside the sandbox root so _write_mcp_config
+        # can embed it in the MCP config env — cursor-agent does not
+        # propagate env to MCP server subprocesses.
+        ws = ws_store.load(scope, ws_name)
+        ws.root_path.parent.mkdir(parents=True, exist_ok=True)
+        (ws.root_path.parent / ".substrat_socket").write_text(str(sock))
+
         # Collect python prefix binds so the MCP server can import substrat.
         py_binds: list[LinkSpec] = []
         prefix = Path(sys.prefix)

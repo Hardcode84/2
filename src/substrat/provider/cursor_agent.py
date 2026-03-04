@@ -68,19 +68,23 @@ def _write_mcp_config(workspace: Path, agent_id: UUID) -> Path:
     cursor_dir = workspace / ".cursor"
     cursor_dir.mkdir(parents=True, exist_ok=True)
     config_path = cursor_dir / "mcp.json"
-    config = {
-        "mcpServers": {
-            "substrat": {
-                "command": sys.executable,
-                "args": [
-                    "-m",
-                    "substrat.provider.mcp_server",
-                    "--agent-id",
-                    agent_id.hex,
-                ],
-            }
-        }
+    server_cfg: dict[str, object] = {
+        "command": sys.executable,
+        "args": [
+            "-W",
+            "ignore::RuntimeWarning:runpy",
+            "-m",
+            "substrat.provider.mcp_server",
+            "--agent-id",
+            agent_id.hex,
+        ],
     }
+    # cursor-agent does not propagate env to MCP server subprocesses.
+    # Read socket path written by the daemon outside the sandbox root.
+    sock_file = workspace.parent / ".substrat_socket"
+    if sock_file.exists():
+        server_cfg["env"] = {"SUBSTRAT_SOCKET": sock_file.read_text().strip()}
+    config = {"mcpServers": {"substrat": server_cfg}}
     config_path.write_text(json.dumps(config, indent=2))
     return config_path
 
