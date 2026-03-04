@@ -191,7 +191,7 @@ class MessageKind(enum.Enum):
     REQUEST = "request"
     RESPONSE = "response"
     NOTIFICATION = "notification"
-    MULTICAST = "multicast"
+    ERROR = "error"
 
 @dataclass
 class MessageEnvelope:

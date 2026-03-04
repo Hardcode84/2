@@ -45,7 +45,7 @@ AGENT_TOOLS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         "broadcast",
-        "Multicast a message to all siblings in the team.",
+        "Send a message to all siblings in the team.",
         (ToolParam("text", "string", "Message body."),),
     ),
     ToolDef(
@@ -61,7 +61,7 @@ AGENT_TOOLS: tuple[ToolDef, ...] = (
             ToolParam(
                 "kind",
                 "string",
-                "Message kind filter (request/response/notification/multicast).",
+                "Message kind filter (request/response/notification/error).",
                 required=False,
             ),
         ),
@@ -168,7 +168,7 @@ class ToolHandler:
         }
 
     def broadcast(self, text: str) -> dict[str, Any]:
-        """Multicast to all siblings in the team."""
+        """Send a message to all siblings in the team."""
         try:
             sibling_ids = resolve_broadcast(self._tree, self._caller_id)
         except RoutingError as exc:
@@ -178,7 +178,7 @@ class ToolHandler:
             envelope = MessageEnvelope(
                 sender=self._caller_id,
                 recipient=sid,
-                kind=MessageKind.MULTICAST,
+                kind=MessageKind.REQUEST,
                 payload=text,
                 metadata={"broadcast_id": str(broadcast_id)},
             )

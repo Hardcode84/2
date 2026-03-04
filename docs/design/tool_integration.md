@@ -93,7 +93,7 @@ Returns:
 
 ### `broadcast`
 
-Multicast to all siblings in the team.
+Send a message to all siblings in the team.
 
 ```
 Parameters:
@@ -115,7 +115,7 @@ remain in the inbox for later retrieval.
 Parameters:
   sender: str | null    # Only return messages from this agent name.
   kind: str | null      # Only return messages of this kind
-                        # (request, response, notification, multicast).
+                        # (request, response, notification, error).
 
 Returns:
   {"messages": [{"from": "name", "text": "...", "message_id": "uuid"}, ...]}

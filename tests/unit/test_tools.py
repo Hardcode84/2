@@ -222,24 +222,42 @@ def test_check_inbox_filter_by_sender(fix: ToolFixture) -> None:
 def test_check_inbox_filter_by_kind(fix: ToolFixture) -> None:
     """Filtering by kind returns only matching messages."""
     fix.h_bob.send_message("alice", "request msg")
-    fix.h_bob.broadcast("multicast msg")
-    result = fix.h_alice.check_inbox(kind="multicast")
+    # Inject a NOTIFICATION directly to have a different kind.
+    from substrat.agent.message import MessageEnvelope
+
+    notif = MessageEnvelope(
+        sender=fix.bob.id,
+        recipient=fix.alice.id,
+        kind=MessageKind.NOTIFICATION,
+        payload="notif msg",
+    )
+    fix.inboxes[fix.alice.id].deliver(notif)
+    result = fix.h_alice.check_inbox(kind="notification")
     assert len(result["messages"]) == 1
-    assert result["messages"][0]["text"] == "multicast msg"
+    assert result["messages"][0]["text"] == "notif msg"
     # The request message stays.
     assert len(fix.inboxes[fix.alice.id]) == 1
 
 
 def test_check_inbox_filter_combined(fix: ToolFixture) -> None:
     """Combined sender + kind filter narrows to intersection."""
+    from substrat.agent.message import MessageEnvelope
+
     fix.h_bob.send_message("alice", "bob request")
     fix.h_carol.send_message("alice", "carol request")
-    fix.h_bob.broadcast("bob multicast")
+    # Inject a NOTIFICATION from bob to have a different kind.
+    notif = MessageEnvelope(
+        sender=fix.bob.id,
+        recipient=fix.alice.id,
+        kind=MessageKind.NOTIFICATION,
+        payload="bob notif",
+    )
+    fix.inboxes[fix.alice.id].deliver(notif)
     # Filter: sender=bob AND kind=request.
     result = fix.h_alice.check_inbox(sender="bob", kind="request")
     assert len(result["messages"]) == 1
     assert result["messages"][0]["text"] == "bob request"
-    # Two messages left (carol's request + bob's multicast).
+    # Two messages left (carol's request + bob's notification).
     assert len(fix.inboxes[fix.alice.id]) == 2
 
 
@@ -400,7 +418,7 @@ def test_sender_display_name_removed_agent(fix: ToolFixture) -> None:
 def test_broadcast_envelope_kind(fix: ToolFixture) -> None:
     fix.h_alice.broadcast("check kind")
     envelope = fix.inboxes[fix.bob.id].peek()[0]
-    assert envelope.kind == MessageKind.MULTICAST
+    assert envelope.kind == MessageKind.REQUEST
 
 
 # --- name resolution ---
