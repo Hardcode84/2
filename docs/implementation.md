@@ -26,7 +26,6 @@ routing. Blocking operations (bwrap, subprocess spawning) run in a
 │   └── <uuid>/
 │       ├── session.json    # Atomic snapshot of session state.
 │       ├── events.jsonl    # Append-only event log (source of truth).
-│       ├── transcript.txt  # Human-readable conversation log.
 │       └── mcp.json        # Generated MCP config for this agent.
 └── workspaces/
     └── <scope-hex>/
@@ -74,7 +73,7 @@ See [design/daemon.md](design/daemon.md) for details.
 Typer-based. Most commands map 1:1 to daemon RPC methods.
 
 ```
-substrat daemon start|stop|status|watch
+substrat daemon start|stop|status|watch|log
 
 substrat agent create [--provider cursor-agent] [--name <name>]
 substrat agent list
@@ -243,7 +242,7 @@ Per-agent, at `~/.substrat/agents/<uuid>/`:
 - `events.jsonl` — append-only structured log. Source of truth for crash
   recovery. Every send/response, state transition, and message routing event.
   Fsynced per turn. See [design/crash_recovery.md](design/crash_recovery.md).
-- `transcript.txt` — human-readable conversation log. Observability only.
+  Human-readable output is reconstructed on demand via `daemon log` / `daemon watch`.
 
 All log entries are plain JSON (strings, numbers, bools, lists, dicts — no
 opaque Python objects). This is a stability contract for replayability.

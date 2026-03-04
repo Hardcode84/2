@@ -87,7 +87,7 @@ Design: [docs/design/wake.md — Wake Failure Handling](docs/design/wake.md)
 - [ ] Mixed logging patterns (direct log.log() vs @log_method) undocumented
 - [x] _build_args_dict doesn't enforce serialization contract on args — unified _serialize_value applied to args and results
 - [ ] base64 encoding for bytes not documented in serialization contract (session.md)
-- [ ] transcript.txt companion log not implemented (referenced in implementation.md)
+- [x] transcript.txt companion log not implemented — removed; human-readable output reconstructed on demand via `daemon log` / `daemon watch`
 
 ## Design Gaps
 - [x] Stale provider blob — crash recovery design uses event log as source of truth, not provider_state blob

@@ -256,6 +256,28 @@ def watch(
         pass
 
 
+@daemon_app.command()
+def log(
+    agent_id: str = typer.Argument(help="Agent UUID (hex)."),
+    root: Path = _ROOT_OPT,
+) -> None:
+    """Print an agent's event log, human-readable."""
+    result = _call(root, "agent.inspect", {"agent_id": agent_id})
+    session_id = result["session_id"]
+    log_path = root / "agents" / session_id / "events.jsonl"
+    if not log_path.exists():
+        typer.echo("no events")
+        return
+    for line in log_path.read_bytes().split(b"\n"):
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        typer.echo(_format_event(entry))
+
+
 # -- agent commands ------------------------------------------------------------
 
 

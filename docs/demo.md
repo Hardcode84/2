@@ -76,6 +76,12 @@ Filter to a single agent with `--agent-id`:
 substrat daemon watch --agent-id <AGENT_ID>
 ```
 
+Dump an agent's full event history after the fact:
+
+```bash
+substrat daemon log <AGENT_ID>
+```
+
 ## Stop the daemon
 
 ```bash
