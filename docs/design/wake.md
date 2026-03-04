@@ -387,6 +387,87 @@ provider's.
 
 ---
 
+## Fuzzing Strategy
+
+The stateful fuzzer (`test_orchestrator_fuzz.py`) needs to exercise wake failure
+paths under random interleaving. The current binary FakeProvider/FlakyProvider
+split can't reach most failure interleavings — a single ChaosProvider replaces
+both.
+
+### ChaosProvider
+
+A provider whose failures are controlled by Hypothesis. All randomness lives in
+Hypothesis strategies so shrinking, replay, and `derandomize=True` work.
+
+**Failure surface.** Methods that talk to the agent subprocess — the network
+boundary:
+
+| Method | Failure mode |
+|-----------|----------------------------------------------|
+| `create()` | Spawn fails — deferred drain cleanup path. |
+| `send()` | Turn fails — IDLE rollback. Can also yield partial chunks before crashing. |
+| `suspend()` | Eviction fails — session stays in multiplexer slots (rollback). |
+| `restore()` | Session can't resume from suspension. |
+
+`stop()` is best-effort (already wrapped in try/except). `models()` is
+metadata, never fails. Neither is in scope.
+
+**Per-provider, not per-session.** All sessions share the same network. A
+prolonged outage fails every session, not just one.
+
+**Schedule.** Hypothesis draws a failure schedule upfront as a deque of
+outcomes. Each failing method pops the next entry; empty deque means succeed.
+Two modes:
+
+- **Intermittent.** `st.lists(st.booleans())` — True = fail. Hypothesis
+  controls the exact sequence, can shrink to the minimal failing case.
+- **Prolonged.** `st.integers(min_value=1, max_value=N)` — fail the next K
+  consecutive calls, then recover. Models a network outage window.
+
+**Partial send.** A schedule entry can be `(fail_after_chunks=N)` instead of a
+plain bool. The generator yields N chunks, then raises. Exercises the non-zero
+exit after partial output path.
+
+### Fuzzer rules
+
+The current `run_turn` / `run_turn_flaky` split generalizes into a single rule
+that handles both outcomes via try/except and updates shadow state accordingly.
+
+**Root retry.** A new rule simulates the human operator: pick a failed root
+agent, call `run_turn(agent_id, "retry")`. This is the top-level recovery path
+— no poke tool needed, just another turn.
+
+**Non-root retry.** Blocked on parent error notification and `poke` tool
+landing. Once those exist, a rule where the parent calls `poke(child_name)`
+after receiving an ERROR message exercises the full cascade.
+
+**Wake loop.** The fuzzer currently doesn't call `start_wake_loop`. Running the
+async wake loop inside synchronous Hypothesis rules requires pumping the event
+loop between steps (via `nest_asyncio` or manual `_process_wake` calls). Until
+the wake loop is integrated, explicit `run_turn` calls are the only way to
+exercise failure paths — wake-triggered failures remain untested under random
+interleaving.
+
+### Shadow model
+
+With ChaosProvider, the fuzzer can't predict whether a turn succeeds. The
+shadow model must handle both outcomes:
+
+```
+try:
+    _run(self.orch.run_turn(agent, "go"))
+    # Success — drain shadow state as usual.
+except RuntimeError:
+    pass
+# Agent must be IDLE either way.
+assert node.state == AgentState.IDLE
+```
+
+Children of Chaos-backed agents inherit the Chaos provider. The shadow model
+must track this (the flaky inheritance bug that already bit us once).
+
+---
+
 ## Open Questions
 
 - **Cascading wake depth.** If A wakes B wakes C, the chain runs
