@@ -36,6 +36,7 @@ from hypothesis.stateful import (
 )
 
 from substrat.agent import AgentState
+from substrat.agent.node import AgentNode
 from substrat.logging import EventLog
 from substrat.orchestrator import Orchestrator
 from substrat.scheduler import TurnScheduler
@@ -162,24 +163,6 @@ class ChaosProvider:
         return ChaosProviderSession(self)
 
 
-# -- Helpers ---------------------------------------------------------------
-
-
-def _run(coro: Any) -> Any:
-    """Run a coroutine in the current event loop or create one."""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-    if loop is not None and loop.is_running():
-        # Hypothesis runs synchronously; nest if needed.
-        import nest_asyncio  # type: ignore[import-untyped]
-
-        nest_asyncio.apply()
-        return loop.run_until_complete(coro)
-    return asyncio.run(coro)
-
-
 # -- State machine ---------------------------------------------------------
 
 
@@ -203,6 +186,8 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
 
     def __init__(self) -> None:
         super().__init__()
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
         self._tmp = Path(f"/tmp/substrat-fuzz-{id(self)}")
         self._tmp.mkdir(parents=True, exist_ok=True)
         self.chaos_provider = ChaosProvider()
@@ -229,7 +214,15 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         # Agents backed by the chaos provider.
         self.chaos_agents: set[UUID] = set()
 
+    def _run(self, coro: Any) -> Any:
+        """Run a coroutine in the persistent event loop."""
+        return self._loop.run_until_complete(coro)
+
     def teardown(self) -> None:
+        try:
+            self._run(self.orch.stop_wake_loop())
+        finally:
+            self._loop.close()
         import shutil
 
         shutil.rmtree(self._tmp, ignore_errors=True)
@@ -246,7 +239,12 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
     def seed_agent(self, chaos_schedule: list[bool | int]) -> UUID:
         """Create the first root agent and load the chaos failure schedule."""
         self.chaos_provider._schedule = deque(chaos_schedule)
-        node = _run(self.orch.create_root_agent("seed", "init"))
+
+        async def _init() -> AgentNode:
+            self.orch.start_wake_loop()
+            return await self.orch.create_root_agent("seed", "init")
+
+        node = self._run(_init())
         self.alive.add(node.id)
         self.children[node.id] = set()
         return node.id
@@ -255,7 +253,7 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
     def create_root(self, name: str) -> UUID:
         """Try to create a root agent. May collide on name or hit chaos eviction."""
         try:
-            node = _run(self.orch.create_root_agent(name, "inst"))
+            node = self._run(self.orch.create_root_agent(name, "inst"))
         except (ValueError, RuntimeError):
             # Name collision or chaos eviction failure during mux.put.
             return UUID(int=0)  # Dummy, won't match any alive agent.
@@ -300,10 +298,11 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         if node.state != AgentState.IDLE:
             return
         with contextlib.suppress(RuntimeError):
-            _run(self.orch.run_turn(agent, "go"))
+            self._run(self.orch.run_turn(agent, "go"))
         # Agent must be IDLE regardless of success or failure.
         assert node.state == AgentState.IDLE
         self._shadow_drain(agent)
+        self._run(self._drain_wakes())
 
     @precondition(lambda self: bool(self.alive))
     @rule(agent=agents)
@@ -320,7 +319,7 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         # Can't terminate if this child hasn't been drained yet (no session).
         if agent in self.pending_children:
             return
-        _run(self.orch.terminate_agent(agent))
+        self._run(self.orch.terminate_agent(agent))
         self.alive.discard(agent)
         self.chaos_agents.discard(agent)
         # Remove from parent's children set.
@@ -332,7 +331,9 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
     def create_chaos_root(self, name: str) -> UUID:
         """Create a root agent with the chaos provider. create() may fail."""
         try:
-            node = _run(self.orch.create_root_agent(name, "chaos", provider="chaos"))
+            node = self._run(
+                self.orch.create_root_agent(name, "chaos", provider="chaos")
+            )
         except (ValueError, RuntimeError):
             # Name collision or chaos create() failure.
             return UUID(int=0)
@@ -350,7 +351,7 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         if not self.children[agent]:
             return
         try:
-            _run(self.orch.terminate_agent(agent))
+            self._run(self.orch.terminate_agent(agent))
             assert False, "should have raised ValueError"  # noqa: B011
         except ValueError:
             pass
@@ -373,6 +374,7 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         handler = self.orch.get_handler(agent)
         result = handler.send_message(child_node.name, "hello")
         assert result.get("status") == "sent"
+        self._run(self._drain_wakes())
 
     @precondition(lambda self: bool(self.alive))
     @rule(agent=agents)
@@ -384,6 +386,7 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         result = handler.broadcast("hello team")
         # Either succeeds (has siblings) or returns error (no siblings/root).
         assert "status" in result or "error" in result
+        self._run(self._drain_wakes())
 
     @precondition(lambda self: bool(self.alive))
     @rule(agent=agents)
@@ -413,18 +416,19 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         assert result["status"] == "completing"
         # Execute deferred self-termination (normally runs at end of turn).
         for work in handler.drain_deferred():
-            _run(work())
+            self._run(work())
         # Update shadow state — agent is gone.
         self.alive.discard(agent)
         self.chaos_agents.discard(agent)
         for _pid, kids in self.children.items():
             kids.discard(agent)
         del self.children[agent]
+        self._run(self._drain_wakes())
 
     @precondition(lambda self: bool(self.alive))
     @rule(agent=agents)
     def poke_child(self, agent: UUID) -> None:
-        """Poke a random child. No-op without wake loop, but must not crash."""
+        """Poke a random child — triggers wake turn via the wake loop."""
         if agent not in self.alive or agent in self.pending_children:
             return
         materialized = [
@@ -436,6 +440,31 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         handler = self.orch.get_handler(agent)
         result = handler.poke(child_node.name)
         assert result["status"] == "poked"
+        self._run(self._drain_wakes())
+
+    # -- Wake helpers ------------------------------------------------------
+
+    async def _drain_wakes(self) -> None:
+        """Yield control until the wake queue drains and all agents are idle."""
+        for _ in range(5000):
+            await asyncio.sleep(0)
+            if not self.orch._wake_queue.empty():
+                continue
+            if not self._all_idle():
+                continue
+            # One extra yield to confirm stability.
+            await asyncio.sleep(0)
+            if self.orch._wake_queue.empty():
+                return
+        raise RuntimeError("wake loop did not quiesce after 5000 yields")
+
+    def _all_idle(self) -> bool:
+        """True when no living non-pending agent is mid-turn."""
+        return all(
+            self.orch.tree.get(aid).state == AgentState.IDLE
+            for aid in self.alive
+            if aid not in self.pending_children and aid in self.orch.tree
+        )
 
     # -- Shadow helpers ----------------------------------------------------
 
