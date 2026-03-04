@@ -228,7 +228,13 @@ class Orchestrator:
                     await self._process_wake(aid)
 
     async def _process_wake(self, agent_id: UUID) -> None:
-        """Wake a single IDLE agent that has pending messages."""
+        """Wake a single IDLE agent that has pending messages.
+
+        Uses peek-then-drain: the prompt is built from a non-destructive
+        peek. Messages are only drained after the turn succeeds. On
+        failure the inbox is untouched and the agent stays IDLE — the
+        branch is frozen until someone pokes or the parent intervenes.
+        """
         if agent_id not in self._tree:
             return
         node = self._tree.get(agent_id)
@@ -248,22 +254,38 @@ class Orchestrator:
             # Inbox drained by a concurrent check_inbox.
             node.end_turn()
             return
-        await self._execute_turn(node, prompt)
+        try:
+            await self._execute_turn(node, prompt)
+        except Exception:
+            _log.warning(
+                "wake turn failed for agent %s — inbox preserved",
+                agent_id.hex,
+                exc_info=True,
+            )
+            return
+        # Turn succeeded — drain inbox and log delivery.
+        self._drain_inbox(agent_id)
 
-    def _format_wake_prompt(self, agent_id: UUID) -> str:
-        """Drain inbox and format as a prompt string. Empty if inbox empty."""
+    def _drain_inbox(self, agent_id: UUID) -> None:
+        """Drain inbox and log message.delivered events after a successful wake turn."""
         inbox = self._inboxes.get(agent_id)
         if not inbox:
-            return ""
-        messages = inbox.collect()
-        if not messages:
-            return ""
-        for m in messages:
+            return
+        for m in inbox.collect():
             self._log_lifecycle_for_agent(
                 agent_id,
                 "message.delivered",
                 {"message_id": m.id.hex},
             )
+
+    def _format_wake_prompt(self, agent_id: UUID) -> str:
+        """Build prompt from inbox without draining. Empty if inbox empty."""
+        inbox = self._inboxes.get(agent_id)
+        if not inbox:
+            return ""
+        messages = inbox.peek()
+        if not messages:
+            return ""
         if len(messages) == 1:
             m = messages[0]
             name = self._sender_display_name(m.sender)

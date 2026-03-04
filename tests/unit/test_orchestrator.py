@@ -689,6 +689,102 @@ async def test_post_spawn_wake(
         await orch.stop_wake_loop()
 
 
+async def test_wake_failure_preserves_inbox(
+    store: SessionStore,
+    mux: SessionMultiplexer,
+) -> None:
+    """Wake-turn crash preserves messages in inbox (peek-then-drain)."""
+    prov = FakeProvider()
+    prov._error_on_send = True
+    sched = TurnScheduler(providers={"fake": prov}, mux=mux, store=store)
+    o = Orchestrator(sched, default_provider="fake", default_model="m")
+    o.start_wake_loop()
+    try:
+        # Create parent (error session) and child.
+        parent = await o.create_root_agent("parent", "p")
+        handler = o.get_handler(parent.id)
+        handler.spawn_agent("child", "ci")
+
+        # Drain deferred via a failed turn on parent.
+        with pytest.raises(RuntimeError, match="send failed"):
+            await o.run_turn(parent.id, "go")
+
+        child = o.tree.children(parent.id)[0]
+
+        # Send message to child — will trigger wake.
+        handler = o.get_handler(parent.id)
+        handler.send_message("child", "do stuff")
+
+        # Let wake loop process — child turn will fail.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        # Messages preserved in child's inbox.
+        inbox = o.inboxes[child.id]
+        assert len(inbox) > 0
+        msgs = inbox.peek()
+        assert any("do stuff" in m.payload for m in msgs)
+
+        # Child is back to IDLE, not stuck BUSY.
+        assert child.state == AgentState.IDLE
+    finally:
+        await o.stop_wake_loop()
+
+
+async def test_wake_failure_does_not_kill_loop(
+    store: SessionStore,
+    mux: SessionMultiplexer,
+) -> None:
+    """One child crashing on wake doesn't kill the wake loop for others."""
+    good_prov = FakeProvider()
+    bad_prov = FakeProvider()
+    bad_prov._error_on_send = True
+    sched = TurnScheduler(
+        providers={"good": good_prov, "bad": bad_prov},
+        mux=mux,
+        store=store,
+    )
+    o = Orchestrator(sched, default_provider="good", default_model="m")
+    o.start_wake_loop()
+    try:
+        # Good parent with a good child and a bad child.
+        parent = await o.create_root_agent("parent", "p")
+        handler = o.get_handler(parent.id)
+        handler.spawn_agent("good_kid", "ci")
+        await o.run_turn(parent.id, "go")
+
+        good_kid = next(c for c in o.tree.children(parent.id) if c.name == "good_kid")
+        # Run a turn on good_kid to prove it works.
+        await o.run_turn(good_kid.id, "hello")
+
+        # Now create a bad root agent.
+        bad = await o.create_root_agent("bad", "b", provider="bad")
+        bad_handler = o.get_handler(bad.id)
+        bad_handler.spawn_agent("bad_kid", "bi")
+        with pytest.raises(RuntimeError):
+            await o.run_turn(bad.id, "go")
+        bad_kid = o.tree.children(bad.id)[0]
+
+        # Send messages to both kids.
+        handler = o.get_handler(parent.id)
+        handler.send_message("good_kid", "after crash")
+        bad_handler = o.get_handler(bad.id)
+        bad_handler.send_message("bad_kid", "will fail")
+
+        good_prov.prompts.clear()
+        # Let wake loop process both.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        # Good kid's wake succeeded.
+        assert any("after crash" in p for p in good_prov.prompts)
+        # Bad kid's inbox is preserved.
+        assert len(o.inboxes[bad_kid.id]) > 0
+    finally:
+        await o.stop_wake_loop()
+
+
 async def test_wake_prompt_format_single(orch: Orchestrator) -> None:
     """Single message formats as 'Message from <name>:\\n<payload>'."""
     parent = await orch.create_root_agent("parent", "p")
