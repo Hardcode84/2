@@ -31,10 +31,10 @@ def _cursor_binds(cache_dir: Path) -> list[LinkSpec]:
     home = Path.home()
     cache_dir.mkdir(parents=True, exist_ok=True)
     return [
-        LinkSpec(home / ".local", Path("~/.local"), "ro"),
-        LinkSpec(home / ".cursor", Path("~/.cursor"), "rw"),
-        LinkSpec(home / ".config/cursor", Path("~/.config/cursor"), "ro"),
-        LinkSpec(cache_dir, Path("~/.cache/cursor-compile-cache"), "rw"),
+        LinkSpec(home / ".local", home / ".local", "ro"),
+        LinkSpec(home / ".cursor", home / ".cursor", "rw"),
+        LinkSpec(home / ".config" / "cursor", home / ".config" / "cursor", "ro"),
+        LinkSpec(cache_dir, home / ".cache" / "cursor-compile-cache", "rw"),
     ]
 
 

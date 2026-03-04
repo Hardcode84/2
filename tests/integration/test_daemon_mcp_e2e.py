@@ -106,7 +106,8 @@ async def test_mcp_tool_call_through_daemon(daemon_sock: str) -> None:
         "agent.send",
         {
             "agent_id": aid,
-            "message": "Use the add tool to compute 2 + 3. Report the exact numeric result.",
+            "message": "Use the add tool to compute 2 + 3. "
+            "Report the exact numeric result.",
         },
     )
     assert "5" in resp["response"], f"expected '5' in response: {resp['response']!r}"
