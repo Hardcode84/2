@@ -86,6 +86,10 @@ def _write_mcp_config(workspace: Path, agent_id: UUID) -> Path:
         server_cfg["env"] = {"SUBSTRAT_SOCKET": sock_file.read_text().strip()}
     config = {"mcpServers": {"substrat": server_cfg}}
     config_path.write_text(json.dumps(config, indent=2))
+    # cursor-agent requires workspace trust before allowing MCP tool
+    # calls. The --trust CLI flag is unreliable in headless mode — the
+    # on-disk marker is the mechanism cursor-agent actually checks.
+    (cursor_dir / ".workspace-trusted").touch()
     return config_path
 
 

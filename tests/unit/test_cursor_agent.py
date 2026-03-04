@@ -231,6 +231,7 @@ def test_write_mcp_config(tmp_path: Path) -> None:
     assert server["command"] == sys.executable
     assert "--agent-id" in server["args"]
     assert aid.hex in server["args"]
+    assert (tmp_path / ".cursor" / ".workspace-trusted").exists()
 
 
 @pytest.mark.asyncio
