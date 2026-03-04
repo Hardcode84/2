@@ -27,9 +27,11 @@ poll check_inbox.
 
 If a child agent crashes during a wake-triggered turn (provider error, timeout,
 etc.), its messages are preserved in its inbox and it goes back to idle. You
-can retry it with poke(child_name) — the child re-processes the same messages
-as if the crash never happened. You can also inspect it, send new instructions,
-or terminate it. If you do nothing, the child will remain idle until you act.
+will receive an error message describing what happened and which messages the
+child failed to process. You can retry it with poke(child_name) — the child
+re-processes the same messages as if the crash never happened. You can also
+inspect it, send new instructions, or terminate it. If you do nothing, the
+child will remain idle until you act.
 
 When your work is done, call complete(result) to deliver your output to your
 parent and self-terminate.

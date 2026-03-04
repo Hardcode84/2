@@ -15,7 +15,12 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from substrat.agent.inbox import Inbox
-from substrat.agent.message import MessageEnvelope, MessageKind, sentinel_name
+from substrat.agent.message import (
+    SYSTEM,
+    MessageEnvelope,
+    MessageKind,
+    sentinel_name,
+)
 from substrat.agent.node import AgentNode, AgentState, AgentStateError
 from substrat.agent.prompt import build_prompt
 from substrat.agent.tools import (
@@ -256,15 +261,63 @@ class Orchestrator:
             return
         try:
             await self._execute_turn(node, prompt)
-        except Exception:
+        except Exception as exc:
             _log.warning(
                 "wake turn failed for agent %s — inbox preserved",
                 agent_id.hex,
                 exc_info=True,
             )
+            self._notify_parent_error(node, exc)
             return
         # Turn succeeded — drain inbox and log delivery.
         self._drain_inbox(agent_id)
+
+    def _notify_parent_error(self, node: AgentNode, exc: Exception) -> None:
+        """Deliver ERROR message to parent on child wake-turn failure.
+
+        Root agents have no parent — the error is only logged.
+        """
+        if node.parent_id is None:
+            return
+        # Summarize pending messages the child failed to process.
+        inbox = self._inboxes.get(node.id)
+        summaries: list[str] = []
+        if inbox:
+            for m in inbox.peek():
+                name = self._sender_display_name(m.sender)
+                summaries.append(f"- from {name}: {m.payload!r}")
+        parts = [
+            f"Child agent {node.name!r} crashed during wake turn.",
+            f"Error: {type(exc).__name__}: {exc}",
+        ]
+        if summaries:
+            parts.append("Pending messages (preserved in child inbox):")
+            parts.extend(summaries)
+        parts.append("Use poke(agent_name) to retry, or terminate the child.")
+        payload = "\n".join(parts)
+        envelope = MessageEnvelope(
+            sender=SYSTEM,
+            recipient=node.parent_id,
+            kind=MessageKind.ERROR,
+            payload=payload,
+            metadata={"failed_agent": node.id.hex},
+        )
+        parent_inbox = self._inboxes.get(node.parent_id)
+        if parent_inbox is None:
+            return
+        self._log_lifecycle_for_agent(
+            node.parent_id,
+            "message.enqueued",
+            {
+                "message_id": envelope.id.hex,
+                "sender": SYSTEM.hex,
+                "recipient": node.parent_id.hex,
+                "kind": "error",
+                "payload": payload,
+            },
+        )
+        parent_inbox.deliver(envelope)
+        self._notify_wake(node.parent_id)
 
     def _drain_inbox(self, agent_id: UUID) -> None:
         """Drain inbox and log message.delivered events after a successful wake turn."""
@@ -332,7 +385,7 @@ class Orchestrator:
         except Exception:
             if node.state == AgentState.BUSY:
                 node.end_turn()
-            await self._drain_deferred(node.id)
+            await self._drain_deferred(node.id, wake_children=False)
             raise
         node.end_turn()
         await self._drain_deferred(node.id)
@@ -701,14 +754,23 @@ class Orchestrator:
             if inbox and node.state == AgentState.IDLE:
                 self._notify_wake(nid)
 
-    async def _drain_deferred(self, agent_id: UUID) -> None:
-        """Drain and execute deferred work from the agent's tool handler."""
+    async def _drain_deferred(
+        self, agent_id: UUID, *, wake_children: bool = True
+    ) -> None:
+        """Drain and execute deferred work from the agent's tool handler.
+
+        When *wake_children* is True (default), children with non-empty
+        inboxes are woken after the drain. Pass False on the error path
+        to avoid infinite wake loops between a failing parent and child.
+        """
         handler = self._handlers[agent_id]
         for work in handler.drain_deferred():
             try:
                 await work()
             except Exception:
                 _log.exception("deferred work failed for agent %s", agent_id)
+        if not wake_children:
+            return
         # Post-spawn wake: newly created children with non-empty inboxes.
         if agent_id not in self._tree:
             return

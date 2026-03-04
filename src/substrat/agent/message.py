@@ -22,6 +22,7 @@ class MessageKind(enum.Enum):
     RESPONSE = "response"
     NOTIFICATION = "notification"
     MULTICAST = "multicast"
+    ERROR = "error"
 
 
 @dataclass

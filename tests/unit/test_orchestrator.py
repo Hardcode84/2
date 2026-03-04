@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from substrat.agent import AgentState, AgentStateError
+from substrat.agent.message import MessageEnvelope, MessageKind
 from substrat.logging import EventLog
 from substrat.orchestrator import Orchestrator
 from substrat.scheduler import TurnScheduler
@@ -569,8 +570,6 @@ async def test_rewake_after_busy_turn(
 
         # Deliver a message directly to child's inbox (simulating mid-turn
         # delivery where the wake was skipped because child was BUSY).
-        from substrat.agent.message import MessageEnvelope, MessageKind
-
         env = MessageEnvelope(
             sender=parent.id,
             recipient=child.id,
@@ -729,6 +728,49 @@ async def test_wake_failure_preserves_inbox(
 
         # Child is back to IDLE, not stuck BUSY.
         assert child.state == AgentState.IDLE
+
+        # Parent received ERROR notification.
+        parent_inbox = o.inboxes[parent.id]
+        parent_msgs = parent_inbox.peek()
+        assert any(m.kind == MessageKind.ERROR for m in parent_msgs)
+        error_msg = next(m for m in parent_msgs if m.kind == MessageKind.ERROR)
+        assert "child" in error_msg.payload
+        assert "do stuff" in error_msg.payload
+        assert "poke" in error_msg.payload
+    finally:
+        await o.stop_wake_loop()
+
+
+async def test_wake_failure_root_no_parent_notification(
+    store: SessionStore,
+    mux: SessionMultiplexer,
+) -> None:
+    """Root agent crash does not try to deliver ERROR (no parent)."""
+    prov = FakeProvider()
+    prov._error_on_send = True
+    sched = TurnScheduler(providers={"fake": prov}, mux=mux, store=store)
+    o = Orchestrator(sched, default_provider="fake", default_model="m")
+    o.start_wake_loop()
+    try:
+        root = await o.create_root_agent("root", "r")
+        # Send message to root from another root to trigger wake.
+        other = await o.create_root_agent("sender", "s")
+        # Deliver a message directly into root's inbox.
+        envelope = MessageEnvelope(
+            sender=other.id,
+            recipient=root.id,
+            payload="trigger",
+        )
+        o.inboxes[root.id].deliver(envelope)
+        o._notify_wake(root.id)
+
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        # Root is back to IDLE, no crash.
+        assert root.state == AgentState.IDLE
+        # Messages preserved in root's inbox.
+        assert len(o.inboxes[root.id]) > 0
     finally:
         await o.stop_wake_loop()
 
