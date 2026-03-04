@@ -5,29 +5,29 @@ Requires `cursor-agent` in PATH.
 ## Start the daemon
 
 ```bash
-python -m substrat daemon start
-python -m substrat daemon status
+substrat daemon start
+substrat daemon status
 ```
 
 ## Create an agent and talk to it
 
 ```bash
-python -m substrat agent create scout \
+substrat agent create scout \
   --instructions "You are a terse assistant. Answer in one sentence."
 # prints agent_id hex — copy it
 
-python -m substrat agent send <AGENT_ID> "What is the capital of Mongolia?"
+substrat agent send <AGENT_ID> "What is the capital of Mongolia?"
 
 # verify context persists across turns
-python -m substrat agent send <AGENT_ID> "What did I just ask you about?"
+substrat agent send <AGENT_ID> "What did I just ask you about?"
 ```
 
 ## Inspect and clean up
 
 ```bash
-python -m substrat agent inspect <AGENT_ID>
-python -m substrat agent list
-python -m substrat agent terminate <AGENT_ID>
+substrat agent inspect <AGENT_ID>
+substrat agent list
+substrat agent terminate <AGENT_ID>
 ```
 
 ## Multi-agent: parent spawns a child
@@ -37,20 +37,20 @@ injected into its system prompt. When it emits `<tool_call>` tags,
 the daemon dispatches them and feeds results back.
 
 ```bash
-python -m substrat agent create boss \
+substrat agent create boss \
   --instructions "You are an orchestrator. When asked to research something, \
 use spawn_agent to create a child named 'researcher' with instructions to \
 find the answer and call complete(result) when done. Then wait — you will \
 receive the child's result as a message automatically."
 # copy BOSS_ID
 
-python -m substrat agent send <BOSS_ID> "Research: what year was Ulaanbaatar founded?"
+substrat agent send <BOSS_ID> "Research: what year was Ulaanbaatar founded?"
 # boss should spawn a child, child completes, boss gets woken with the answer
 
-python -m substrat agent list
+substrat agent list
 # should show boss (idle) — child self-terminated via complete()
 
-python -m substrat agent terminate <BOSS_ID>
+substrat agent terminate <BOSS_ID>
 ```
 
 ## Watch live events
@@ -58,7 +58,7 @@ python -m substrat agent terminate <BOSS_ID>
 In a separate terminal, tail all session event logs as they happen:
 
 ```bash
-python -m substrat daemon watch
+substrat daemon watch
 ```
 
 Then interact with agents in another terminal — watch prints each event
@@ -73,11 +73,11 @@ as it lands:
 Filter to a single agent with `--agent-id`:
 
 ```bash
-python -m substrat daemon watch --agent-id <AGENT_ID>
+substrat daemon watch --agent-id <AGENT_ID>
 ```
 
 ## Stop the daemon
 
 ```bash
-python -m substrat daemon stop
+substrat daemon stop
 ```
