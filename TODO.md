@@ -106,7 +106,7 @@
 - [x] test_event_log.py
 - [x] test_log_decorator.py
 - [x] test_orchestrator.py — unit tests covering create, run_turn, spawn, terminate, get_handler, wake loop, complete lifecycle
-- [x] test_orchestrator_fuzz.py — Hypothesis stateful fuzzer (stress, --run-stress)
+- [x] test_orchestrator_fuzz.py — Hypothesis stateful fuzzer (stress, --run-stress) — see fuzzer gaps below
 - [x] test_recovery.py — crash recovery unit tests (log reading, tree reconstruction, recovery wake)
 - [x] test_tools.py — tool handler unit tests (routing, messaging, spawn, workspace tools, wake callback, complete, inbox filtering)
 
@@ -141,6 +141,16 @@
 - [x] test_cli.py — CLI commands with mocked RPC
 - [x] test_daemon_rpc.py — integration tests: full lifecycle, tool.call, concurrency, recovery over real UDS
 - [x] test_tool_callbacks.py — integration tests: tool callbacks mid-turn over real UDS (spawn, message, complete, inspect)
+
+## Orchestrator Fuzzer Gaps
+The stateful fuzzer (`test_orchestrator_fuzz.py`) covers lifecycle interleavings but has blind spots around failure injection and agent coordination under stress.
+- [ ] Shadow state bug: children of flaky agents inherit flaky provider but aren't in `flaky_agents` — `run_turn` picks one, unhandled RuntimeError crashes the fuzzer
+- [ ] ChaosProvider: probabilistic failures instead of binary always-pass/always-fail — configurable failure rates for send/suspend/stop/create, lets hypothesis explore failure interleavings the current model can't reach
+- [ ] Wake loop: fuzzer doesn't call `start_wake_loop` — message delivery → wake → turn → fail → re-wake path is completely untested under random interleaving
+- [ ] `complete()` rule: child calls complete (message parent + self-terminate) not exercised — interleaving with parent turns, sibling messages, and provider failures unexplored
+- [ ] Eviction failure paths: no provider whose suspend() or stop() can fail — the eviction rollback fix has zero fuzzer coverage
+- [ ] Spawn failure interleaving: provider.create() failure during deferred drain only unit-tested — needs random interleaving with concurrent messaging and termination
+- [ ] Multiplexer invariants: no check that evicted sessions land in SUSPENDED state in the store or that restore round-trips correctly after eviction
 
 ## E2E — Blockers
 Code bugs that prevent the full stack from working end-to-end.
