@@ -85,7 +85,7 @@ Design: [docs/design/wake.md — Wake Failure Handling](docs/design/wake.md)
 - [x] System prompt sent as first message — cursor-agent now writes .mdc rules instead, survives context compaction
 - [x] System prompt persisted in suspend state — CursorSession.suspend() saves it, restore() re-writes .mdc (38a3270)
 - [ ] Mixed logging patterns (direct log.log() vs @log_method) undocumented
-- [ ] _build_args_dict doesn't enforce serialization contract on args — non-JSON-serializable arg will crash json.dumps
+- [x] _build_args_dict doesn't enforce serialization contract on args — unified _serialize_value applied to args and results
 - [ ] base64 encoding for bytes not documented in serialization contract (session.md)
 - [ ] transcript.txt companion log not implemented (referenced in implementation.md)
 

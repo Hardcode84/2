@@ -19,15 +19,33 @@ class Loggable(Protocol):
     _log: EventLog | None
 
 
+def _serialize_value(value: Any) -> Any:
+    """Best-effort JSON-safe serialization for log entries."""
+    if isinstance(value, str | int | float | bool | type(None)):
+        return value
+    if isinstance(value, bytes):
+        import base64
+
+        return base64.b64encode(value).decode()
+    if isinstance(value, dict):
+        return {str(k): _serialize_value(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_serialize_value(v) for v in value]
+    return str(value)
+
+
 def _build_args_dict(
     fn: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any]
 ) -> dict[str, Any]:
-    """Map positional + keyword args to parameter names, skipping self."""
+    """Map positional + keyword args to parameter names, skipping self.
+
+    Values are serialized to JSON-safe types so json.dumps never crashes.
+    """
     sig = inspect.signature(fn)
     # None stands in for self (already stripped from args by the wrapper).
     bound = sig.bind(None, *args, **kwargs)
     bound.arguments.pop("self", None)
-    return dict(bound.arguments)
+    return {k: _serialize_value(v) for k, v in bound.arguments.items()}
 
 
 def _get_log(instance: Loggable) -> EventLog | None:
@@ -88,21 +106,10 @@ def log_method(
                 if log and after:
                     result_data: dict[str, Any] = {**args_dict}
                     if result is not None:
-                        result_data["result"] = _serialize_result(result)
+                        result_data["result"] = _serialize_value(result)
                     log.log(f"{event_name}.result", result_data)
                 return result
 
             return wrapper  # type: ignore[return-value]
 
     return decorator
-
-
-def _serialize_result(value: Any) -> Any:
-    """Best-effort serialization for log entries."""
-    if isinstance(value, bytes):
-        import base64
-
-        return base64.b64encode(value).decode()
-    if isinstance(value, str | int | float | bool | type(None)):
-        return value
-    return str(value)

@@ -8,6 +8,7 @@ import json
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import pytest
 
@@ -31,6 +32,10 @@ class FakeSession:
 
     @log_method(after=True)
     async def stop(self) -> None:
+        pass
+
+    @log_method(before=True)
+    async def create(self, workspace: Path, agent_id: UUID) -> None:
         pass
 
     @log_method(before=True, after=True)
@@ -109,3 +114,19 @@ async def test_error_in_generator_logs_partial(event_log: EventLog) -> None:
     assert events[1]["event"] == "send_error.result"
     assert events[1]["data"]["message"] == "hi"
     assert events[1]["data"]["result"] == "partial"
+
+
+# --- non-serializable args ------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_non_serializable_args_do_not_crash(event_log: EventLog) -> None:
+    """Path and UUID args are serialized to strings, not passed raw to json.dumps."""
+    session = FakeSession(log=event_log)
+    uid = UUID("12345678-1234-5678-1234-567812345678")
+    await session.create(workspace=Path("/tmp/ws"), agent_id=uid)
+    events = _read_events(event_log)
+    assert len(events) == 1
+    assert events[0]["event"] == "create"
+    assert events[0]["data"]["workspace"] == "/tmp/ws"
+    assert events[0]["data"]["agent_id"] == "12345678-1234-5678-1234-567812345678"
