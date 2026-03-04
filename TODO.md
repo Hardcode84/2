@@ -202,7 +202,7 @@ Tasks are files in shared workspaces, not a new abstraction. Completion is a mes
 - [ ] Configuration format — TOML? YAML? CLI flags only?
 - [ ] Authentication model — daemon trusts any local socket connection, multi-user not addressed
 - [ ] Resource limits — CPU/memory per workspace, token budgets per session
-- [ ] Streaming UX — how agent attach handles interleaved output from multiple agents
+- [x] Streaming UX — resolved: agent attach is per-agent, no interleaving
 - [ ] inspect_agent payload — "recent activity" undefined
 - [ ] Tool reply injection mechanism — provider-specific?
 - [ ] Tool rate limiting / abuse prevention

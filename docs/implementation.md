@@ -294,8 +294,7 @@ canned responses for fast, deterministic integration tests.
 - **Authentication.** Daemon trusts any local socket connection. Multi-user
   not addressed.
 - **Resource limits.** CPU/memory per workspace, token budgets per session.
-- **Streaming UX.** How `agent attach` handles interleaved output from
-  multiple agents.
+- ~~**Streaming UX.**~~ Resolved: `agent attach` is per-agent, no interleaving.
 - **Sentinel-as-recipient.** Agents cannot currently route messages to
   SYSTEM/USER (they're not in the tree). The daemon will need to intercept
   these at the boundary layer. Decide whether `validate_route` should
