@@ -193,9 +193,8 @@ class CursorSession:
             "--output-format",
             "stream-json",
             "--trust",
+            "--approve-mcps",
         ]
-        if self._tools:
-            cmd.append("--approve-mcps")
         if self._model is not None:
             cmd.extend(["--model", self._model])
         cmd.extend(

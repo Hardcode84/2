@@ -13,7 +13,7 @@ from uuid import uuid4
 
 import pytest
 
-from substrat.model import LinkSpec, ToolDef
+from substrat.model import LinkSpec
 from substrat.provider.base import AgentProvider, ProviderSession
 from substrat.provider.cursor_agent import (
     _CURSOR_BINDS,
@@ -298,39 +298,19 @@ def test_session_with_wrapper_satisfies_protocol() -> None:
 @pytest.mark.asyncio
 @patch("substrat.provider.cursor_agent._cursor_binary", return_value=FAKE_BINARY)
 @patch("asyncio.create_subprocess_exec")
-async def test_approve_mcps_included_with_tools(
+async def test_approve_mcps_always_included(
     mock_exec: AsyncMock, _mock_bin: MagicMock
 ) -> None:
-    """--approve-mcps is added to the command when tools are configured."""
+    """--approve-mcps is always present, even without explicit tools."""
     mock_exec.return_value = _mock_process(_fake_assistant_output("ok"))
-    tool = ToolDef(name="test_tool", description="A test tool.")
     session = CursorSession(
         session_id="sess-1",
         model="m",
         workspace=Path("/tmp"),
-        tools=(tool,),
     )
     await _aiter_to_list(session.send("hello"))
     actual_cmd = mock_exec.call_args[0]
     assert "--approve-mcps" in actual_cmd
-
-
-@pytest.mark.asyncio
-@patch("substrat.provider.cursor_agent._cursor_binary", return_value=FAKE_BINARY)
-@patch("asyncio.create_subprocess_exec")
-async def test_approve_mcps_absent_without_tools(
-    mock_exec: AsyncMock, _mock_bin: MagicMock
-) -> None:
-    """--approve-mcps is NOT added when no tools are configured."""
-    mock_exec.return_value = _mock_process(_fake_assistant_output("ok"))
-    session = CursorSession(
-        session_id="sess-1",
-        model="m",
-        workspace=Path("/tmp"),
-    )
-    await _aiter_to_list(session.send("hello"))
-    actual_cmd = mock_exec.call_args[0]
-    assert "--approve-mcps" not in actual_cmd
 
 
 # --- private workspace ---
