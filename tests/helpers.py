@@ -87,6 +87,7 @@ class ScriptedProvider:
         workspace: Path | None = None,
         wrap_command: CommandWrapper | None = None,
         agent_id: UUID | None = None,
+        daemon_socket: str | None = None,
     ) -> ScriptedSession:
         scripts = self._agent_scripts.popleft()
         aid_hex = agent_id.hex if agent_id is not None else ""
