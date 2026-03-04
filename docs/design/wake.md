@@ -290,37 +290,28 @@ Parent wake:
 What happens when a wake-triggered turn crashes (provider exits non-zero,
 network timeout, OOM, etc.).
 
-### Bug: unhandled exception kills wake loop
+### Peek-then-drain (implemented)
 
-`_process_wake` has no try/except around `_execute_turn`. One child
-crashing during a wake kills the background task. All agents stop
-receiving wake-triggered turns. The system is silently hosed.
+`_process_wake` wraps `_execute_turn` in try/except. The prompt is
+built from `inbox.peek()` (non-destructive). `inbox.collect()` and
+`message.delivered` logging happen only after the turn succeeds.
 
-Fix: wrap `_execute_turn` in try/except inside `_process_wake`.
-
-### Design: peek-then-drain
-
-Current `_format_wake_prompt` calls `inbox.collect()` — destructive.
-If the subsequent turn fails, messages are gone. The child never
-processed them, but they're no longer in the inbox.
-
-New behavior: build the prompt from `inbox.peek()`. Only `collect()`
-after the turn succeeds. On failure, messages stay in the inbox. The
-child is IDLE with a full inbox — the branch is "frozen."
+On failure: exception is logged, messages stay in the inbox, agent
+goes back to IDLE. The branch is frozen until someone pokes it or
+a new message triggers another wake attempt.
 
 ```
 _process_wake(agent_id)
   → begin_turn()
   → _format_wake_prompt()        # peek(), not collect().
   → try: _execute_turn()
-        inbox.collect()          # Drain only on success.
-        log message.delivered
-    except: notify parent, leave inbox intact.
+        _drain_inbox()           # collect() + log message.delivered.
+    except: log warning, leave inbox intact.
 ```
 
-This means `message.delivered` events are logged after the turn, not
-before. Recovery replay still works — undelivered messages get
-re-injected, and the post-recovery wake scan picks them up.
+`message.delivered` events are logged after the turn, not before.
+Recovery replay still works — undelivered messages get re-injected,
+and the post-recovery wake scan picks them up.
 
 ### Design: parent error notification
 
