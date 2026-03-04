@@ -359,6 +359,48 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         result = handler.check_inbox()
         assert "messages" in result
 
+    @precondition(lambda self: bool(self.alive))
+    @rule(agent=agents)
+    def complete_agent(self, agent: UUID) -> None:
+        """Leaf child calls complete — message parent + self-terminate."""
+        if agent not in self.alive or agent in self.pending_children:
+            return
+        if self.children[agent]:
+            return  # Not a leaf.
+        node = self.orch.tree.get(agent)
+        if node.parent_id is None:
+            return  # Root can't complete.
+        if node.state != AgentState.IDLE:
+            return
+        handler = self.orch.get_handler(agent)
+        result = handler.complete("done")
+        assert result["status"] == "completing"
+        # Execute deferred self-termination (normally runs at end of turn).
+        for work in handler.drain_deferred():
+            _run(work())
+        # Update shadow state — agent is gone.
+        self.alive.discard(agent)
+        self.flaky_agents.discard(agent)
+        for _pid, kids in self.children.items():
+            kids.discard(agent)
+        del self.children[agent]
+
+    @precondition(lambda self: bool(self.alive))
+    @rule(agent=agents)
+    def poke_child(self, agent: UUID) -> None:
+        """Poke a random child. No-op without wake loop, but must not crash."""
+        if agent not in self.alive or agent in self.pending_children:
+            return
+        materialized = [
+            c for c in self.children[agent] if c not in self.pending_children
+        ]
+        if not materialized:
+            return
+        child_node = self.orch.tree.get(materialized[0])
+        handler = self.orch.get_handler(agent)
+        result = handler.poke(child_node.name)
+        assert result["status"] == "poked"
+
     # -- Invariants --------------------------------------------------------
 
     @invariant()

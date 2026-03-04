@@ -158,7 +158,7 @@ The stateful fuzzer (`test_orchestrator_fuzz.py`) covers lifecycle interleavings
 - [x] Shadow state bug: children of flaky agents inherit flaky provider but aren't in `flaky_agents` — `run_turn` picks one, unhandled RuntimeError crashes the fuzzer
 - [ ] ChaosProvider: probabilistic failures instead of binary always-pass/always-fail — configurable failure rates for send/suspend/stop/create, lets hypothesis explore failure interleavings the current model can't reach
 - [ ] Wake loop: fuzzer doesn't call `start_wake_loop` — message delivery → wake → turn → fail → re-wake path is completely untested under random interleaving
-- [ ] `complete()` rule: child calls complete (message parent + self-terminate) not exercised — interleaving with parent turns, sibling messages, and provider failures unexplored
+- [x] `complete()` rule: child calls complete (message parent + self-terminate) — interleaving with parent turns, sibling messages, and provider failures
 - [ ] Eviction failure paths: no provider whose suspend() or stop() can fail — the eviction rollback fix has zero fuzzer coverage
 - [ ] Spawn failure interleaving: provider.create() failure during deferred drain only unit-tested — needs random interleaving with concurrent messaging and termination
 - [ ] Multiplexer invariants: no check that evicted sessions land in SUSPENDED state in the store or that restore round-trips correctly after eviction
