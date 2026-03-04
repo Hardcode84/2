@@ -426,8 +426,8 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         self._run(self._drain_wakes())
 
     @precondition(lambda self: bool(self.alive))
-    @rule(agent=agents)
-    def poke_child(self, agent: UUID) -> None:
+    @rule(agent=agents, data=st.data())
+    def poke_child(self, agent: UUID, data: st.DataObject) -> None:
         """Poke a random child — triggers wake turn via the wake loop."""
         if agent not in self.alive or agent in self.pending_children:
             return
@@ -436,7 +436,8 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         ]
         if not materialized:
             return
-        child_node = self.orch.tree.get(materialized[0])
+        child_id = data.draw(st.sampled_from(materialized))
+        child_node = self.orch.tree.get(child_id)
         handler = self.orch.get_handler(agent)
         result = handler.poke(child_node.name)
         assert result["status"] == "poked"
@@ -544,6 +545,22 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
             assert node.state == AgentState.IDLE, (
                 f"agent {aid} in state {node.state.value}, expected IDLE"
             )
+
+    @invariant()
+    def non_chaos_inboxes_empty(self) -> None:
+        """Non-chaos agents should have empty inboxes after wake drain.
+
+        FakeProvider always succeeds, so wake turns always complete and
+        drain the inbox. Any leftover message is a real bug.
+        """
+        for aid in self.alive:
+            if aid in self.chaos_agents or aid in self.pending_children:
+                continue
+            inbox = self.orch.inboxes.get(aid)
+            if inbox is None:
+                continue
+            msgs = inbox.peek()
+            assert not msgs, f"non-chaos agent {aid} has {len(msgs)} undrained messages"
 
     @invariant()
     def deferred_queues_empty(self) -> None:
