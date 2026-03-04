@@ -5,6 +5,7 @@
 """Unit tests for CursorAgentProvider wrap_command support."""
 
 import json
+import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -227,7 +228,7 @@ def test_write_mcp_config(tmp_path: Path) -> None:
     assert path == tmp_path / ".cursor" / "mcp.json"
     config = json.loads(path.read_text())
     server = config["mcpServers"]["substrat"]
-    assert server["command"] == "python"
+    assert server["command"] == sys.executable
     assert "--agent-id" in server["args"]
     assert aid.hex in server["args"]
 

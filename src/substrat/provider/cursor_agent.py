@@ -10,6 +10,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
@@ -70,7 +71,7 @@ def _write_mcp_config(workspace: Path, agent_id: UUID) -> Path:
     config = {
         "mcpServers": {
             "substrat": {
-                "command": "python",
+                "command": sys.executable,
                 "args": [
                     "-m",
                     "substrat.provider.mcp_server",

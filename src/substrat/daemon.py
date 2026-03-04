@@ -36,6 +36,10 @@ from substrat.workspace.store import WorkspaceStore
 _ALL_TOOLS = AGENT_TOOLS + WORKSPACE_TOOLS
 _WS_TOOL_NAMES: frozenset[str] = frozenset(t.name for t in WORKSPACE_TOOLS)
 
+# Source root for the substrat package. For editable installs this lives
+# outside sys.prefix and must be bind-mounted into bwrap sandboxes.
+_SUBSTRAT_SRC_DIR = Path(__file__).resolve().parent.parent
+
 _log = logging.getLogger(__name__)
 
 # -- Error codes ---------------------------------------------------------------
@@ -228,6 +232,9 @@ class Daemon:
         if sys.prefix != sys.base_prefix:
             base = Path(sys.base_prefix)
             py_binds.append(LinkSpec(base, base, "ro"))
+        # Editable installs: source tree lives outside sys.prefix.
+        if not _SUBSTRAT_SRC_DIR.is_relative_to(prefix):
+            py_binds.append(LinkSpec(_SUBSTRAT_SRC_DIR, _SUBSTRAT_SRC_DIR, "ro"))
 
         def wrapper(
             cmd: Sequence[str],
