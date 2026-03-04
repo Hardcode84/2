@@ -331,7 +331,7 @@ class CursorAgentProvider:
         self,
         tools: Sequence[ToolDef] = (),
         *,
-        use_mcp: bool = True,
+        use_mcp: bool = False,
     ) -> None:
         self._tools = tuple(tools)
         self._use_mcp = use_mcp

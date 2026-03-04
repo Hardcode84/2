@@ -22,8 +22,8 @@ from substrat.agent.node import AgentStateError
 from substrat.agent.tools import AGENT_TOOLS
 from substrat.model import CommandWrapper, LinkSpec
 from substrat.orchestrator import Orchestrator
+from substrat.provider import default_providers
 from substrat.provider.base import AgentProvider
-from substrat.provider.cursor_agent import CursorAgentProvider
 from substrat.scheduler import TurnScheduler
 from substrat.session.multiplexer import SessionMultiplexer
 from substrat.session.store import SessionStore
@@ -71,7 +71,7 @@ class Daemon:
         store = SessionStore(root / "agents")
         mux = SessionMultiplexer(store, max_slots=max_slots)
         if providers is None:
-            providers = {"cursor-agent": CursorAgentProvider(tools=_ALL_TOOLS)}
+            providers = default_providers(tools=_ALL_TOOLS)
         scheduler = TurnScheduler(providers, mux, store, log_root=root / "agents")
         self._ws_store = WorkspaceStore(root / "workspaces")
         ws_mapping = WorkspaceMapping()

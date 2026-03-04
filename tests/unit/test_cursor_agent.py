@@ -246,7 +246,7 @@ async def test_create_writes_mcp_config(
     """create() writes MCP config when both workspace and agent_id are given."""
     mock_exec.return_value = _mock_process(b"chat-id\n")
     aid = uuid4()
-    provider = CursorAgentProvider()
+    provider = CursorAgentProvider(use_mcp=True)
     await provider.create(
         model="m",
         system_prompt="p",
