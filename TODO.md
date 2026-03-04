@@ -95,6 +95,9 @@ Design: [docs/design/wake.md — Wake Failure Handling](docs/design/wake.md)
 - [ ] Sync message timeout: recipient crash leaves sender permanently stuck — partially addressed by wake failure → parent notification, but no timeout mechanism
 - [x] spawn_agent can't specify provider/model — children inherit parent's provider/model via closure
 
+## Agent Runtime
+- [ ] Child system prompt reinjection — parent tool to update child's instructions without restarting it; applied on next child turn; bare LLM providers edit history/context directly, agentic providers (cursor-agent) update the .mdc rules file and reapply on next context compaction (or force compaction)
+
 ## Messaging — Deferred
 - [x] Self-send gives confusing "cannot reach" error — validate_route rejects it implicitly, needs explicit guard or clear message
 - [ ] Agents cannot route messages to SYSTEM/USER recipients — sentinels not in tree, daemon boundary layer needs to handle this
