@@ -4,6 +4,7 @@
 
 """Turn scheduler — orchestrates session lifecycle and turn execution."""
 
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -163,6 +164,41 @@ class TurnScheduler:
             log.log("turn.complete", {"response": response})
 
         return response
+
+    async def stream_turn(
+        self, session_id: UUID, prompt: str
+    ) -> AsyncGenerator[str, None]:
+        """Acquire slot, stream prompt chunks, release. Mirrors send_turn."""
+        session = self._sessions[session_id]
+        provider = self._providers[session.provider_name]
+        log = self._logs.get(session_id)
+
+        if log is not None:
+            log.log("turn.start", {"prompt": prompt})
+
+        was_suspended = not self._mux.contains(session_id)
+        if was_suspended:
+            session = self._store.load(session_id)
+            self._sessions[session_id] = session
+
+        wc = self._wrap_commands.get(session_id)
+        ps = await self._mux.acquire(session, provider, log=log, wrap_command=wc)
+
+        if was_suspended and log is not None:
+            log.log(
+                "session.restored",
+                {"provider": session.provider_name, "model": session.model},
+            )
+
+        chunks: list[str] = []
+        try:
+            async for chunk in ps.send(prompt):
+                chunks.append(chunk)
+                yield chunk
+        finally:
+            await self._mux.release(session_id)
+            if log is not None:
+                log.log("turn.complete", {"response": "".join(chunks)})
 
     async def terminate_session(self, session_id: UUID) -> None:
         """Remove from mux, terminate state, persist, cleanup."""

@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -158,6 +158,24 @@ class Orchestrator:
         node = self._tree.get(agent_id)
         node.begin_turn()
         return await self._execute_turn(node, prompt)
+
+    async def stream_turn(
+        self, agent_id: UUID, prompt: str
+    ) -> AsyncGenerator[str, None]:
+        """Stream a turn's response chunks. Mirrors run_turn lifecycle."""
+        node = self._tree.get(agent_id)
+        node.begin_turn()
+        try:
+            async for chunk in self._scheduler.stream_turn(node.session_id, prompt):
+                yield chunk
+        except Exception:
+            if node.state == AgentState.BUSY:
+                node.end_turn()
+            await self._drain_deferred(node.id, wake_children=False)
+            raise
+        node.end_turn()
+        await self._drain_deferred(node.id)
+        self._rewake_if_pending(node.id)
 
     async def terminate_agent(self, agent_id: UUID) -> None:
         """Terminate a leaf agent and clean up all associated state."""

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -197,6 +198,11 @@ class Daemon:
             method = req.get("method", "")
             params = req.get("params", {})
 
+            # Streaming methods get the writer — they send multiple frames.
+            if method == "agent.stream":
+                await self._handle_agent_stream(params, writer)
+                return
+
             handler = self._handlers.get(method)
             if handler is None:
                 resp = _error_envelope(req_id, ERR_METHOD, f"unknown method: {method}")
@@ -219,6 +225,38 @@ class Daemon:
         finally:
             writer.close()
             await writer.wait_closed()
+
+    async def _handle_agent_stream(
+        self,
+        params: dict[str, Any],
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        """Stream response chunks as NDJSON frames."""
+        try:
+            agent_id = UUID(params["agent_id"])
+            message = params.get("message", "")
+            async for chunk in self._orch.stream_turn(agent_id, message):
+                frame = json.dumps({"chunk": chunk}).encode() + b"\n"
+                writer.write(frame)
+                await writer.drain()
+            writer.write(json.dumps({"done": True}).encode() + b"\n")
+            await writer.drain()
+        except (ConnectionResetError, BrokenPipeError):
+            _log.debug("client disconnected mid-stream")
+        except KeyError as exc:
+            resp = _error_envelope(None, ERR_NOT_FOUND, str(exc))
+            writer.write(json.dumps(resp).encode() + b"\n")
+            await writer.drain()
+        except (ValueError, TypeError, AgentStateError) as exc:
+            resp = _error_envelope(None, ERR_INVALID, str(exc))
+            writer.write(json.dumps(resp).encode() + b"\n")
+            await writer.drain()
+        except Exception as exc:
+            _log.exception("stream handler failed")
+            resp = _error_envelope(None, ERR_INTERNAL, str(exc))
+            with contextlib.suppress(ConnectionResetError, BrokenPipeError):
+                writer.write(json.dumps(resp).encode() + b"\n")
+                await writer.drain()
 
     # -- Wrap-command factory --------------------------------------------------
 

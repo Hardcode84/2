@@ -239,6 +239,75 @@ def test_agent_create_with_workspace() -> None:
     assert call_params["workspace"] == "my-ws"
 
 
+# -- agent attach --------------------------------------------------------------
+
+
+def test_agent_attach_streams_output() -> None:
+    """attach streams chunks and prints them."""
+    with (
+        patch("substrat.cli.app.sync_call") as mock_call,
+        patch("substrat.cli.app.sync_stream") as mock_stream,
+        patch("builtins.input", side_effect=["hello", ""]),
+    ):
+        mock_call.return_value = {
+            "name": "a",
+            "state": "idle",
+            "children": [],
+            "inbox": [],
+        }
+        mock_stream.return_value = iter(["Hello ", "world"])
+        result = runner.invoke(app, ["agent", "attach", "abc123"])
+    assert result.exit_code == 0
+    assert "Hello world" in result.output
+    assert "detached" in result.output
+
+
+def test_agent_attach_daemon_not_running() -> None:
+    """attach exits 1 when daemon is not running."""
+    with patch("substrat.cli.app.sync_call") as mock_call:
+        mock_call.side_effect = ConnectionRefusedError("nope")
+        result = runner.invoke(app, ["agent", "attach", "abc123"])
+    assert result.exit_code == 1
+    assert "daemon not running" in result.output
+
+
+def test_agent_attach_rpc_error_continues() -> None:
+    """attach prints RPC errors and continues the REPL loop."""
+    with (
+        patch("substrat.cli.app.sync_call") as mock_call,
+        patch("substrat.cli.app.sync_stream") as mock_stream,
+        patch("builtins.input", side_effect=["hello", ""]),
+    ):
+        mock_call.return_value = {
+            "name": "a",
+            "state": "idle",
+            "children": [],
+            "inbox": [],
+        }
+        mock_stream.side_effect = RpcError(1, "agent busy")
+        result = runner.invoke(app, ["agent", "attach", "abc123"])
+    assert result.exit_code == 0
+    assert "agent busy" in result.output
+    assert "detached" in result.output
+
+
+def test_agent_attach_ctrl_d() -> None:
+    """attach detaches on Ctrl-D (EOFError)."""
+    with (
+        patch("substrat.cli.app.sync_call") as mock_call,
+        patch("builtins.input", side_effect=EOFError),
+    ):
+        mock_call.return_value = {
+            "name": "a",
+            "state": "idle",
+            "children": [],
+            "inbox": [],
+        }
+        result = runner.invoke(app, ["agent", "attach", "abc123"])
+    assert result.exit_code == 0
+    assert "detached" in result.output
+
+
 # -- workspace commands --------------------------------------------------------
 
 

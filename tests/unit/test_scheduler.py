@@ -331,6 +331,74 @@ async def test_restore_logs_session_restored(
     assert restored[0]["data"]["model"] == "m"
 
 
+# -- stream_turn ---------------------------------------------------------------
+
+
+async def test_stream_turn_yields_chunks(
+    store: SessionStore,
+    mux: SessionMultiplexer,
+) -> None:
+    """stream_turn yields individual chunks from the provider."""
+    provider = FakeProvider(chunks=["one", " two", " three"])
+    sched = TurnScheduler(
+        providers={"fake": provider},
+        mux=mux,
+        store=store,
+    )
+    session = await sched.create_session("fake", "m", "p")
+    chunks = [c async for c in sched.stream_turn(session.id, "hello")]
+    assert chunks == ["one", " two", " three"]
+
+
+async def test_stream_turn_logs_events(
+    store: SessionStore,
+    mux: SessionMultiplexer,
+    tmp_path: Path,
+) -> None:
+    """stream_turn logs turn.start and turn.complete."""
+    log_root = tmp_path / "logs"
+    provider = FakeProvider(chunks=["hello ", "world"])
+    sched = TurnScheduler(
+        providers={"fake": provider},
+        mux=mux,
+        store=store,
+        log_root=log_root,
+    )
+    session = await sched.create_session("fake", "m", "p")
+    chunks = [c async for c in sched.stream_turn(session.id, "prompt")]
+    assert chunks == ["hello ", "world"]
+
+    log_file = log_root / session.id.hex / "events.jsonl"
+    events = [json.loads(line) for line in log_file.read_text().splitlines()]
+    event_names = [e["event"] for e in events]
+    assert "turn.start" in event_names
+    assert "turn.complete" in event_names
+    complete = next(e for e in events if e["event"] == "turn.complete")
+    assert complete["data"]["response"] == "hello world"
+
+
+async def test_stream_turn_releases_slot_on_error(
+    store: SessionStore,
+    mux: SessionMultiplexer,
+) -> None:
+    """stream_turn releases the mux slot even when send() raises."""
+    provider = FakeProvider()
+    provider._error_on_send = True
+    sched = TurnScheduler(
+        providers={"fake": provider},
+        mux=mux,
+        store=store,
+    )
+    session = await sched.create_session("fake", "m", "p")
+
+    with pytest.raises(RuntimeError, match="send failed"):
+        async for _chunk in sched.stream_turn(session.id, "hello"):
+            pass
+
+    # Slot released despite the error.
+    assert mux.contains(session.id)
+
+
 async def test_no_restore_event_on_cache_hit(
     store: SessionStore,
     tmp_path: Path,

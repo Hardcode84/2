@@ -22,6 +22,21 @@ substrat agent send <AGENT_ID> "What is the capital of Mongolia?"
 substrat agent send <AGENT_ID> "What did I just ask you about?"
 ```
 
+## Attach — interactive streaming REPL
+
+```bash
+substrat agent attach <AGENT_ID>
+# attached to <AGENT_ID> (empty line or Ctrl-D to detach)
+# > What is the capital of Mongolia?
+# The capital of Mongolia is Ulaanbaatar.
+# > And its population?
+# Approximately 1.5 million.
+# >
+# detached
+```
+
+Response chunks stream in real time. The agent stays alive after detaching.
+
 ## Inspect and clean up
 
 ```bash

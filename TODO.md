@@ -64,7 +64,7 @@ Design: [docs/design/wake.md — Wake Failure Handling](docs/design/wake.md)
 - [x] Typer app skeleton
 - [x] daemon start/stop/status
 - [x] agent create/list/send/inspect/terminate
-- [ ] agent attach (bidirectional streaming)
+- [x] agent attach (bidirectional streaming)
 - [ ] session list/suspend/resume/delete
 - [x] workspace create/delete/list/link/unlink/view/inspect
 

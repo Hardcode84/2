@@ -60,6 +60,7 @@ One connection per request. Each connection spawns an asyncio task.
 | `agent.send` | `agent_id`, `message` | `Orchestrator.run_turn()` |
 | `agent.inspect` | `agent_id` | Tree + inbox queries |
 | `agent.terminate` | `agent_id` | `Orchestrator.terminate_agent()` |
+| `agent.stream` | `agent_id`, `message` | `Orchestrator.stream_turn()` (NDJSON chunks) |
 | `tool.call` | `agent_id`, `tool`, `arguments` | `ToolHandler.<method>()` |
 
 Error codes: `ERR_NOT_FOUND=1`, `ERR_INVALID=2`, `ERR_INTERNAL=3`, `ERR_METHOD=4`.
@@ -79,6 +80,7 @@ substrat agent create [--provider cursor-agent] [--name <name>]
 substrat agent list
 substrat agent inspect <agent-id>
 substrat agent send <agent-id> <message>
+substrat agent attach <agent-id>
 substrat agent terminate <agent-id>
 
 substrat workspace create|list|delete|link|unlink|view|inspect
@@ -87,8 +89,23 @@ substrat workspace create|list|delete|link|unlink|view|inspect
 `agent create` is the primary entry point — creates a root agent and its
 backing session in one step.
 
-**Not yet implemented:** `agent attach` (bidirectional streaming REPL),
-`session list|suspend|resume|delete` (low-level session management).
+**Not yet implemented:** `session list|suspend|resume|delete` (low-level session management).
+
+### Streaming — `agent attach`
+
+Interactive REPL that streams response chunks in real time. Uses a per-turn
+UDS connection with NDJSON framing:
+
+```
+→ {"id":"req-1","method":"agent.stream","params":{"agent_id":"...","message":"..."}}\n
+← {"chunk":"Hello "}\n
+← {"chunk":"world"}\n
+← {"done":true}\n
+```
+
+Wire path: `CLI sync_stream()` → daemon `_handle_agent_stream()` →
+`Orchestrator.stream_turn()` → `TurnScheduler.stream_turn()` → provider
+`send()` generator. Empty line or Ctrl-D detaches (agent stays alive).
 
 ---
 

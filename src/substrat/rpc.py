@@ -10,6 +10,7 @@ import asyncio
 import itertools
 import json
 import socket
+from collections.abc import Iterator
 from typing import Any
 
 
@@ -57,6 +58,36 @@ def sync_call(sock_path: str, method: str, params: dict[str, Any]) -> dict[str, 
     finally:
         sock.close()
     return _parse_response(b"".join(chunks))
+
+
+def sync_stream(sock_path: str, method: str, params: dict[str, Any]) -> Iterator[str]:
+    """Synchronous streaming UDS client. Yields chunk strings."""
+    request = _make_request(method, params)
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.connect(sock_path)
+        sock.sendall(request)
+        sock.shutdown(socket.SHUT_WR)
+        buf = b""
+        while True:
+            data = sock.recv(4096)
+            if not data:
+                break
+            buf += data
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                if not line:
+                    continue
+                frame = json.loads(line)
+                if "error" in frame:
+                    err = frame["error"]
+                    raise RpcError(err["code"], err["message"])
+                if "done" in frame:
+                    return
+                if "chunk" in frame:
+                    yield frame["chunk"]
+    finally:
+        sock.close()
 
 
 async def async_call(

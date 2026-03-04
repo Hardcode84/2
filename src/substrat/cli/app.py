@@ -17,7 +17,7 @@ from typing import Any
 
 import typer
 
-from substrat.rpc import RpcError, sync_call
+from substrat.rpc import RpcError, sync_call, sync_stream
 
 app = typer.Typer(name="substrat", no_args_is_help=True)
 daemon_app = typer.Typer(help="Daemon lifecycle commands.")
@@ -347,6 +347,38 @@ def agent_inspect(
         typer.echo("inbox:")
         for m in inbox:
             typer.echo(f"  from={m['from']}  {m['text'][:80]}")
+
+
+@agent_app.command("attach")
+def agent_attach(
+    agent_id: str = typer.Argument(help="Agent UUID (hex)."),
+    root: Path = _ROOT_OPT,
+) -> None:
+    """Attach to an agent — interactive streaming REPL."""
+    # Verify agent exists.
+    _call(root, "agent.inspect", {"agent_id": agent_id})
+    sock = _sock_path(root)
+    typer.echo(f"attached to {agent_id} (empty line or Ctrl-D to detach)")
+    while True:
+        try:
+            prompt = input("> ")
+        except (EOFError, KeyboardInterrupt):
+            typer.echo("\ndetached")
+            return
+        if not prompt:
+            typer.echo("detached")
+            return
+        try:
+            for chunk in sync_stream(
+                sock, "agent.stream", {"agent_id": agent_id, "message": prompt}
+            ):
+                typer.echo(chunk, nl=False)
+            typer.echo()  # Newline after response.
+        except RpcError as exc:
+            typer.echo(f"\nerror: {exc.message}", err=True)
+        except OSError:
+            typer.echo("\nerror: daemon not running", err=True)
+            raise typer.Exit(1) from None
 
 
 @agent_app.command("terminate")
