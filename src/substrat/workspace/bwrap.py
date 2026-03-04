@@ -7,6 +7,7 @@
 import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 
 from substrat.workspace.model import LinkSpec, Workspace
 
@@ -32,16 +33,14 @@ def check_available() -> str | None:
         return None
     try:
         # Smoke-test real sandboxing, not just the binary.
+        # Bind linker paths so dynamically-linked /usr/bin/true can run.
+        probe_cmd = ["bwrap", "--unshare-pid", "--ro-bind", "/usr", "/usr"]
+        for lib in ("/lib", "/lib64"):
+            if Path(lib).is_dir():
+                probe_cmd += ["--ro-bind", lib, lib]
+        probe_cmd += ["--", "/usr/bin/true"]
         probe = subprocess.run(
-            [
-                "bwrap",
-                "--unshare-pid",
-                "--ro-bind",
-                "/usr",
-                "/usr",
-                "--",
-                "/usr/bin/true",
-            ],
+            probe_cmd,
             capture_output=True,
             timeout=5,
         )
