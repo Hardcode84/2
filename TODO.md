@@ -43,6 +43,14 @@
 - [x] daemon_dispatch() in mcp_server.py — UDS client that sends tool calls to daemon
 - [ ] .mdc rules bind-mount wiring — daemon generates per-agent rules, binds into workspace at bwrap time
 
+## Wake Failure Handling
+Design: [docs/design/wake.md — Wake Failure Handling](docs/design/wake.md)
+- [ ] Bug: `_process_wake` has no try/except around `_execute_turn` — one child crash kills the wake loop for all agents
+- [ ] Peek-then-drain: `_format_wake_prompt` uses `peek()`, drain via `collect()` only after turn succeeds — messages preserved on failure
+- [ ] Parent error notification: deliver `MessageKind.ERROR` to parent inbox on wake-turn failure, include exception + consumed message summaries
+- [ ] `poke` tool: re-wake child without sending a message — retries failed turn with original inbox contents
+- [ ] MCP catalog entry for `poke`
+
 ## Daemon — Bugs
 - [x] `tool.call` allows calling arbitrary ToolHandler methods via getattr — whitelisted against ALL_TOOLS names (6de69e8)
 - [x] `spawn_agent` param mismatch — MCP catalog and method now agree on `workspace` param (6de69e8)
@@ -84,7 +92,7 @@
 ## Design Gaps
 - [x] Stale provider blob — crash recovery design uses event log as source of truth, not provider_state blob
 - [ ] Broadcast completion signal: agent has no way to know all replies arrived
-- [ ] Sync message timeout: recipient crash leaves sender permanently stuck
+- [ ] Sync message timeout: recipient crash leaves sender permanently stuck — partially addressed by wake failure → parent notification, but no timeout mechanism
 - [x] spawn_agent can't specify provider/model — children inherit parent's provider/model via closure
 
 ## Messaging — Deferred

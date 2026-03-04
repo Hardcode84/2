@@ -186,6 +186,30 @@ The RESPONSE message fires auto-wake on the parent. Self-termination is
 deferred until the agent's current turn ends, following the same pattern as
 `spawn_agent`.
 
+### `poke`
+
+Re-wake a child agent without sending a message. Used after a child's
+wake-triggered turn crashes — the child's inbox still has its original
+messages (preserved by peek-then-drain), so poke retries the turn with
+the same prompt. From the child's perspective, the crash never happened.
+
+```
+Parameters:
+  agent_name: str       # Name of a direct child.
+
+Returns:
+  {"status": "poked", "agent_id": "uuid"}
+```
+
+Poke enqueues a wake notification. If the child is IDLE with pending
+messages, the wake loop picks it up and runs a turn. If the child is
+BUSY or has an empty inbox, the wake is silently skipped.
+
+Distinct from `send_message` because it adds nothing to the inbox.
+The child's prompt is identical to the failed attempt.
+
+See [wake.md — Wake Failure Handling](wake.md#wake-failure-handling).
+
 ### `list_workspaces`
 
 List visible workspaces (own, children's, parent's scopes).

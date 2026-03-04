@@ -34,13 +34,18 @@ ToolHandler._deliver(recipient_id, envelope)
            → guard: in tree? IDLE? inbox non-empty?
            → begin_turn() (IDLE → BUSY)
            → _format_wake_prompt()
-              → inbox.collect() (drain all)
-              → log message.delivered per envelope
+              → inbox.peek() (non-destructive)
               → format prompt string
-           → _execute_turn(node, prompt)
-              → scheduler.send_turn()
-              → end_turn() (BUSY → IDLE)
-              → _drain_deferred()
+           → try: _execute_turn(node, prompt)
+                → scheduler.send_turn()
+                → end_turn() (BUSY → IDLE)
+                → _drain_deferred()
+                → inbox.collect() + log message.delivered
+             except:
+                → end_turn() (BUSY → IDLE)
+                → deliver ERROR to parent inbox
+                → wake parent
+                → (messages stay in child inbox)
 ```
 
 The callback is synchronous — `_notify_wake` just does `put_nowait()`. No
@@ -159,7 +164,9 @@ The method handles:
 
 ## Prompt Format
 
-`_format_wake_prompt()` drains the inbox via `collect()` and builds a prompt.
+`_format_wake_prompt()` reads the inbox via `peek()` and builds a prompt.
+Drain (`collect()`) happens after the turn succeeds. See Wake Failure
+Handling below.
 
 **Single message:**
 ```
@@ -270,10 +277,122 @@ Child turn N:
 
 Parent wake:
   _process_wake(parent_id)
-    → inbox.collect() → RESPONSE envelope
+    → inbox.peek() → RESPONSE envelope
     → prompt: "Message from child:\ndone"
     → _execute_turn()
+    → inbox.collect()                  # Drain after success.
 ```
+
+---
+
+## Wake Failure Handling
+
+What happens when a wake-triggered turn crashes (provider exits non-zero,
+network timeout, OOM, etc.).
+
+### Bug: unhandled exception kills wake loop
+
+`_process_wake` has no try/except around `_execute_turn`. One child
+crashing during a wake kills the background task. All agents stop
+receiving wake-triggered turns. The system is silently hosed.
+
+Fix: wrap `_execute_turn` in try/except inside `_process_wake`.
+
+### Design: peek-then-drain
+
+Current `_format_wake_prompt` calls `inbox.collect()` — destructive.
+If the subsequent turn fails, messages are gone. The child never
+processed them, but they're no longer in the inbox.
+
+New behavior: build the prompt from `inbox.peek()`. Only `collect()`
+after the turn succeeds. On failure, messages stay in the inbox. The
+child is IDLE with a full inbox — the branch is "frozen."
+
+```
+_process_wake(agent_id)
+  → begin_turn()
+  → _format_wake_prompt()        # peek(), not collect().
+  → try: _execute_turn()
+        inbox.collect()          # Drain only on success.
+        log message.delivered
+    except: notify parent, leave inbox intact.
+```
+
+This means `message.delivered` events are logged after the turn, not
+before. Recovery replay still works — undelivered messages get
+re-injected, and the post-recovery wake scan picks them up.
+
+### Design: parent error notification
+
+On wake-turn failure, the orchestrator delivers an ERROR message to
+the parent's inbox. The parent wakes, reads the notification, and
+decides what to do.
+
+New enum value: `MessageKind.ERROR`.
+
+Error envelope payload includes:
+- Exception type and message.
+- Summary of consumed messages (the ones the child failed to process).
+
+The parent does not need to parse this — it's a human-readable
+description the LLM can act on. The parent can:
+
+1. **Poke** — retry the child's wake (messages are still in the inbox).
+2. **Terminate** — give up on the child.
+3. **Send new instructions** — adjust approach, then poke.
+4. **Do nothing** — branch stays frozen indefinitely.
+
+If the parent's turn also crashes processing the error notification,
+the same mechanism applies: grandparent gets notified, parent's inbox
+is preserved. Failures cascade upward, freezing branches, until
+someone doesn't crash. If a root agent crashes, the error surfaces
+to the daemon → CLI. The human operator retries.
+
+### Design: poke
+
+`poke(agent_name)` is a new tool that re-wakes a child without
+sending a message. From the child's perspective, the crash never
+happened — it wakes up, processes its original inbox, and continues.
+
+Implementation: resolve child name → `wake_callback(child_id)`.
+One line. No inbox mutation, no new message in the child's prompt.
+
+```
+Parameters:
+  agent_name: str       # Name of a direct child.
+
+Returns:
+  {"status": "poked", "agent_id": "uuid"}
+```
+
+Behavior by child state:
+
+| Child state              | Result                                    |
+|--------------------------|-------------------------------------------|
+| IDLE + messages in inbox | Re-wakes, retries the turn.               |
+| IDLE + empty inbox       | No-op (wake loop checks, skips).          |
+| BUSY                     | No-op (wake loop checks, skips).          |
+| Terminated / not found   | Error: child not found or not alive.      |
+
+Poke is distinct from `send_message` because it adds nothing to
+the inbox. The child's prompt is identical to the failed attempt.
+
+### Caveat: provider conversation history
+
+Peek-then-drain guarantees the orchestrator re-sends the same prompt
+on poke. But the provider's conversation context may contain a ghost
+of the failed attempt — e.g. cursor-agent with `--resume` might have
+the crashed turn's prompt in its session history even though no
+response was recorded.
+
+This is provider-specific and unavoidable without provider-level
+rollback (which none of the current providers support). In practice,
+the child agent sees its messages and processes them. If the provider
+retained the failed prompt, the agent might notice "I was asked this
+before" — that's acceptable.
+
+"Crash never happened" is the orchestrator's guarantee, not the
+provider's.
 
 ---
 
