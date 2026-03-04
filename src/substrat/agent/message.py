@@ -36,6 +36,16 @@ class MessageEnvelope:
     timestamp: str = field(default_factory=now_iso)
     recipient: UUID | None = None
     reply_to: UUID | None = None
-    kind: MessageKind = MessageKind.REQUEST
+    kind: MessageKind = MessageKind.NOTIFICATION
     payload: str = ""
     metadata: dict[str, str] = field(default_factory=dict)
+
+    # Kinds that require a recipient.
+    _DIRECTED_KINDS: frozenset[MessageKind] = frozenset(
+        {MessageKind.REQUEST, MessageKind.RESPONSE, MessageKind.ERROR}
+    )
+
+    def __post_init__(self) -> None:
+        if self.kind in self._DIRECTED_KINDS and self.recipient is None:
+            msg = f"{self.kind.value} envelope requires a recipient"
+            raise ValueError(msg)

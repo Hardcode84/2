@@ -58,7 +58,7 @@ def test_envelope_defaults() -> None:
     sender_id = uuid4()
     msg = MessageEnvelope(sender=sender_id)
     assert msg.sender == sender_id
-    assert msg.kind == MessageKind.REQUEST
+    assert msg.kind == MessageKind.NOTIFICATION
     assert msg.recipient is None
     assert msg.reply_to is None
     assert msg.payload == ""
@@ -66,6 +66,16 @@ def test_envelope_defaults() -> None:
     # Auto-generated fields.
     assert msg.id is not None
     assert msg.timestamp != ""
+
+
+def test_directed_envelope_requires_recipient() -> None:
+    """REQUEST, RESPONSE, ERROR envelopes must have a recipient."""
+    for kind in (MessageKind.REQUEST, MessageKind.RESPONSE, MessageKind.ERROR):
+        with pytest.raises(ValueError, match="requires a recipient"):
+            MessageEnvelope(sender=uuid4(), kind=kind, recipient=None)
+    # NOTIFICATION is fine without a recipient.
+    msg = MessageEnvelope(sender=uuid4(), kind=MessageKind.NOTIFICATION)
+    assert msg.recipient is None
 
 
 def test_envelope_explicit_fields() -> None:

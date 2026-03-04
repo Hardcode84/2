@@ -102,7 +102,7 @@ Design: [docs/design/wake.md — Wake Failure Handling](docs/design/wake.md)
 - [x] Self-send gives confusing "cannot reach" error — validate_route rejects it implicitly, needs explicit guard or clear message
 - [ ] Agents cannot route messages to SYSTEM/USER recipients — sentinels not in tree, daemon boundary layer needs to handle this
 - [x] Inbox.collect() non-atomic — add comment documenting single-threaded assumption (list + clear is two steps)
-- [ ] MessageEnvelope.recipient=None not validated for non-broadcast kinds — REQUEST/RESPONSE should require a recipient
+- [x] MessageEnvelope.recipient=None not validated for non-broadcast kinds — __post_init__ enforces recipient for REQUEST/RESPONSE/ERROR
 - [x] Mutable envelopes shared on broadcast — broadcast() creates fresh envelope per sibling, not shared
 - [ ] Root-to-root routing impossible — multiple roots can't communicate, intentional but needs mechanism if multi-root becomes real
 
