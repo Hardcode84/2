@@ -7,7 +7,7 @@
 - [x] Verify .cursor/rules/*.mdc loading in headless CLI mode inside bwrap — works, e2e test in test_cursor_rules_bwrap.py
 
 ## Session Layer
-- [x] Provider protocol (`provider/base.py`)
+- [x] Provider protocol (`provider/base.py`) — includes models() for model discovery, model param is str | None (provider chooses default)
 - [x] Session model (`session/model.py`)
 - [x] Session store — atomic_write persistence, startup recovery (ACTIVE → SUSPENDED)
 - [x] Session multiplexer — LRU slot management, acquire/release
@@ -146,13 +146,15 @@
 Code bugs that prevent the full stack from working end-to-end.
 - [x] `--approve-mcps` missing from CursorSession._build_cmd() — added when tools configured
 - [x] `workspace=Path("/tmp")` fallback in CursorAgentProvider.create() — now uses tempfile.mkdtemp(), cleaned up on stop()
+- [x] check_available() probe missed linker libs — /lib and /lib64 not bound, dynamically-linked /usr/bin/true failed inside sandbox (3b32c9f)
+- [x] bwrap test fixtures used unresolved tilde mount paths — Path("~/.local") doesn't expand, cursor-agent invisible inside sandbox (3b32c9f)
+- [x] CursorSession.send() swallowed stderr — non-zero exit with no output silently returned empty string (a2258e2)
 - [ ] .mdc rules bind-mount wiring — only matters for shared workspaces (multiple agents same workspace); single-agent-per-workspace works fine with current host-side writes
 - [x] Deferred spawn error recovery — do_spawn catches exceptions, removes orphaned child from tree/inbox/mapping
 
 ## E2E — Missing Integration Tests
-Every existing integration test exercises one half of the stack. No test bridges daemon + real provider.
 - [x] Daemon + real cursor-agent (no bwrap) — daemon.start, agent.create, agent.send with CursorAgentProvider, verify real response
-- [ ] Daemon + workspace + bwrap — workspace.create, agent.create(workspace=...), agent.send triggers bwrap sandbox
+- [x] Daemon + workspace + bwrap + external MCP — workspace.create, agent.create(workspace=...), cursor-agent calls MCP tool inside bwrap sandbox (test_daemon_mcp_e2e.py)
 - [ ] Daemon + bwrap + substrat MCP tools — agent inside bwrap discovers .cursor/mcp.json, MCP server connects back to daemon via SUBSTRAT_SOCKET, tool.call round-trip verified
 - [ ] Multi-agent live coordination — parent spawns child via MCP tool, child sends message back, parent auto-wakes, verify full roundtrip (daemon-layer coordination proven in test_tool_callbacks.py; MCP→daemon chain still untested)
 - [x] Session suspend/restore under daemon — daemon evicts session (LRU), next send restores from state blob, verify context survives
