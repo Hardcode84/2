@@ -324,6 +324,7 @@ class Daemon:
         pending = inbox.peek() if inbox is not None else []
         return {
             "agent_id": node.id.hex,
+            "session_id": node.session_id.hex,
             "name": node.name,
             "state": node.state.value,
             "children": [

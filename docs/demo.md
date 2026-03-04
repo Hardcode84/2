@@ -53,6 +53,29 @@ python -m substrat agent list
 python -m substrat agent terminate <BOSS_ID>
 ```
 
+## Watch live events
+
+In a separate terminal, tail all session event logs as they happen:
+
+```bash
+python -m substrat daemon watch
+```
+
+Then interact with agents in another terminal — watch prints each event
+as it lands:
+
+```
+14:02:31  a3f8  session.created  provider=cursor-agent model=claude-sonnet-4-5-20250514
+14:02:31  a3f8  turn.start  prompt=What is the capital of Mongolia?
+14:02:33  a3f8  turn.complete  response=The capital of Mongolia is Ulaanbaatar.
+```
+
+Filter to a single agent with `--agent-id`:
+
+```bash
+python -m substrat daemon watch --agent-id <AGENT_ID>
+```
+
 ## Stop the daemon
 
 ```bash

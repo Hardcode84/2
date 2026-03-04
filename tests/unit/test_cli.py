@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
-from substrat.cli.app import app
+from substrat.cli.app import _format_event, app
 from substrat.rpc import RpcError
 
 runner = CliRunner()
@@ -510,6 +510,63 @@ def test_workspace_inspect_with_links() -> None:
     assert "links:" in result.output
     assert "/a -> /b (ro)" in result.output
     assert "/c -> /d (rw)" in result.output
+
+
+# -- Bug regression tests ------------------------------------------------------
+
+
+# -- daemon watch / _format_event ----------------------------------------------
+
+
+def test_format_event_basic() -> None:
+    """_format_event produces HH:MM:SS sid_short event details."""
+    entry = {
+        "session_id": "a3f8bcd1234567890",
+        "ts": "2026-03-04T14:02:31.123456+00:00",
+        "event": "session.created",
+        "data": {"provider": "cursor-agent", "model": "claude-sonnet-4-5-20250514"},
+    }
+    line = _format_event(entry)
+    assert line.startswith("14:02:31")
+    assert "a3f8" in line
+    assert "session.created" in line
+    assert "provider=cursor-agent" in line
+    assert "model=claude-sonnet-4-5-20250514" in line
+
+
+def test_format_event_no_data() -> None:
+    """_format_event works without a data field."""
+    entry = {
+        "session_id": "deadbeef",
+        "ts": "2026-01-01T00:00:00+00:00",
+        "event": "bare.event",
+    }
+    line = _format_event(entry)
+    assert "00:00:00" in line
+    assert "dead" in line
+    assert "bare.event" in line
+
+
+def test_format_event_truncates_long_values() -> None:
+    """Long data values are truncated."""
+    entry = {
+        "session_id": "abcd",
+        "ts": "2026-01-01T12:00:00+00:00",
+        "event": "turn.complete",
+        "data": {"response": "x" * 200},
+    }
+    line = _format_event(entry)
+    assert "..." in line
+    # Should not contain the full 200-char string.
+    assert "x" * 200 not in line
+
+
+def test_format_event_missing_fields() -> None:
+    """Handles missing ts and session_id gracefully."""
+    entry = {"event": "mystery"}
+    line = _format_event(entry)
+    assert "????" in line
+    assert "mystery" in line
 
 
 # -- Bug regression tests ------------------------------------------------------

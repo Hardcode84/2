@@ -31,6 +31,35 @@ _DEFAULT_ROOT = Path(os.environ.get("SUBSTRAT_ROOT", Path.home() / ".substrat"))
 _ROOT_OPT = typer.Option(_DEFAULT_ROOT, help="Substrat root directory.")
 
 
+_TRUNCATE_LEN = 80
+
+
+def _format_event(entry: dict[str, Any]) -> str:
+    """Format a single event log entry as a human-readable line."""
+    ts = entry.get("ts", "")
+    # Extract HH:MM:SS from ISO timestamp.
+    if "T" in ts:
+        time_part = ts.split("T")[1]
+        hms = time_part[:8]
+    else:
+        hms = ts[:8] if len(ts) >= 8 else ts
+
+    sid = entry.get("session_id", "????")[:4]
+    event = entry.get("event", "?")
+
+    # Build key details from data dict.
+    data = entry.get("data", {})
+    details: list[str] = []
+    for k, v in data.items():
+        s = str(v)
+        if len(s) > _TRUNCATE_LEN:
+            s = s[:_TRUNCATE_LEN] + "..."
+        details.append(f"{k}={s}")
+    detail_str = "  " + " ".join(details) if details else ""
+
+    return f"{hms}  {sid}  {event}{detail_str}"
+
+
 def _sock_path(root: Path) -> str:
     return str(root / "daemon.sock")
 
@@ -169,6 +198,62 @@ def status(
         typer.echo(f"running (pid {pid})")
     else:
         typer.echo(f"running (pid {pid}, socket missing)")
+
+
+@daemon_app.command()
+def watch(
+    root: Path = _ROOT_OPT,
+    agent_id: str | None = typer.Option(None, help="Filter by agent UUID (hex)."),
+) -> None:
+    """Tail event logs from all sessions (or one agent)."""
+    agents_dir = root / "agents"
+
+    # If filtering by agent, resolve to its session directory.
+    session_filter: str | None = None
+    if agent_id is not None:
+        result = _call(root, "agent.inspect", {"agent_id": agent_id})
+        session_filter = result["session_id"]
+
+    # Track file sizes to detect new bytes.
+    offsets: dict[Path, int] = {}
+
+    def _scan_logs() -> list[Path]:
+        """Find all event log files, optionally filtered."""
+        if not agents_dir.exists():
+            return []
+        if session_filter is not None:
+            p = agents_dir / session_filter / "events.jsonl"
+            return [p] if p.exists() else []
+        return sorted(agents_dir.glob("*/events.jsonl"))
+
+    # Seed offsets at current end-of-file so we only print new events.
+    for path in _scan_logs():
+        offsets[path] = path.stat().st_size
+
+    try:
+        while True:
+            for path in _scan_logs():
+                if path not in offsets:
+                    offsets[path] = 0  # New session — show all events.
+                size = path.stat().st_size
+                if size <= offsets[path]:
+                    continue
+                # Read new bytes.
+                with path.open("rb") as f:
+                    f.seek(offsets[path])
+                    new_data = f.read()
+                offsets[path] = offsets[path] + len(new_data)
+                for line in new_data.split(b"\n"):
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    typer.echo(_format_event(entry))
+            time.sleep(0.3)
+    except KeyboardInterrupt:
+        pass
 
 
 # -- agent commands ------------------------------------------------------------
