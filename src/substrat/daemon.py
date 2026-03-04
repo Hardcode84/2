@@ -72,7 +72,13 @@ class Daemon:
         mux = SessionMultiplexer(store, max_slots=max_slots)
         if providers is None:
             providers = default_providers(tools=_ALL_TOOLS)
-        scheduler = TurnScheduler(providers, mux, store, log_root=root / "agents")
+        scheduler = TurnScheduler(
+            providers,
+            mux,
+            store,
+            log_root=root / "agents",
+            daemon_socket=str(self._sock_path),
+        )
         self._ws_store = WorkspaceStore(root / "workspaces")
         ws_mapping = WorkspaceMapping()
         self._orch = Orchestrator(

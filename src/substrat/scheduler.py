@@ -30,11 +30,13 @@ class TurnScheduler:
         mux: SessionMultiplexer,
         store: SessionStore,
         log_root: Path | None = None,
+        daemon_socket: str | None = None,
     ) -> None:
         self._providers = providers
         self._mux = mux
         self._store = store
         self._log_root = log_root
+        self._daemon_socket = daemon_socket
         self._sessions: dict[UUID, Session] = {}
         self._logs: dict[UUID, EventLog] = {}
         self._wrap_commands: dict[UUID, CommandWrapper | None] = {}
@@ -113,6 +115,7 @@ class TurnScheduler:
             workspace=workspace,
             wrap_command=wrap_command,
             agent_id=agent_id,
+            daemon_socket=self._daemon_socket,
         )
         await self._mux.put(session.id, ps)
         session.activate()

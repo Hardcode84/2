@@ -53,6 +53,7 @@ class AgentProvider(Protocol):
         workspace: Path | None = None,
         wrap_command: CommandWrapper | None = None,
         agent_id: UUID | None = None,
+        daemon_socket: str | None = None,
     ) -> ProviderSession:
         """Start a new conversation with the given model and instructions."""
         ...

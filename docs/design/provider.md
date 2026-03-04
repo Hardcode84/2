@@ -13,10 +13,15 @@ class ProviderSession(Protocol):
 
 class AgentProvider(Protocol):
     name: str
-    async def create(self, model: str, system_prompt: str,
-                     log: EventLog | None = None) -> ProviderSession: ...
+    async def create(self, model: str | None, system_prompt: str,
+                     log: EventLog | None = None, *,
+                     workspace: Path | None = None,
+                     wrap_command: CommandWrapper | None = None,
+                     agent_id: UUID | None = None,
+                     daemon_socket: str | None = None) -> ProviderSession: ...
     async def restore(self, state: bytes,
-                      log: EventLog | None = None) -> ProviderSession: ...
+                      log: EventLog | None = None, *,
+                      wrap_command: CommandWrapper | None = None) -> ProviderSession: ...
 ```
 
 `AgentProvider` is a factory. It knows how to create new sessions and restore
