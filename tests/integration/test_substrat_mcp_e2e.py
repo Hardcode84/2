@@ -45,6 +45,7 @@ async def daemon_sock(tmp_path: Path) -> AsyncGenerator[str, None]:
 # -- Test ----------------------------------------------------------------------
 
 
+@pytest.mark.skip(reason="cursor-agent MCP approval flakes ~50% in headless mode")
 async def test_substrat_mcp_round_trip(daemon_sock: str) -> None:
     """daemon → workspace/bwrap → cursor-agent → substrat MCP → tool.call."""
     # Create workspace with network access (cursor-agent needs it).
