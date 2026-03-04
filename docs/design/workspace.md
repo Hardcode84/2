@@ -217,8 +217,8 @@ enforced by the daemon:
 - Cannot delete a workspace while any assigned agent is alive (not terminated).
 
 On agent termination, the daemon removes the mapping entry. On daemon crash
-recovery, the mapping is reconstructed from agent records (each `AgentNode`
-stores its workspace scope and name).
+recovery, the mapping is reconstructed from `agent.created` event log entries
+(the `workspace` field logged at creation time).
 
 ## Agent-Facing Tools
 

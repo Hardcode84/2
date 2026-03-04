@@ -145,7 +145,6 @@ class AgentNode:
     parent_id: UUID | None = None  # None for root agents.
     children: list[UUID] = field(default_factory=list)
     instructions: str = ""
-    workspace: tuple[UUID, str] | None = None  # (scope, name). Daemon manages mapping.
     state: AgentState = AgentState.IDLE  # IDLE | BUSY | WAITING | TERMINATED.
     created_at: str = field(default_factory=now_iso)
 ```
