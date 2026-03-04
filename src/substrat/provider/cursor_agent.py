@@ -5,6 +5,7 @@
 """Cursor CLI agent provider — spawns cursor-agent as a subprocess."""
 
 import asyncio
+import contextlib
 import json
 import re
 import shutil
@@ -128,29 +129,35 @@ class CursorSession:
         )
         assert proc.stdout is not None
         chunks: list[str] = []
-        async for line in proc.stdout:
-            decoded = line.decode().strip()
-            if not decoded:
-                continue
-            try:
-                event = json.loads(decoded)
-            except json.JSONDecodeError:
-                continue
-            etype = event.get("type")
-            # Final assistant message (no timestamp_ms = not a partial delta).
-            if etype == "assistant" and "timestamp_ms" not in event:
-                for block in event.get("message", {}).get("content", []):
-                    if block.get("type") == "text":
-                        chunks.append(block["text"])
-                        yield block["text"]
-            # Error check.
-            if etype == "result" and event.get("is_error"):
-                raise RuntimeError(event.get("result", "cursor-agent error"))
-        await proc.wait()
-        if proc.returncode != 0 and not chunks:
-            assert proc.stderr is not None
-            stderr = (await proc.stderr.read()).decode().strip()
-            raise RuntimeError(f"cursor-agent exited {proc.returncode}: {stderr}")
+        try:
+            async for line in proc.stdout:
+                decoded = line.decode().strip()
+                if not decoded:
+                    continue
+                try:
+                    event = json.loads(decoded)
+                except json.JSONDecodeError:
+                    continue
+                etype = event.get("type")
+                # Final assistant message (no timestamp_ms = not a partial delta).
+                if etype == "assistant" and "timestamp_ms" not in event:
+                    for block in event.get("message", {}).get("content", []):
+                        if block.get("type") == "text":
+                            chunks.append(block["text"])
+                            yield block["text"]
+                # Error check.
+                if etype == "result" and event.get("is_error"):
+                    raise RuntimeError(event.get("result", "cursor-agent error"))
+            await proc.wait()
+            if proc.returncode != 0:
+                assert proc.stderr is not None
+                stderr = (await proc.stderr.read()).decode().strip()
+                raise RuntimeError(f"cursor-agent exited {proc.returncode}: {stderr}")
+        finally:
+            if proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                await proc.wait()
 
     @log_method(after=True)
     async def suspend(self) -> bytes:

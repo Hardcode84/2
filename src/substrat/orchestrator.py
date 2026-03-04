@@ -310,6 +310,7 @@ class Orchestrator:
         except Exception:
             if node.state == AgentState.BUSY:
                 node.end_turn()
+            await self._drain_deferred(node.id)
             raise
         node.end_turn()
         await self._drain_deferred(node.id)

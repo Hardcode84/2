@@ -296,6 +296,11 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
             pass
         # Agent must be back to IDLE despite the error.
         assert node.state == AgentState.IDLE
+        # Deferred work is drained on error too — update shadow state.
+        if agent in self.parents_needing_drain:
+            self.parents_needing_drain.discard(agent)
+            for child_id in self.children[agent]:
+                self.pending_children.discard(child_id)
 
     @precondition(lambda self: bool(self.alive))
     @rule(agent=agents)

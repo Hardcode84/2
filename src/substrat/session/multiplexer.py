@@ -4,6 +4,7 @@
 
 """Session multiplexer — fixed-slot LRU scheduler for provider sessions."""
 
+import logging
 from collections.abc import Callable
 from uuid import UUID
 
@@ -12,6 +13,8 @@ from substrat.model import CommandWrapper
 from substrat.provider.base import AgentProvider, ProviderSession
 from substrat.session.model import Session, SessionState
 from substrat.session.store import SessionStore
+
+_log = logging.getLogger(__name__)
 
 EvictCallback = Callable[[UUID, int], None]
 
@@ -97,17 +100,28 @@ class SessionMultiplexer:
         await self._evict(victim)
 
     async def _evict(self, session_id: UUID) -> None:
-        """Suspend provider, persist state via store, stop provider."""
-        ps = self._slots.pop(session_id)
+        """Suspend provider, persist state via store, stop provider.
+
+        Suspends while the session is still tracked so a failure leaves
+        state consistent. stop() is best-effort — failures are logged,
+        not propagated.
+        """
+        ps = self._slots[session_id]
+        state_blob = await ps.suspend()
+        del self._slots[session_id]
         self._lru.remove(session_id)
         self._held.discard(session_id)
-        state_blob = await ps.suspend()
         session = self._store.load(session_id)
         session.suspend(state_blob)
         self._store.save(session)
         if self.on_evict is not None:
             self.on_evict(session_id, len(state_blob))
-        await ps.stop()
+        try:
+            await ps.stop()
+        except Exception:
+            _log.warning(
+                "stop() failed during eviction of %s", session_id, exc_info=True
+            )
 
     def _touch(self, session_id: UUID) -> None:
         """Remove from LRU (session is being held)."""

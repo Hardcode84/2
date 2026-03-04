@@ -379,6 +379,59 @@ async def test_evict_callback_not_set(
     assert not mux.contains(s.id)
 
 
+# -- eviction failure handling -----------------------------------------------
+
+
+async def test_evict_suspend_failure_keeps_session(
+    mux: SessionMultiplexer, store: SessionStore
+) -> None:
+    """suspend() raises — session stays in slots, not orphaned."""
+    s = _make_session()
+    store.save(s)
+    s.activate()
+    store.save(s)
+
+    class FailSuspend(FakeProviderSession):
+        async def suspend(self) -> bytes:
+            raise RuntimeError("disk full")
+
+    ps = FailSuspend()
+    await mux.put(s.id, ps)
+    await mux.release(s.id)
+    # Fill the other slot so next put triggers eviction.
+    await mux.put(_make_session().id, FakeProviderSession())
+    # Force eviction — should propagate the suspend error.
+    with pytest.raises(RuntimeError, match="disk full"):
+        await mux.put(_make_session().id, FakeProviderSession())
+    # Session still tracked — not orphaned.
+    assert mux.contains(s.id)
+
+
+async def test_evict_stop_failure_still_persists(
+    mux: SessionMultiplexer, store: SessionStore
+) -> None:
+    """stop() raises — state is saved, session removed, error swallowed."""
+    s = _make_session()
+    store.save(s)
+    s.activate()
+    store.save(s)
+
+    class FailStop(FakeProviderSession):
+        async def stop(self) -> None:
+            raise RuntimeError("process already dead")
+
+    ps = FailStop(state=b"stop-fail-blob")
+    await mux.put(s.id, ps)
+    await mux.release(s.id)
+    # Eviction should succeed despite stop() failure.
+    await mux.put(_make_session().id, FakeProviderSession())
+    await mux.put(_make_session().id, FakeProviderSession())
+    assert not mux.contains(s.id)
+    loaded = store.load(s.id)
+    assert loaded.state == SessionState.SUSPENDED
+    assert loaded.provider_state == b"stop-fail-blob"
+
+
 async def test_acquire_passes_wrap_command_to_restore(
     mux: SessionMultiplexer,
     store: SessionStore,
