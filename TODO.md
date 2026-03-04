@@ -168,7 +168,9 @@ See `tests/stress/test_orchestrator_fuzz.py`. ChaosProvider + ChaosProviderSessi
 
 ## E2E — Blockers
 Code bugs that prevent the full stack from working end-to-end.
-- [x] `--approve-mcps` missing from CursorSession._build_cmd() — added when tools configured
+- [x] `--approve-mcps` missing from CursorSession._build_cmd() — now unconditional
+- [x] `.workspace-trusted` marker — cursor-agent gates MCP calls behind workspace trust in headless mode
+- [ ] cursor-agent MCP approval still flaky (~50%) despite --approve-mcps + .workspace-trusted — fallback plan: drop MCP entirely, have cursor-agent output structured JSON tool calls parsed from stream-json output
 - [x] `workspace=Path("/tmp")` fallback in CursorAgentProvider.create() — now uses tempfile.mkdtemp(), cleaned up on stop()
 - [x] check_available() probe missed linker libs — /lib and /lib64 not bound, dynamically-linked /usr/bin/true failed inside sandbox (3b32c9f)
 - [x] bwrap test fixtures used unresolved tilde mount paths — Path("~/.local") doesn't expand, cursor-agent invisible inside sandbox (3b32c9f)
@@ -179,7 +181,7 @@ Code bugs that prevent the full stack from working end-to-end.
 ## E2E — Missing Integration Tests
 - [x] Daemon + real cursor-agent (no bwrap) — daemon.start, agent.create, agent.send with CursorAgentProvider, verify real response
 - [x] Daemon + workspace + bwrap + external MCP — workspace.create, agent.create(workspace=...), cursor-agent calls MCP tool inside bwrap sandbox (test_daemon_mcp_e2e.py)
-- [ ] Daemon + bwrap + substrat MCP tools — agent inside bwrap discovers .cursor/mcp.json, MCP server connects back to daemon via SUBSTRAT_SOCKET, tool.call round-trip verified
+- [x] Daemon + bwrap + substrat MCP tools — agent inside bwrap discovers .cursor/mcp.json, MCP server connects back to daemon via SUBSTRAT_SOCKET, tool.call round-trip verified (test_substrat_mcp_e2e.py)
 - [ ] Multi-agent live coordination — parent spawns child via MCP tool, child sends message back, parent auto-wakes, verify full roundtrip (daemon-layer coordination proven in test_tool_callbacks.py; MCP→daemon chain still untested)
 - [x] Session suspend/restore under daemon — daemon evicts session (LRU), next send restores from state blob, verify context survives
 
