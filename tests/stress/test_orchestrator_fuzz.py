@@ -303,6 +303,7 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         assert node.state == AgentState.IDLE
         self._shadow_drain(agent)
         self._run(self._drain_wakes())
+        self._shadow_drain_all()
 
     @precondition(lambda self: bool(self.alive))
     @rule(agent=agents)
@@ -375,6 +376,7 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         result = handler.send_message(child_node.name, "hello")
         assert result.get("status") == "sent"
         self._run(self._drain_wakes())
+        self._shadow_drain_all()
 
     @precondition(lambda self: bool(self.alive))
     @rule(agent=agents)
@@ -387,6 +389,7 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         # Either succeeds (has siblings) or returns error (no siblings/root).
         assert "status" in result or "error" in result
         self._run(self._drain_wakes())
+        self._shadow_drain_all()
 
     @precondition(lambda self: bool(self.alive))
     @rule(agent=agents)
@@ -424,6 +427,7 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
             kids.discard(agent)
         del self.children[agent]
         self._run(self._drain_wakes())
+        self._shadow_drain_all()
 
     @precondition(lambda self: bool(self.alive))
     @rule(agent=agents, data=st.data())
@@ -442,6 +446,7 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         result = handler.poke(child_node.name)
         assert result["status"] == "poked"
         self._run(self._drain_wakes())
+        self._shadow_drain_all()
 
     # -- Wake helpers ------------------------------------------------------
 
@@ -488,6 +493,13 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
                 self.children[agent].discard(child_id)
                 self.chaos_agents.discard(child_id)
                 del self.children[child_id]
+
+    def _shadow_drain_all(self) -> None:
+        """Reconcile parents whose deferred work was drained by wake turns."""
+        for agent in list(self.parents_needing_drain):
+            handler = self.orch._handlers.get(agent)
+            if handler is not None and not handler._deferred:
+                self._shadow_drain(agent)
 
     # -- Invariants --------------------------------------------------------
 
