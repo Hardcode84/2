@@ -30,6 +30,7 @@ async def daemon_sock(tmp_path: Path) -> AsyncGenerator[str, None]:
         tmp_path,
         default_provider="fake",
         default_model="test-model",
+        max_slots=4,
         providers={"fake": provider},
     )
     await daemon.start()
@@ -191,6 +192,7 @@ async def test_recovery(tmp_path: Path) -> None:
         tmp_path,
         default_provider="fake",
         default_model="test-model",
+        max_slots=4,
         providers=providers,
     )
     await d1.start()
@@ -211,6 +213,7 @@ async def test_recovery(tmp_path: Path) -> None:
         tmp_path,
         default_provider="fake",
         default_model="test-model",
+        max_slots=4,
         providers=providers,
     )
     await d2.start()

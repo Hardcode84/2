@@ -97,7 +97,12 @@ def start(
     if foreground:
         from substrat.daemon import Daemon
 
-        daemon = Daemon(root, default_model=model, max_slots=max_slots)
+        daemon = Daemon(
+            root,
+            default_provider="cursor-agent",
+            default_model=model,
+            max_slots=max_slots,
+        )
         from substrat.daemon import _run
 
         asyncio.run(_run(daemon))

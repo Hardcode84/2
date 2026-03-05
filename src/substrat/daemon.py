@@ -59,9 +59,9 @@ class Daemon:
         self,
         root: Path,
         *,
-        default_provider: str = "cursor-agent",
+        default_provider: str,
         default_model: str | None = None,
-        max_slots: int = 4,
+        max_slots: int,
         providers: dict[str, AgentProvider] | None = None,
     ) -> None:
         self._root = root
@@ -545,6 +545,7 @@ def main() -> None:
 
     daemon = Daemon(
         args.root,
+        default_provider="cursor-agent",
         default_model=args.model,
         max_slots=args.max_slots,
     )

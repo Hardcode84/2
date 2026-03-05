@@ -36,7 +36,7 @@ if check_available() is None:
 @pytest.fixture()
 async def daemon_sock(tmp_path: Path) -> AsyncGenerator[str, None]:
     """Start a real daemon, yield socket path."""
-    daemon = Daemon(tmp_path)
+    daemon = Daemon(tmp_path, default_provider="cursor-agent", max_slots=4)
     await daemon.start()
     yield str(daemon.socket_path)
     await daemon.stop()

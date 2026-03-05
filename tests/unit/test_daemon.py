@@ -33,6 +33,7 @@ def daemon(tmp_path: Path, provider: FakeProvider) -> Daemon:
         tmp_path,
         default_provider="fake",
         default_model="test-model",
+        max_slots=4,
         providers={"fake": provider},
     )
 
@@ -251,7 +252,7 @@ async def test_stale_socket_cleanup(tmp_path: Path, provider: FakeProvider) -> N
     sock.write_text("stale")
     pid.write_text("999999999")  # Very unlikely to be a real PID.
 
-    d = Daemon(root, providers={"fake": provider}, default_provider="fake")
+    d = Daemon(root, providers={"fake": provider}, default_provider="fake", max_slots=4)
     await d.start()
     try:
         assert d.socket_path.exists()
@@ -261,10 +262,14 @@ async def test_stale_socket_cleanup(tmp_path: Path, provider: FakeProvider) -> N
 
 async def test_already_running_raises(tmp_path: Path, provider: FakeProvider) -> None:
     """Starting a daemon when one is already running raises RuntimeError."""
-    d1 = Daemon(tmp_path, providers={"fake": provider}, default_provider="fake")
+    d1 = Daemon(
+        tmp_path, providers={"fake": provider}, default_provider="fake", max_slots=4
+    )
     await d1.start()
     try:
-        d2 = Daemon(tmp_path, providers={"fake": provider}, default_provider="fake")
+        d2 = Daemon(
+            tmp_path, providers={"fake": provider}, default_provider="fake", max_slots=4
+        )
         with pytest.raises(RuntimeError, match="already running"):
             await d2.start()
     finally:
@@ -338,7 +343,7 @@ async def test_cleanup_stale_permission_error(
     pid_file = root / "daemon.pid"
     pid_file.write_text("12345")
 
-    d = Daemon(root, providers={"fake": provider}, default_provider="fake")
+    d = Daemon(root, providers={"fake": provider}, default_provider="fake", max_slots=4)
     with (
         patch.object(os, "kill", side_effect=PermissionError("not yours")),
         pytest.raises(RuntimeError, match="already running"),
@@ -392,7 +397,9 @@ def test_make_wrap_command_produces_bwrap(
     tmp_path: Path, provider: FakeProvider
 ) -> None:
     """_make_wrap_command closure produces valid bwrap argv."""
-    d = Daemon(tmp_path, providers={"fake": provider}, default_provider="fake")
+    d = Daemon(
+        tmp_path, providers={"fake": provider}, default_provider="fake", max_slots=4
+    )
     scope = uuid4()
     ws = Workspace(
         name="test",
@@ -424,7 +431,9 @@ def test_make_wrap_command_merges_extra_binds(
     tmp_path: Path, provider: FakeProvider
 ) -> None:
     """Extra binds from caller are included in the bwrap command."""
-    d = Daemon(tmp_path, providers={"fake": provider}, default_provider="fake")
+    d = Daemon(
+        tmp_path, providers={"fake": provider}, default_provider="fake", max_slots=4
+    )
     scope = uuid4()
     ws = Workspace(
         name="t",

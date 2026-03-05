@@ -35,6 +35,7 @@ async def scripted_env(
         tmp_path,
         default_provider="scripted",
         default_model="test-model",
+        max_slots=4,
         providers={"scripted": provider},
     )
     await daemon.start()

@@ -23,6 +23,7 @@ If docs disagree, `substrat.md` wins.
 - Do not invent new layers. Three is already too many.
 - Sessions know nothing about trees. Trees know nothing about workspaces. Keep it that way. If you need to break a layer boundary, think again — you don't.
 - Simplicity over features. If it works without the new thing, don't add the new thing. Fight scope creep like it owes you money.
+- Policy defaults (specific numbers, provider names, limits) belong at the CLI/entry-point boundary, not in library constructors. Library code takes required params; the CLI supplies the values.
 - `README.md` is not documentation. Do not update it with project info. It is perfect as it is.
 
 ## Tone
