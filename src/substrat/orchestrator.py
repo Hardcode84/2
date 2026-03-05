@@ -536,11 +536,21 @@ class Orchestrator:
                 async def timer() -> None:
                     try:
                         await asyncio.sleep(timeout)
-                        self._deliver_reminder(agent_id, reason, reminder_id)
+                        self._deliver_reminder(
+                            agent_id,
+                            reason,
+                            reminder_id,
+                            repeating=every is not None,
+                        )
                         if every is not None:
                             while True:
                                 await asyncio.sleep(every)
-                                self._deliver_reminder(agent_id, reason, reminder_id)
+                                self._deliver_reminder(
+                                    agent_id,
+                                    reason,
+                                    reminder_id,
+                                    repeating=True,
+                                )
                     except asyncio.CancelledError:
                         pass
                     finally:
@@ -571,15 +581,25 @@ class Orchestrator:
 
         return callback
 
-    def _deliver_reminder(self, agent_id: UUID, reason: str, reminder_id: UUID) -> None:
+    def _deliver_reminder(
+        self,
+        agent_id: UUID,
+        reason: str,
+        reminder_id: UUID,
+        *,
+        repeating: bool = False,
+    ) -> None:
         """Deliver a reminder NOTIFICATION to the agent's inbox."""
         if agent_id not in self._tree:
             return
+        payload = f"Reminder: {reason}"
+        if repeating:
+            payload += f'\nTo cancel: cancel_reminder("{reminder_id.hex}")'
         envelope = MessageEnvelope(
             sender=SYSTEM,
             recipient=agent_id,
             kind=MessageKind.NOTIFICATION,
-            payload=f"Reminder: {reason}",
+            payload=payload,
             metadata={"reminder_id": reminder_id.hex},
         )
         inbox = self._inboxes.get(agent_id)

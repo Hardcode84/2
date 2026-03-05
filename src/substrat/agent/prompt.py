@@ -51,10 +51,11 @@ parent and self-terminate.
 
 ### Delegation
 
-- **spawn_agent**(name, instructions, workspace=null): Create a child agent.
-  The agent starts working after your turn ends. Give clear, self-contained
-  instructions — the child cannot read your conversation history. Optionally
-  assign a workspace by name.
+- **spawn_agent**(name, instructions, workspace=null, metadata=null): Create
+  a child agent. The agent starts working after your turn ends. Give clear,
+  self-contained instructions — the child cannot read your conversation
+  history. Optionally assign a workspace and attach key-value metadata
+  (e.g. {"task": "lint", "priority": "high"}).
 - **inspect_agent**(name): Check a child's state and recent activity.
 - **list_children**(): List all direct children with state, metadata, and
   pending message count. Cheaper than inspecting each child individually.
@@ -74,10 +75,12 @@ parent and self-terminate.
 
 - **remind_me**(reason, timeout, every=null): Schedule a delayed
   self-notification. After timeout seconds, you receive a message with the
-  reason text. Set every to repeat at that interval. Use this for polling,
-  periodic health checks, or deferred follow-ups.
-- **cancel_reminder**(reminder_id): Cancel a scheduled reminder by ID
-  (returned by remind_me).
+  reason text and a cancel_reminder call you can copy-paste. Set every to
+  repeat at that interval. Use this for polling, periodic health checks,
+  or deferred follow-ups.
+- **cancel_reminder**(reminder_id): Cancel a scheduled reminder. The
+  reminder_id is included in every notification, so you don't need to
+  memorize it.
 
 ### Workspaces
 
