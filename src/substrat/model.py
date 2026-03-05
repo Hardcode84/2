@@ -29,6 +29,11 @@ def sentinel_name(agent_id: UUID) -> str | None:
     return _SENTINEL_NAMES.get(agent_id)
 
 
+def tool_error(message: str) -> dict[str, str]:
+    """Standard error dict returned by tool handler methods."""
+    return {"error": message}
+
+
 # Sentinel for "no default value" in ToolParam.
 _MISSING: Any = object()
 

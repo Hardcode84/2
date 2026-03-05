@@ -23,7 +23,7 @@ from substrat.agent.message import (
 from substrat.agent.node import AgentNode
 from substrat.agent.router import RoutingError, resolve_broadcast, validate_route
 from substrat.agent.tree import AgentTree
-from substrat.model import ToolDef, ToolParam, sentinel_name
+from substrat.model import ToolDef, ToolParam, sentinel_name, tool_error
 
 # -- Substrat agent tool catalog -----------------------------------------
 
@@ -173,11 +173,11 @@ class ToolHandler:
         try:
             target = self._resolve_name(recipient)
         except ToolError as exc:
-            return {"error": str(exc)}
+            return tool_error(str(exc))
         try:
             validate_route(self._tree, self._caller_id, target.id)
         except RoutingError as exc:
-            return {"error": str(exc)}
+            return tool_error(str(exc))
         envelope = MessageEnvelope(
             sender=self._caller_id,
             recipient=target.id,
@@ -197,7 +197,7 @@ class ToolHandler:
         try:
             sibling_ids = resolve_broadcast(self._tree, self._caller_id)
         except RoutingError as exc:
-            return {"error": str(exc)}
+            return tool_error(str(exc))
         broadcast_id = uuid4()
         for sid in sibling_ids:
             envelope = MessageEnvelope(
@@ -234,13 +234,13 @@ class ToolHandler:
             try:
                 sender_id = self._resolve_name(sender).id
             except ToolError as exc:
-                return {"error": str(exc)}
+                return tool_error(str(exc))
         kind_enum: MessageKind | None = None
         if kind is not None:
             try:
                 kind_enum = MessageKind(kind)
             except ValueError:
-                return {"error": f"unknown message kind: {kind!r}"}
+                return tool_error(f"unknown message kind: {kind!r}")
         messages = inbox.collect(sender=sender_id, kind=kind_enum)
         for m in messages:
             self._log_event(
@@ -271,11 +271,11 @@ class ToolHandler:
         ws_key: tuple[UUID, str] | None = None
         if workspace is not None:
             if self._validate_ws_ref is None:
-                return {"error": "workspace tools not available"}
+                return tool_error("workspace tools not available")
             try:
                 ws_key = self._validate_ws_ref(workspace)
             except (ValueError, KeyError) as exc:
-                return {"error": str(exc)}
+                return tool_error(str(exc))
 
         child = AgentNode(
             session_id=uuid4(),
@@ -286,7 +286,7 @@ class ToolHandler:
         try:
             self._tree.add(child)
         except ValueError as exc:
-            return {"error": str(exc)}
+            return tool_error(str(exc))
         # Eager inbox so messages sent before provider starts are queued.
         self._inboxes[child.id] = Inbox()
         if self._spawn_callback is not None:
@@ -305,7 +305,7 @@ class ToolHandler:
         try:
             child = self._resolve_child_name(name)
         except ToolError as exc:
-            return {"error": str(exc)}
+            return tool_error(str(exc))
         inbox = self._inboxes.get(child.id)
         recent = inbox.peek() if inbox is not None else []
         return {
@@ -327,9 +327,9 @@ class ToolHandler:
         """
         node = self._tree.get(self._caller_id)
         if node.parent_id is None:
-            return {"error": "root agent cannot complete — no parent"}
+            return tool_error("root agent cannot complete — no parent")
         if node.children:
-            return {"error": "agent has children; terminate them first"}
+            return tool_error("agent has children; terminate them first")
         # Send RESPONSE to parent.
         envelope = MessageEnvelope(
             sender=self._caller_id,
@@ -355,7 +355,7 @@ class ToolHandler:
         try:
             child = self._resolve_child_name(agent_name)
         except ToolError as exc:
-            return {"error": str(exc)}
+            return tool_error(str(exc))
         if self._wake_callback is not None:
             self._wake_callback(child.id)
         return {"status": "poked", "agent_id": str(child.id)}
@@ -369,11 +369,11 @@ class ToolHandler:
     ) -> dict[str, Any]:
         """Schedule a delayed self-notification."""
         if self._remind_callback is None:
-            return {"error": "reminder tools not available"}
+            return tool_error("reminder tools not available")
         if timeout <= 0:
-            return {"error": "timeout must be positive"}
+            return tool_error("timeout must be positive")
         if every is not None and every <= 0:
-            return {"error": "every must be positive"}
+            return tool_error("every must be positive")
         reminder_id, deferred = self._remind_callback(reason, timeout, every)
         self._deferred.append(deferred)
         return {"status": "scheduled", "reminder_id": str(reminder_id)}
@@ -381,14 +381,14 @@ class ToolHandler:
     def cancel_reminder(self, reminder_id: str) -> dict[str, Any]:
         """Cancel a previously scheduled reminder."""
         if self._cancel_reminder_callback is None:
-            return {"error": "reminder tools not available"}
+            return tool_error("reminder tools not available")
         try:
             rid = UUID(reminder_id)
         except ValueError:
-            return {"error": f"invalid reminder_id: {reminder_id!r}"}
+            return tool_error(f"invalid reminder_id: {reminder_id!r}")
         if self._cancel_reminder_callback(rid):
             return {"status": "cancelled", "reminder_id": reminder_id}
-        return {"error": f"unknown or already-fired reminder: {reminder_id}"}
+        return tool_error(f"unknown or already-fired reminder: {reminder_id}")
 
     def drain_deferred(self) -> list[DeferredWork]:
         """Return and clear accumulated deferred callbacks."""

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
 
-from substrat.model import ToolDef, ToolParam
+from substrat.model import ToolDef, ToolParam, tool_error
 from substrat.workspace.mapping import WorkspaceMapping
 from substrat.workspace.model import LinkSpec, Workspace
 from substrat.workspace.resolve import (
@@ -152,11 +152,11 @@ class WorkspaceToolHandler:
         try:
             validate_name(name)
         except ValueError as exc:
-            return {"error": str(exc)}
+            return tool_error(str(exc))
         parent_id, children, child_lookup = self._resolve_ctx()
         scope = self._caller_id
         if self._store.exists(scope, name):
-            return {"error": f"workspace {name!r} already exists in own scope"}
+            return tool_error(f"workspace {name!r} already exists in own scope")
         links: list[LinkSpec] = []
         if view_of is not None:
             try:
@@ -167,14 +167,14 @@ class WorkspaceToolHandler:
                     child_lookup=child_lookup,
                 )
             except (ValueError, KeyError) as exc:
-                return {"error": str(exc)}
+                return tool_error(str(exc))
             vis = visible_scopes(self._caller_id, children, parent_id)
             if src_scope not in vis:
-                return {"error": f"workspace {view_of!r} not visible"}
+                return tool_error(f"workspace {view_of!r} not visible")
             try:
                 src_ws = self._store.load(src_scope, src_name)
             except FileNotFoundError:
-                return {"error": f"workspace {view_of!r} not found"}
+                return tool_error(f"workspace {view_of!r} not found")
             host_path = src_ws.root_path / subdir
             links.append(LinkSpec(host_path=host_path, mount_path=Path("."), mode=mode))
         ws_dir = self._store.workspace_dir(scope, name) / "root"
@@ -202,13 +202,13 @@ class WorkspaceToolHandler:
                 child_lookup=child_lookup,
             )
         except (ValueError, KeyError) as exc:
-            return {"error": str(exc)}
+            return tool_error(str(exc))
         _, children, _ = self._resolve_ctx()
         mut = mutable_scopes(self._caller_id, children)
         if scope not in mut:
-            return {"error": f"workspace {name!r} is not in a mutable scope"}
+            return tool_error(f"workspace {name!r} is not in a mutable scope")
         if not self._store.exists(scope, local_name):
-            return {"error": f"workspace {name!r} not found"}
+            return tool_error(f"workspace {name!r} not found")
         # Collect the full view tree (transitive views).
         views = view_tree(scope, local_name, self._store)
         # Check agents on root + all views before deleting anything.
@@ -217,9 +217,9 @@ class WorkspaceToolHandler:
             agents = self._mapping.agents_in(s, n)
             if agents:
                 label = f"{s.hex[:8]}/{n}" if (s, n) != (scope, local_name) else name
-                return {
-                    "error": f"workspace {label!r} has {len(agents)} assigned agent(s)"
-                }
+                return tool_error(
+                    f"workspace {label!r} has {len(agents)} assigned agent(s)"
+                )
         # Delete views first (leaves), then root.
         for v in reversed(views):
             self._store.delete(v.scope, v.name)
@@ -239,11 +239,11 @@ class WorkspaceToolHandler:
         # Caller must have a workspace assigned.
         caller_ws_key = self._mapping.get(self._caller_id)
         if caller_ws_key is None:
-            return {"error": "caller has no workspace assigned"}
+            return tool_error("caller has no workspace assigned")
         caller_ws = self._store.load(*caller_ws_key)
         host_path = caller_ws.root_path / source
         if not host_path.exists():
-            return {"error": f"source path {source!r} does not exist"}
+            return tool_error(f"source path {source!r} does not exist")
         # Resolve target workspace.
         try:
             scope, local_name = resolve(
@@ -253,14 +253,14 @@ class WorkspaceToolHandler:
                 child_lookup=child_lookup,
             )
         except (ValueError, KeyError) as exc:
-            return {"error": str(exc)}
+            return tool_error(str(exc))
         mut = mutable_scopes(self._caller_id, children)
         if scope not in mut:
-            return {"error": f"workspace {workspace!r} is not in a mutable scope"}
+            return tool_error(f"workspace {workspace!r} is not in a mutable scope")
         try:
             target_ws = self._store.load(scope, local_name)
         except FileNotFoundError:
-            return {"error": f"workspace {workspace!r} not found"}
+            return tool_error(f"workspace {workspace!r} not found")
         target_ws.links.append(
             LinkSpec(host_path=host_path, mount_path=Path(target), mode=mode)
         )
@@ -278,21 +278,21 @@ class WorkspaceToolHandler:
                 child_lookup=child_lookup,
             )
         except (ValueError, KeyError) as exc:
-            return {"error": str(exc)}
+            return tool_error(str(exc))
         mut = mutable_scopes(self._caller_id, children)
         if scope not in mut:
-            return {"error": f"workspace {workspace!r} is not in a mutable scope"}
+            return tool_error(f"workspace {workspace!r} is not in a mutable scope")
         try:
             ws = self._store.load(scope, local_name)
         except FileNotFoundError:
-            return {"error": f"workspace {workspace!r} not found"}
+            return tool_error(f"workspace {workspace!r} not found")
         mount = Path(target)
         for i, link in enumerate(ws.links):
             if link.mount_path == mount:
                 ws.links.pop(i)
                 self._store.save(ws)
                 return {"status": "unlinked"}
-        return {"error": f"no link at {target!r}"}
+        return tool_error(f"no link at {target!r}")
 
     def validate_ref(self, ref: str) -> tuple[UUID, str]:
         """Resolve a workspace ref, check visibility + existence.
