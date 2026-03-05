@@ -188,7 +188,7 @@ Code bugs that prevent the full stack from working end-to-end.
 ## Task Coordination
 Tasks are files in shared workspaces, not a new abstraction. Completion is a message. Wakeup is inbox delivery. Taskwarrior available in sandbox — agents use it directly via CLI, no wrapper needed. Parent and child share a task dir via workspace links, coordinate through `task add`/`task done`. Prompt convention, not infrastructure.
 - [x] `complete(result)` tool — sugar for "message parent + terminate self"
-- [ ] `remind_me(reason, timeout, every=None)` tool — delayed self-message delivery; one-shot or repeating; cancelable
+- [x] `remind_me(reason, timeout, every=None)` + `cancel_reminder(reminder_id)` tools — delayed self-message delivery; one-shot or repeating; cancelable
 - [x] Auto-wake on inbox delivery — orchestrator fires agent turn when inbox gets a message (ca9176d..a996152)
 - [x] `check_inbox` filtering — by sender, message kind
 

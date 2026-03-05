@@ -24,9 +24,11 @@ from substrat.agent.message import (
 from substrat.agent.node import AgentNode, AgentState, AgentStateError
 from substrat.agent.prompt import build_prompt
 from substrat.agent.tools import (
+    CancelReminderCallback,
     DeferredWork,
     InboxRegistry,
     LogCallback,
+    RemindCallback,
     SpawnCallback,
     TerminateCallback,
     ToolHandler,
@@ -76,6 +78,8 @@ class Orchestrator:
         self._wrap_factory = wrap_command_factory
         self._wake_queue: asyncio.Queue[UUID] = asyncio.Queue()
         self._wake_task: asyncio.Task[None] | None = None
+        # Per-agent reminder tasks: agent_id -> {reminder_id -> Task}.
+        self._reminders: dict[UUID, dict[UUID, asyncio.Task[None]]] = {}
 
     @property
     def tree(self) -> AgentTree:
@@ -191,6 +195,7 @@ class Orchestrator:
             },
         )
         await self._scheduler.terminate_session(node.session_id)
+        self._cancel_all_reminders(agent_id)
         self._tree.remove(agent_id)
         self._handlers.pop(agent_id, None)
         self._ws_handlers.pop(agent_id, None)
@@ -215,7 +220,12 @@ class Orchestrator:
         self._wake_task = asyncio.get_event_loop().create_task(self._wake_loop())
 
     async def stop_wake_loop(self) -> None:
-        """Cancel the background wake task and wait for cleanup."""
+        """Cancel the background wake task, all reminders, and wait for cleanup."""
+        # Cancel all reminder tasks.
+        for agent_reminders in self._reminders.values():
+            for task in agent_reminders.values():
+                task.cancel()
+        self._reminders.clear()
         if self._wake_task is None:
             return
         self._wake_task.cancel()
@@ -469,6 +479,8 @@ class Orchestrator:
             wake_callback=self._notify_wake,
             terminate_callback=self._make_terminate_callback(),
             validate_ws_ref=validate_ws_ref,
+            remind_callback=self._make_remind_callback(agent_id),
+            cancel_reminder_callback=self._make_cancel_reminder_callback(agent_id),
         )
 
     def _make_resolve_ctx(
@@ -502,6 +514,87 @@ class Orchestrator:
             return "parent"
 
         return namer
+
+    def _cancel_all_reminders(self, agent_id: UUID) -> None:
+        """Cancel all pending reminders for an agent."""
+        agent_reminders = self._reminders.pop(agent_id, {})
+        for task in agent_reminders.values():
+            task.cancel()
+
+    def _make_remind_callback(self, agent_id: UUID) -> RemindCallback:
+        """Return a callback that schedules a deferred reminder timer."""
+
+        def callback(
+            reason: str, timeout: float, every: float | None
+        ) -> tuple[UUID, DeferredWork]:
+            reminder_id = uuid4()
+
+            async def do_remind() -> None:
+                async def timer() -> None:
+                    try:
+                        await asyncio.sleep(timeout)
+                        self._deliver_reminder(agent_id, reason, reminder_id)
+                        if every is not None:
+                            while True:
+                                await asyncio.sleep(every)
+                                self._deliver_reminder(agent_id, reason, reminder_id)
+                    except asyncio.CancelledError:
+                        pass
+                    finally:
+                        # Clean up from registry.
+                        agent_reminders = self._reminders.get(agent_id)
+                        if agent_reminders is not None:
+                            agent_reminders.pop(reminder_id, None)
+
+                task = asyncio.get_event_loop().create_task(timer())
+                self._reminders.setdefault(agent_id, {})[reminder_id] = task
+
+            return reminder_id, do_remind
+
+        return callback
+
+    def _make_cancel_reminder_callback(self, agent_id: UUID) -> CancelReminderCallback:
+        """Return a callback that cancels a reminder by ID."""
+
+        def callback(reminder_id: UUID) -> bool:
+            agent_reminders = self._reminders.get(agent_id)
+            if agent_reminders is None:
+                return False
+            task = agent_reminders.pop(reminder_id, None)
+            if task is None:
+                return False
+            task.cancel()
+            return True
+
+        return callback
+
+    def _deliver_reminder(self, agent_id: UUID, reason: str, reminder_id: UUID) -> None:
+        """Deliver a reminder NOTIFICATION to the agent's inbox."""
+        if agent_id not in self._tree:
+            return
+        envelope = MessageEnvelope(
+            sender=SYSTEM,
+            recipient=agent_id,
+            kind=MessageKind.NOTIFICATION,
+            payload=f"Reminder: {reason}",
+            metadata={"reminder_id": reminder_id.hex},
+        )
+        inbox = self._inboxes.get(agent_id)
+        if inbox is None:
+            return
+        self._log_lifecycle_for_agent(
+            agent_id,
+            "message.enqueued",
+            {
+                "message_id": envelope.id.hex,
+                "sender": SYSTEM.hex,
+                "recipient": agent_id.hex,
+                "kind": "notification",
+                "payload": envelope.payload,
+            },
+        )
+        inbox.deliver(envelope)
+        self._notify_wake(agent_id)
 
     def _make_log_callback(self) -> LogCallback:
         """Return a closure that logs message events to the recipient's session log."""

@@ -210,6 +210,38 @@ The child's prompt is identical to the failed attempt.
 
 See [wake.md — Wake Failure Handling](wake.md#wake-failure-handling).
 
+### `remind_me`
+
+Schedule a delayed self-notification. Delivered as a SYSTEM NOTIFICATION
+to the caller's inbox, triggering auto-wake. Timer task is created after
+the current turn ends (deferred work). Ephemeral — lost on daemon crash.
+
+```
+Parameters:
+  reason: str            # Reminder payload.
+  timeout: number        # Seconds until first delivery (must be > 0).
+  every: number | null   # Repeat interval in seconds. Omit for one-shot.
+
+Returns:
+  {"status": "scheduled", "reminder_id": "uuid"}
+```
+
+Cancelled by `cancel_reminder`. All pending reminders are cancelled when
+the agent is terminated.
+
+### `cancel_reminder`
+
+Cancel a previously scheduled reminder. Returns error if the reminder
+has already fired (one-shot) or is unknown.
+
+```
+Parameters:
+  reminder_id: str       # UUID returned by remind_me.
+
+Returns:
+  {"status": "cancelled", "reminder_id": "uuid"}
+```
+
 ### `list_workspaces`
 
 List visible workspaces (own, children's, parent's scopes).

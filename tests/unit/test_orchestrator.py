@@ -1013,3 +1013,104 @@ async def test_complete_lifecycle(
         assert any("task done" in p for p in provider.prompts)
     finally:
         await orch.stop_wake_loop()
+
+
+# -- reminders ----------------------------------------------------------------
+
+
+async def test_reminder_delivers_notification(
+    provider: FakeProvider,
+    orch: Orchestrator,
+) -> None:
+    """Reminder delivers NOTIFICATION after short timeout."""
+    orch.start_wake_loop()
+    try:
+        node = await orch.create_root_agent("agent", "p")
+        handler = orch.get_handler(node.id)
+        result = handler.remind_me("check status", 0.01)
+        assert result["status"] == "scheduled"
+        reminder_id = result["reminder_id"]
+
+        # Drain deferred to start the timer task.
+        await orch.run_turn(node.id, "go")
+
+        # Timer fires after ~10ms — yield control.
+        await asyncio.sleep(0.05)
+
+        # Agent should have been woken with the reminder.
+        assert any("check status" in p for p in provider.prompts)
+
+        # Verify NOTIFICATION in inbox or already delivered.
+        # The one-shot timer should have cleaned up.
+        agent_reminders = orch._reminders.get(node.id, {})
+        assert reminder_id not in {str(k) for k in agent_reminders}
+    finally:
+        await orch.stop_wake_loop()
+
+
+async def test_reminder_repeating(
+    provider: FakeProvider,
+    orch: Orchestrator,
+) -> None:
+    """Repeating reminder delivers multiple times."""
+    orch.start_wake_loop()
+    try:
+        node = await orch.create_root_agent("agent", "p")
+        handler = orch.get_handler(node.id)
+        result = handler.remind_me("poll", 0.01, every=0.01)
+        assert result["status"] == "scheduled"
+
+        await orch.run_turn(node.id, "go")
+
+        # Let multiple ticks fire.
+        for _ in range(5):
+            await asyncio.sleep(0.02)
+
+        count = sum(1 for p in provider.prompts if "poll" in p)
+        assert count >= 2, f"expected >=2 deliveries, got {count}"
+    finally:
+        await orch.stop_wake_loop()
+
+
+async def test_reminder_cancel(orch: Orchestrator) -> None:
+    """Cancel stops delivery before it fires."""
+    orch.start_wake_loop()
+    try:
+        node = await orch.create_root_agent("agent", "p")
+        handler = orch.get_handler(node.id)
+        result = handler.remind_me("never see this", 10)
+        assert result["status"] == "scheduled"
+        reminder_id = result["reminder_id"]
+
+        # Drain deferred to start the timer task.
+        await orch.run_turn(node.id, "go")
+
+        # Cancel before it fires.
+        cancel_result = handler.cancel_reminder(reminder_id)
+        assert cancel_result["status"] == "cancelled"
+
+        # Task should be gone.
+        agent_reminders = orch._reminders.get(node.id, {})
+        assert UUID(reminder_id) not in agent_reminders
+
+        # Double cancel returns error.
+        again = handler.cancel_reminder(reminder_id)
+        assert "error" in again
+    finally:
+        await orch.stop_wake_loop()
+
+
+async def test_terminate_cancels_reminders(orch: Orchestrator) -> None:
+    """Terminating an agent cancels all its pending reminders."""
+    node = await orch.create_root_agent("doomed", "p")
+    handler = orch.get_handler(node.id)
+    handler.remind_me("r1", 60)
+    handler.remind_me("r2", 60)
+
+    # Drain deferred to create timer tasks.
+    await orch.run_turn(node.id, "go")
+    assert len(orch._reminders.get(node.id, {})) == 2
+
+    await orch.terminate_agent(node.id)
+    # All reminders cleaned up.
+    assert node.id not in orch._reminders

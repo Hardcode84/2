@@ -4,7 +4,7 @@
 
 """Tool catalog and logic layer.
 
-AGENT_TOOLS is the catalog of Substrat's seven agent-facing tools.
+AGENT_TOOLS is the catalog of Substrat's nine agent-facing tools.
 ToolHandler implements agent tools as pure operations on the agent tree
 and inboxes. Workspace validation is injected as a callable.
 """
@@ -90,6 +90,25 @@ AGENT_TOOLS: tuple[ToolDef, ...] = (
         "Re-wake a child agent without sending a message. Retries a failed wake turn.",
         (ToolParam("agent_name", "string", "Name of a direct child."),),
     ),
+    ToolDef(
+        "remind_me",
+        "Schedule a delayed self-notification. One-shot or repeating.",
+        (
+            ToolParam("reason", "string", "Reminder reason / payload."),
+            ToolParam("timeout", "integer", "Seconds until first delivery."),
+            ToolParam(
+                "every",
+                "integer",
+                "Repeat interval in seconds after first delivery. Omit for one-shot.",
+                required=False,
+            ),
+        ),
+    ),
+    ToolDef(
+        "cancel_reminder",
+        "Cancel a previously scheduled reminder by ID.",
+        (ToolParam("reminder_id", "string", "Reminder UUID returned by remind_me."),),
+    ),
 )
 
 
@@ -103,6 +122,8 @@ LogCallback = Callable[[UUID, str, dict[str, Any]], None]
 WakeCallback = Callable[[UUID], None]
 TerminateCallback = Callable[[UUID], DeferredWork]
 ValidateWsRef = Callable[[str], tuple[UUID, str]]
+RemindCallback = Callable[[str, float, float | None], tuple[UUID, DeferredWork]]
+CancelReminderCallback = Callable[[UUID], bool]
 InboxRegistry = dict[UUID, Inbox]
 
 
@@ -124,6 +145,8 @@ class ToolHandler:
         wake_callback: WakeCallback | None = None,
         terminate_callback: TerminateCallback | None = None,
         validate_ws_ref: ValidateWsRef | None = None,
+        remind_callback: RemindCallback | None = None,
+        cancel_reminder_callback: CancelReminderCallback | None = None,
     ) -> None:
         self._tree = tree
         self._inboxes = inboxes
@@ -133,6 +156,8 @@ class ToolHandler:
         self._wake_callback = wake_callback
         self._terminate_callback = terminate_callback
         self._validate_ws_ref = validate_ws_ref
+        self._remind_callback = remind_callback
+        self._cancel_reminder_callback = cancel_reminder_callback
         self._deferred: list[DeferredWork] = []
 
     # --- Public tools ---
@@ -334,6 +359,36 @@ class ToolHandler:
         if self._wake_callback is not None:
             self._wake_callback(child.id)
         return {"status": "poked", "agent_id": str(child.id)}
+
+    def remind_me(
+        self,
+        reason: str,
+        timeout: float,
+        *,
+        every: float | None = None,
+    ) -> dict[str, Any]:
+        """Schedule a delayed self-notification."""
+        if self._remind_callback is None:
+            return {"error": "reminder tools not available"}
+        if timeout <= 0:
+            return {"error": "timeout must be positive"}
+        if every is not None and every <= 0:
+            return {"error": "every must be positive"}
+        reminder_id, deferred = self._remind_callback(reason, timeout, every)
+        self._deferred.append(deferred)
+        return {"status": "scheduled", "reminder_id": str(reminder_id)}
+
+    def cancel_reminder(self, reminder_id: str) -> dict[str, Any]:
+        """Cancel a previously scheduled reminder."""
+        if self._cancel_reminder_callback is None:
+            return {"error": "reminder tools not available"}
+        try:
+            rid = UUID(reminder_id)
+        except ValueError:
+            return {"error": f"invalid reminder_id: {reminder_id!r}"}
+        if self._cancel_reminder_callback(rid):
+            return {"status": "cancelled", "reminder_id": reminder_id}
+        return {"error": f"unknown or already-fired reminder: {reminder_id}"}
 
     def drain_deferred(self) -> list[DeferredWork]:
         """Return and clear accumulated deferred callbacks."""

@@ -1270,3 +1270,142 @@ def test_spawn_without_workspace_no_key(ws_fix: WsFixture) -> None:
     assert "workspace" not in result
     child_id = UUID(result["agent_id"])
     assert ws_fix.ws_mapping.get(child_id) is None
+
+
+# --- remind_me / cancel_reminder ---
+
+
+def _dummy_remind_callback(
+    reason: str, timeout: float, every: float | None
+) -> tuple[UUID, Any]:
+    """Return a (reminder_id, noop_deferred) pair for testing."""
+    rid = uuid4()
+
+    async def _noop() -> None:
+        pass
+
+    return rid, _noop
+
+
+def test_remind_me_returns_scheduled(fix: ToolFixture) -> None:
+    """remind_me with callback returns scheduled + reminder_id, appends deferred."""
+    h = ToolHandler(
+        fix.tree,
+        fix.inboxes,
+        fix.alice.id,
+        remind_callback=_dummy_remind_callback,
+    )
+    result = h.remind_me("check status", 30)
+    assert result["status"] == "scheduled"
+    assert "reminder_id" in result
+    # Deferred work appended.
+    assert len(h.drain_deferred()) == 1
+
+
+def test_remind_me_with_every(fix: ToolFixture) -> None:
+    """remind_me with every parameter succeeds."""
+    h = ToolHandler(
+        fix.tree,
+        fix.inboxes,
+        fix.alice.id,
+        remind_callback=_dummy_remind_callback,
+    )
+    result = h.remind_me("poll", 10, every=5)
+    assert result["status"] == "scheduled"
+
+
+def test_remind_me_timeout_zero(fix: ToolFixture) -> None:
+    """timeout <= 0 returns error."""
+    h = ToolHandler(
+        fix.tree,
+        fix.inboxes,
+        fix.alice.id,
+        remind_callback=_dummy_remind_callback,
+    )
+    result = h.remind_me("bad", 0)
+    assert "error" in result
+    assert "positive" in result["error"]
+
+
+def test_remind_me_timeout_negative(fix: ToolFixture) -> None:
+    """Negative timeout returns error."""
+    h = ToolHandler(
+        fix.tree,
+        fix.inboxes,
+        fix.alice.id,
+        remind_callback=_dummy_remind_callback,
+    )
+    result = h.remind_me("bad", -5)
+    assert "error" in result
+
+
+def test_remind_me_every_zero(fix: ToolFixture) -> None:
+    """every <= 0 returns error."""
+    h = ToolHandler(
+        fix.tree,
+        fix.inboxes,
+        fix.alice.id,
+        remind_callback=_dummy_remind_callback,
+    )
+    result = h.remind_me("bad", 10, every=0)
+    assert "error" in result
+    assert "positive" in result["error"]
+
+
+def test_remind_me_no_callback(fix: ToolFixture) -> None:
+    """Without callback, remind_me returns error."""
+    h = ToolHandler(fix.tree, fix.inboxes, fix.alice.id)
+    result = h.remind_me("lonely", 10)
+    assert "error" in result
+    assert "not available" in result["error"]
+
+
+def test_cancel_reminder_valid(fix: ToolFixture) -> None:
+    """cancel_reminder with known ID returns cancelled."""
+    known_id = uuid4()
+
+    def cancel_cb(rid: UUID) -> bool:
+        return rid == known_id
+
+    h = ToolHandler(
+        fix.tree,
+        fix.inboxes,
+        fix.alice.id,
+        cancel_reminder_callback=cancel_cb,
+    )
+    result = h.cancel_reminder(str(known_id))
+    assert result["status"] == "cancelled"
+
+
+def test_cancel_reminder_unknown(fix: ToolFixture) -> None:
+    """cancel_reminder with unknown ID returns error."""
+    h = ToolHandler(
+        fix.tree,
+        fix.inboxes,
+        fix.alice.id,
+        cancel_reminder_callback=lambda rid: False,
+    )
+    result = h.cancel_reminder(str(uuid4()))
+    assert "error" in result
+    assert "unknown" in result["error"]
+
+
+def test_cancel_reminder_invalid_uuid(fix: ToolFixture) -> None:
+    """cancel_reminder with garbage string returns error."""
+    h = ToolHandler(
+        fix.tree,
+        fix.inboxes,
+        fix.alice.id,
+        cancel_reminder_callback=lambda rid: True,
+    )
+    result = h.cancel_reminder("not-a-uuid")
+    assert "error" in result
+    assert "invalid" in result["error"]
+
+
+def test_cancel_reminder_no_callback(fix: ToolFixture) -> None:
+    """Without callback, cancel_reminder returns error."""
+    h = ToolHandler(fix.tree, fix.inboxes, fix.alice.id)
+    result = h.cancel_reminder(str(uuid4()))
+    assert "error" in result
+    assert "not available" in result["error"]
