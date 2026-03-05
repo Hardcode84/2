@@ -199,8 +199,8 @@ Tasks are files in shared workspaces, not a new abstraction. Completion is a mes
 - [x] Frozen `wrap_command` closure — factory now takes (scope, ws_name) and re-reads workspace from store each invocation
 
 ## Open Design Questions
-- [ ] Configuration format — TOML? YAML? CLI flags only?
-- [ ] Authentication model — daemon trusts any local socket connection, multi-user not addressed
+- [x] Configuration format — CLI flags + env vars sufficient for current surface (3 flags). Revisit when there's actual config to put in a file
+- [x] Authentication model — per-user daemon, socket in ~/.substrat/ with fs permissions (700). Same model as SSH/GPG agent. SO_PEERCRED available if multi-user ever becomes real
 - [ ] Resource limits — CPU/memory per workspace, token budgets per session
 - [x] Streaming UX — resolved: agent attach is per-agent, no interleaving
 - [ ] inspect_agent payload — "recent activity" undefined

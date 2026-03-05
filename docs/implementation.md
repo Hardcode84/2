@@ -290,9 +290,12 @@ canned responses for fast, deterministic integration tests.
 
 ## Open Questions
 
-- **Configuration format.** TOML? YAML? CLI flags only?
-- **Authentication.** Daemon trusts any local socket connection. Multi-user
-  not addressed.
+- ~~**Configuration format.**~~ Resolved: CLI flags + env vars cover the
+  current surface. Revisit when complexity demands a file.
+- ~~**Authentication.**~~ Resolved: per-user daemon, socket in `~/.substrat/`
+  with filesystem permissions. Same model as SSH/GPG agent. `SO_PEERCRED`
+  is the natural next step if multi-user or fine-grained authorization
+  ever becomes necessary.
 - **Resource limits.** CPU/memory per workspace, token budgets per session.
 - ~~**Streaming UX.**~~ Resolved: `agent attach` is per-agent, no interleaving.
 - **Sentinel-as-recipient.** Agents cannot currently route messages to

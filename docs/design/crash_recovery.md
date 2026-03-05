@@ -48,7 +48,7 @@ Implemented events (logged by `Orchestrator`):
 drains the inbox. Both events are fired by `ToolHandler` via a
 `LogCallback` that the orchestrator resolves to the correct session log.
 
-Planned events (not yet implemented):
+Implemented events (logged by provider):
 
 ```jsonl
 {"session_id":"...","ts":"...","event":"session.created","data":{"provider":"...","model":"...","system_prompt":"..."}}
@@ -231,9 +231,9 @@ On daemon startup:
    the agent's inbox. No new events are logged during re-injection —
    duplicate delivery on subsequent recovery is tolerable.
 
-5. **Resume root agents** (not yet implemented). For agentic providers:
-   `--resume` with saved session ID. For bare LLM: replay event log to
-   reconstruct context. Sub-agents resumed on demand by parents.
+5. **Resume root agents.** Recovered agents with non-empty inboxes are
+   woken via `_notify_wake`. For agentic providers: `--resume` with saved
+   session ID. For bare LLM: replay event log to reconstruct context.
 
 ## Persistence strategy
 
