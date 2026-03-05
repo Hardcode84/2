@@ -4,7 +4,7 @@
 
 """Tool catalog and logic layer.
 
-AGENT_TOOLS is the catalog of Substrat's nine agent-facing tools.
+AGENT_TOOLS is the catalog of Substrat's eleven agent-facing tools.
 ToolHandler implements agent tools as pure operations on the agent tree
 and inboxes. Workspace validation is injected as a callable.
 """
@@ -73,6 +73,7 @@ AGENT_TOOLS: tuple[ToolDef, ...] = (
             ToolParam("name", "string", "Child agent name."),
             ToolParam("instructions", "string", "System prompt / task description."),
             ToolParam("workspace", "string", "Workspace name or spec.", required=False),
+            ToolParam("metadata", "object", "Key-value metadata.", required=False),
         ),
     ),
     ToolDef(
@@ -108,6 +109,21 @@ AGENT_TOOLS: tuple[ToolDef, ...] = (
         "cancel_reminder",
         "Cancel a previously scheduled reminder by ID.",
         (ToolParam("reminder_id", "string", "Reminder UUID returned by remind_me."),),
+    ),
+    ToolDef(
+        "list_children",
+        "List all direct children with state, metadata, and pending message count.",
+    ),
+    ToolDef(
+        "set_agent_metadata",
+        "Set a metadata key on a child agent. Use null value to delete a key.",
+        (
+            ToolParam("agent_name", "string", "Name of a direct child."),
+            ToolParam("key", "string", "Metadata key."),
+            ToolParam(
+                "value", "string", "Value to set. Null to delete.", required=False
+            ),
+        ),
     ),
 )
 
@@ -265,6 +281,7 @@ class ToolHandler:
         instructions: str,
         *,
         workspace: str | None = None,
+        metadata: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Create a child agent. Actual session creation is deferred."""
         # Validate workspace ref before mutating the tree.
@@ -282,6 +299,7 @@ class ToolHandler:
             name=name,
             parent_id=self._caller_id,
             instructions=instructions,
+            metadata=dict(metadata) if metadata else {},
         )
         try:
             self._tree.add(child)
@@ -310,6 +328,7 @@ class ToolHandler:
         recent = inbox.peek() if inbox is not None else []
         return {
             "state": child.state.value,
+            "metadata": dict(child.metadata),
             "recent_messages": [
                 {
                     "from": self._sender_display_name(m.sender),
@@ -389,6 +408,50 @@ class ToolHandler:
         if self._cancel_reminder_callback(rid):
             return {"status": "cancelled", "reminder_id": reminder_id}
         return tool_error(f"unknown or already-fired reminder: {reminder_id}")
+
+    def list_children(self) -> dict[str, Any]:
+        """List all direct children with state, metadata, and pending count."""
+        children = []
+        for child in self._tree.children(self._caller_id):
+            inbox = self._inboxes.get(child.id)
+            children.append(
+                {
+                    "name": child.name,
+                    "agent_id": str(child.id),
+                    "state": child.state.value,
+                    "metadata": dict(child.metadata),
+                    "pending_messages": len(inbox) if inbox is not None else 0,
+                }
+            )
+        return {"children": children}
+
+    def set_agent_metadata(
+        self,
+        agent_name: str,
+        key: str,
+        *,
+        value: str | None = None,
+    ) -> dict[str, Any]:
+        """Set or delete a metadata key on a direct child."""
+        try:
+            child = self._resolve_child_name(agent_name)
+        except ToolError as exc:
+            return tool_error(str(exc))
+        if value is None:
+            child.metadata.pop(key, None)
+        else:
+            child.metadata[key] = value
+        self._log_event(
+            child.id,
+            "metadata.updated",
+            {"key": key, "value": value},
+        )
+        return {
+            "status": "updated",
+            "agent_name": agent_name,
+            "key": key,
+            "value": value,
+        }
 
     def drain_deferred(self) -> list[DeferredWork]:
         """Return and clear accumulated deferred callbacks."""

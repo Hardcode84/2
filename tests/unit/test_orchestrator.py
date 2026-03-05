@@ -1114,3 +1114,27 @@ async def test_terminate_cancels_reminders(orch: Orchestrator) -> None:
     await orch.terminate_agent(node.id)
     # All reminders cleaned up.
     assert node.id not in orch._reminders
+
+
+# -- metadata ----------------------------------------------------------------
+
+
+async def test_create_root_with_metadata(orch: Orchestrator) -> None:
+    """Root agent created with metadata preserves it on the node."""
+    node = await orch.create_root_agent("alpha", "p", metadata={"project": "substrat"})
+    assert node.metadata == {"project": "substrat"}
+    assert node.state == AgentState.IDLE
+
+
+async def test_spawn_child_with_metadata(orch: Orchestrator) -> None:
+    """Spawned child inherits metadata from spawn_agent call."""
+    parent = await orch.create_root_agent("parent", "p")
+    handler = orch.get_handler(parent.id)
+    result = handler.spawn_agent("worker", "do work", metadata={"role": "analyst"})
+    child_id = UUID(result["agent_id"])
+
+    # Drain deferred.
+    await orch.run_turn(parent.id, "go")
+
+    child = orch.tree.get(child_id)
+    assert child.metadata == {"role": "analyst"}

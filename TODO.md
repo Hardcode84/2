@@ -190,6 +190,9 @@ Code bugs that prevent the full stack from working end-to-end.
 Tasks are files in shared workspaces, not a new abstraction. Completion is a message. Wakeup is inbox delivery. Taskwarrior available in sandbox — agents use it directly via CLI, no wrapper needed. Parent and child share a task dir via workspace links, coordinate through `task add`/`task done`. Prompt convention, not infrastructure.
 - [x] `complete(result)` tool — sugar for "message parent + terminate self"
 - [x] `remind_me(reason, timeout, every=None)` + `cancel_reminder(reminder_id)` tools — delayed self-message delivery; one-shot or repeating; cancelable
+- [x] `list_children` tool — enumerate children with state, metadata, pending count; survives context compaction
+- [x] `set_agent_metadata(agent_name, key, value)` tool — daemon-tracked metadata on AgentNode, persisted via event log
+- [x] Agent metadata on `AgentNode` — `dict[str, str]`, set at spawn or via `set_agent_metadata`, recovered from event log
 - [x] Auto-wake on inbox delivery — orchestrator fires agent turn when inbox gets a message (ca9176d..a996152)
 - [x] `check_inbox` filtering — by sender, message kind
 
@@ -204,6 +207,6 @@ Tasks are files in shared workspaces, not a new abstraction. Completion is a mes
 - [x] Authentication model — per-user daemon, socket in ~/.substrat/ with fs permissions (700). Same model as SSH/GPG agent. SO_PEERCRED available if multi-user ever becomes real
 - [ ] Resource limits — CPU/memory per workspace, token budgets per session
 - [x] Streaming UX — resolved: agent attach is per-agent, no interleaving
-- [ ] inspect_agent payload — "recent activity" undefined
+- [x] inspect_agent payload — returns state, metadata, recent messages
 - [ ] Tool reply injection mechanism — provider-specific?
 - [ ] Tool rate limiting / abuse prevention

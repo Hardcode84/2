@@ -43,6 +43,7 @@ class AgentNode:
     parent_id: UUID | None = None
     children: list[UUID] = field(default_factory=list)
     instructions: str = ""
+    metadata: dict[str, str] = field(default_factory=dict)
     state: AgentState = AgentState.IDLE
     created_at: str = field(default_factory=now_iso)
 

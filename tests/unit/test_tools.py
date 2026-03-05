@@ -1409,3 +1409,107 @@ def test_cancel_reminder_no_callback(fix: ToolFixture) -> None:
     result = h.cancel_reminder(str(uuid4()))
     assert "error" in result
     assert "not available" in result["error"]
+
+
+# --- list_children ---
+
+
+def test_list_children_returns_all(fix: ToolFixture) -> None:
+    """list_children returns all direct children with state and metadata."""
+    fix.alice.metadata["role"] = "analyst"
+    result = fix.h_root.list_children()
+    names = {c["name"] for c in result["children"]}
+    assert names == {"alice", "bob", "carol"}
+    alice_entry = next(c for c in result["children"] if c["name"] == "alice")
+    assert alice_entry["state"] == "idle"
+    assert alice_entry["metadata"] == {"role": "analyst"}
+    assert alice_entry["agent_id"] == str(fix.alice.id)
+
+
+def test_list_children_pending_count(fix: ToolFixture) -> None:
+    """list_children reports pending message count per child."""
+    fix.h_root.send_message("alice", "m1")
+    fix.h_root.send_message("alice", "m2")
+    result = fix.h_root.list_children()
+    alice_entry = next(c for c in result["children"] if c["name"] == "alice")
+    assert alice_entry["pending_messages"] == 2
+    bob_entry = next(c for c in result["children"] if c["name"] == "bob")
+    assert bob_entry["pending_messages"] == 0
+
+
+def test_list_children_leaf_empty(fix: ToolFixture) -> None:
+    """list_children on a leaf agent returns empty list."""
+    result = fix.h_alice.list_children()
+    assert result["children"] == []
+
+
+# --- set_agent_metadata ---
+
+
+def test_set_agent_metadata_sets_key(fix: ToolFixture) -> None:
+    """set_agent_metadata sets a key on a child."""
+    result = fix.h_root.set_agent_metadata("alice", "task", value="dark-mode")
+    assert result["status"] == "updated"
+    assert fix.alice.metadata["task"] == "dark-mode"
+
+
+def test_set_agent_metadata_delete_key(fix: ToolFixture) -> None:
+    """set_agent_metadata with null value deletes the key."""
+    fix.alice.metadata["task"] = "old-task"
+    result = fix.h_root.set_agent_metadata("alice", "task")
+    assert result["status"] == "updated"
+    assert "task" not in fix.alice.metadata
+
+
+def test_set_agent_metadata_delete_missing_key(fix: ToolFixture) -> None:
+    """Deleting a non-existent key is a no-op, not an error."""
+    result = fix.h_root.set_agent_metadata("alice", "nonexistent")
+    assert result["status"] == "updated"
+
+
+def test_set_agent_metadata_non_child_error(fix: ToolFixture) -> None:
+    """set_agent_metadata on a non-child returns error."""
+    result = fix.h_alice.set_agent_metadata("dave", "k", value="v")
+    assert "error" in result
+
+
+def test_set_agent_metadata_logs_event(fix: ToolFixture) -> None:
+    """set_agent_metadata fires metadata.updated log event."""
+    cap = LogCapture()
+    h = ToolHandler(fix.tree, fix.inboxes, fix.root.id, log_callback=cap)
+    h.set_agent_metadata("alice", "role", value="worker")
+    events = [(ev, d) for _, ev, d in cap.events if ev == "metadata.updated"]
+    assert len(events) == 1
+    assert events[0][1] == {"key": "role", "value": "worker"}
+
+
+# --- spawn_agent with metadata ---
+
+
+def test_spawn_with_metadata(fix: ToolFixture) -> None:
+    """spawn_agent with metadata stores it on the child node."""
+    result = fix.h_root.spawn_agent(
+        "new-kid", "instructions", metadata={"role": "reviewer"}
+    )
+    assert result["status"] == "accepted"
+    child_id = UUID(result["agent_id"])
+    child = fix.tree.get(child_id)
+    assert child.metadata == {"role": "reviewer"}
+
+
+def test_spawn_without_metadata(fix: ToolFixture) -> None:
+    """spawn_agent without metadata gets empty dict."""
+    result = fix.h_root.spawn_agent("plain-kid", "instructions")
+    child_id = UUID(result["agent_id"])
+    child = fix.tree.get(child_id)
+    assert child.metadata == {}
+
+
+# --- inspect_agent includes metadata ---
+
+
+def test_inspect_agent_includes_metadata(fix: ToolFixture) -> None:
+    """inspect_agent response includes child metadata."""
+    fix.alice.metadata["status"] = "reviewing"
+    result = fix.h_root.inspect_agent("alice")
+    assert result["metadata"] == {"status": "reviewing"}

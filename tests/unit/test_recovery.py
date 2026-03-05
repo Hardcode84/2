@@ -834,3 +834,96 @@ async def test_recovery_wake_queued(
     assert not orch2._wake_queue.empty()
     woken_id = orch2._wake_queue.get_nowait()
     assert woken_id == child_id
+
+
+# -- Metadata recovery ------------------------------------------------------
+
+
+async def test_recover_spawn_metadata(
+    orch: Orchestrator,
+    tmp_path: Path,
+    provider: FakeProvider,
+) -> None:
+    """Spawn-time metadata preserved through recovery."""
+    root = await orch.create_root_agent("root", "r", metadata={"project": "alpha"})
+    h = orch.get_handler(root.id)
+    r = h.spawn_agent("child", "ci", metadata={"role": "worker"})
+    child_id = UUID(r["agent_id"])
+    await orch.run_turn(root.id, "go")
+
+    orch2 = _fresh_orch(tmp_path, provider)
+    await orch2.recover()
+
+    assert orch2.tree.get(root.id).metadata == {"project": "alpha"}
+    assert orch2.tree.get(child_id).metadata == {"role": "worker"}
+
+
+async def test_recover_metadata_updated_events(
+    orch: Orchestrator,
+    tmp_path: Path,
+    provider: FakeProvider,
+) -> None:
+    """Recovery replays metadata.updated events on top of spawn metadata."""
+    root = await orch.create_root_agent("root", "r")
+    h = orch.get_handler(root.id)
+    r = h.spawn_agent("child", "ci", metadata={"role": "analyst"})
+    child_id = UUID(r["agent_id"])
+    await orch.run_turn(root.id, "go")
+
+    # Update metadata via tool — this logs metadata.updated to child's session.
+    h = orch.get_handler(root.id)
+    h.set_agent_metadata("child", "role", value="reviewer")
+    h.set_agent_metadata("child", "status", value="active")
+
+    orch2 = _fresh_orch(tmp_path, provider)
+    await orch2.recover()
+
+    child = orch2.tree.get(child_id)
+    assert child.metadata["role"] == "reviewer"
+    assert child.metadata["status"] == "active"
+
+
+async def test_recover_metadata_delete(
+    orch: Orchestrator,
+    tmp_path: Path,
+    provider: FakeProvider,
+) -> None:
+    """Recovery replays metadata deletion (value=null)."""
+    root = await orch.create_root_agent("root", "r")
+    h = orch.get_handler(root.id)
+    r = h.spawn_agent("child", "ci", metadata={"temp": "val", "keep": "yes"})
+    child_id = UUID(r["agent_id"])
+    await orch.run_turn(root.id, "go")
+
+    h = orch.get_handler(root.id)
+    h.set_agent_metadata("child", "temp")  # Delete.
+
+    orch2 = _fresh_orch(tmp_path, provider)
+    await orch2.recover()
+
+    child = orch2.tree.get(child_id)
+    assert "temp" not in child.metadata
+    assert child.metadata["keep"] == "yes"
+
+
+async def test_recover_no_metadata_backward_compat(
+    orch: Orchestrator,
+    tmp_path: Path,
+    provider: FakeProvider,
+) -> None:
+    """Old event logs without metadata field recover with empty dict."""
+    root = await orch.create_root_agent("root", "r")
+    store = SessionStore(tmp_path / "sessions")
+
+    # Strip metadata field from event log.
+    log_path = store.agent_dir(root.session_id) / "events.jsonl"
+    entries = read_log(log_path)
+    for entry in entries:
+        if entry["event"] == "agent.created":
+            entry["data"].pop("metadata", None)
+    log_path.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+
+    orch2 = _fresh_orch(tmp_path, provider)
+    await orch2.recover()
+
+    assert orch2.tree.get(root.id).metadata == {}

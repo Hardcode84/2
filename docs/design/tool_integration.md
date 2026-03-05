@@ -137,6 +137,7 @@ Parameters:
   name: str
   instructions: str
   workspace: str | WorkspaceSpec | null   # Name or inline spec. See workspace.md.
+  metadata: dict[str, str] | null         # Key-value metadata attached to child.
 
 Returns:
   {"status": "accepted", "agent_id": "uuid", "name": "str"}
@@ -156,17 +157,15 @@ Typical flow with sync messaging:
 
 ### `inspect_agent`
 
-View a subordinate's recent activity.
+View a subordinate's state, metadata, and recent activity.
 
 ```
 Parameters:
   name: str
 
 Returns:
-  {"state": "idle|busy|waiting", "recent_messages": [...]}
+  {"state": "idle|busy|waiting", "metadata": {...}, "recent_messages": [...]}
 ```
-
-TODO: define what "recent activity" actually means.
 
 ### `complete`
 
@@ -209,6 +208,36 @@ Distinct from `send_message` because it adds nothing to the inbox.
 The child's prompt is identical to the failed attempt.
 
 See [wake.md — Wake Failure Handling](wake.md#wake-failure-handling).
+
+### `list_children`
+
+Enumerate all direct children with state, metadata, and pending message count.
+One-call inventory for project agents tracking multiple workers — survives
+context compaction because the LLM can re-discover child state without
+inspecting each one individually.
+
+```
+Parameters: (none)
+
+Returns:
+  {"children": [{"name": "str", "agent_id": "uuid", "state": "idle|busy|waiting|terminated", "metadata": {...}, "pending_messages": int}, ...]}
+```
+
+### `set_agent_metadata`
+
+Set or delete a metadata key on a direct child. Metadata is daemon-tracked
+(`dict[str, str]` on `AgentNode`), persisted via event log, and survives
+recovery. Use null value to delete a key.
+
+```
+Parameters:
+  agent_name: str        # Name of a direct child.
+  key: str               # Metadata key.
+  value: str | null      # Value to set. Null to delete.
+
+Returns:
+  {"status": "updated", "agent_name": "str", "key": "str", "value": "str|null"}
+```
 
 ### `remind_me`
 

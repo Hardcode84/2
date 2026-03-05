@@ -99,6 +99,7 @@ class Orchestrator:
         provider: str | None = None,
         model: str | None = None,
         workspace: tuple[UUID, str] | None = None,
+        metadata: dict[str, str] | None = None,
     ) -> AgentNode:
         """Create a root agent with a backing session.
 
@@ -115,6 +116,7 @@ class Orchestrator:
             session_id=uuid4(),
             name=name,
             instructions=instructions,
+            metadata=dict(metadata) if metadata else {},
         )
         prompt = build_prompt(instructions)
         session = await self._scheduler.create_session(
@@ -146,6 +148,7 @@ class Orchestrator:
                 "parent_session_id": None,
                 "instructions": node.instructions,
                 "workspace": ws_data,
+                "metadata": node.metadata or None,
             },
         )
 
@@ -660,6 +663,7 @@ class Orchestrator:
                             "parent_session_id": parent_sid,
                             "instructions": child.instructions,
                             "workspace": ws_data,
+                            "metadata": child.metadata or None,
                         },
                     )
                     self._handlers[child.id] = self._make_handler(
@@ -735,6 +739,7 @@ class Orchestrator:
                 "parent_session_id": created_data.get("parent_session_id"),
                 "instructions": created_data.get("instructions", ""),
                 "workspace": created_data.get("workspace"),
+                "metadata": created_data.get("metadata"),
                 "session": session,
                 "entries": entries,
             }
@@ -783,12 +788,25 @@ class Orchestrator:
 
                 ws_raw = info.get("workspace")
                 ws_tuple = (UUID(ws_raw[0]), ws_raw[1]) if ws_raw is not None else None
+                # Restore spawn-time metadata, then replay updates.
+                meta = dict(info["metadata"]) if info.get("metadata") else {}
+                for entry in info.get("entries", []):
+                    if entry.get("event") == "metadata.updated":
+                        d = entry.get("data", {})
+                        k = d.get("key")
+                        if k is not None:
+                            v = d.get("value")
+                            if v is None:
+                                meta.pop(k, None)
+                            else:
+                                meta[k] = v
                 node = AgentNode(
                     id=info["agent_id"],
                     session_id=info["session"].id,
                     name=info["name"],
                     parent_id=parent_agent_id,
                     instructions=info["instructions"],
+                    metadata=meta,
                 )
                 self._tree.add(node)
                 self._inboxes[node.id] = Inbox()
