@@ -438,37 +438,61 @@ calls forces the agent to re-navigate every time.
 **Not needed**: shell functions, aliases, history. These are interactive
 conveniences, not meaningful state for automated agents.
 
-### Design: env snapshot wrapper
+### Design: wrapper + explicit capture
 
-A wrapper script runs inside bwrap, around each command:
+Two scripts in `.substrat/` inside the workspace root (bind-mounted RW):
 
-1. **Entry**: source `.substrat/env` if it exists. `cd` to saved cwd.
-2. **Run**: execute the actual command.
-3. **Exit**: diff env against baseline, write changes to `.substrat/env`.
-   Save `$PWD` to `.substrat/cwd`.
+**`wrap.sh`** — runs inside bwrap around every command:
 
-The snapshot file lives inside the workspace backing dir — it persists
-across bwrap calls because the workspace root is bind-mounted read-write.
+1. Save baseline env to `.substrat/baseline_env` (before restore).
+2. Restore: source `.substrat/env`, `cd` to `.substrat/cwd`.
+3. `eval "$1"` — run the command.
+4. Save `pwd` to `.substrat/cwd`.
 
-Env diff at exit avoids dumping the entire environment (which includes
-bwrap-internal vars that shouldn't leak). Only vars that changed relative to
-the baseline (captured at entry, after sourcing the snapshot) are recorded.
+The wrapper does **not** capture env changes on exit. Provider commands
+(cursor-agent) run as subprocesses — their internal shell commands are
+grandchildren of the wrapper, so env changes don't propagate up. Implicit
+capture only works for commands eval'd directly in the wrapper's shell
+(raw shell providers, future `run_command` tool), which is too narrow.
+
+**`capture_env.sh`** — called explicitly by the agent after env-modifying
+commands:
+
+```
+source .venv/bin/activate && .substrat/capture_env.sh
+cd /project/src && .substrat/capture_env.sh
+conda activate ml && .substrat/capture_env.sh
+```
+
+The capture script diffs current env against `.substrat/baseline_env`
+(saved by the wrapper at entry) and writes the delta as export statements
+to `.substrat/env`. Also saves cwd. Internal vars (`_substrat_*`, `_`,
+`SHLVL`) are filtered out.
+
+Because `&&` chains run in the same shell, the capture script sees all env
+changes from the preceding commands. The delta approach means only
+agent-set vars are persisted — inherited daemon/bwrap vars stay out.
+
+Agents can also write `.substrat/env` directly for simple cases:
+```
+echo 'export CXX=g++-12' >> .substrat/env
+```
 
 ### Conda caveat
 
 Conda activation defines a `conda` shell function via `eval "$(conda
-shell.bash hook)"`. This function is lost between calls. The wrapper can
-re-source the hook at entry if `CONDA_EXE` is set in the snapshot — this
-restores `conda activate` / `conda deactivate` without manual intervention.
+shell.bash hook)"`. This function is lost between calls. The env vars
+(`CONDA_PREFIX`, `CONDA_DEFAULT_ENV`, `PATH`) survive via the capture
+script. The shell function can be re-sourced by the agent if needed, but
+the activated *state* — which Python resolves, which packages are
+visible — works without it.
 
 ### Status
 
 Implemented in `src/substrat/workspace/shell_state.py`. The daemon
 integrates the wrapper in `_make_wrap_command()` — every bwrap invocation
-runs through `bash .substrat/wrap.sh`. The wrapper `eval`s its single
-argument (shlex-joined command) so env/cwd changes from shell builtins
-(export, cd, source) propagate across calls. Binary commands are eval'd
-harmlessly as subprocess launches.
+runs through `bash .substrat/wrap.sh`. Both scripts are written by
+`ensure_wrapper()` on workspace setup.
 
 ## Open Questions
 

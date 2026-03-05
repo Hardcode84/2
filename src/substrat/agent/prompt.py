@@ -103,6 +103,18 @@ Workspace references use scoped names: "my-ws" (own), "../parent-ws"
 (parent's), "child-name/ws" (child's). You can read parent workspaces but
 not modify them. You have full control over your own and your children's.
 
+### Shell state
+
+Each turn runs in a fresh sandbox. Environment variables and working
+directory are lost between turns unless you capture them. After any
+env-modifying command, chain the capture script:
+
+    source .venv/bin/activate && .substrat/capture_env.sh
+    cd /project/src && .substrat/capture_env.sh
+
+This saves the env delta and cwd to `.substrat/env` and `.substrat/cwd`.
+They are automatically restored at the start of every subsequent turn.
+
 ## Working practices
 
 Keep notes. Your context window is finite and will eventually be compressed.
