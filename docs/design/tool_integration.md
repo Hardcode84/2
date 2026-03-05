@@ -423,6 +423,55 @@ The agent tool catalog (`AGENT_TOOLS`) and workspace tool catalog
 set used by the daemon and MCP server. Providers accept tools at construction
 via `tools: Sequence[ToolDef]`.
 
+## Alternative: CLI-based tool exposure
+
+Instead of MCP or provider-specific function calling, expose tools as
+executables in the workspace. Every provider can run bash — so a single
+`.substrat/bin/substrat` binary with subcommands gives tool access to any
+provider without per-provider integration work.
+
+```
+.substrat/bin/substrat send_message --to parent --text "done"
+.substrat/bin/substrat spawn_agent --name worker --instructions "do X"
+.substrat/bin/substrat check_inbox --sender worker
+```
+
+The binary talks to the daemon over the existing UDS socket
+(`.substrat_socket`). From the daemon's perspective, the protocol is
+identical to MCP dispatch — same `tool.call` RPC, same JSON payloads.
+
+### Why this works
+
+- **Provider-agnostic.** New provider = implement `start`/`send`/`stop`.
+  No MCP server, no function-call schema registration, no output parsing.
+- **Discoverable.** `ls .substrat/bin/`, `substrat --help`. Self-documenting.
+- **Composable.** Agents can chain, pipe, script with standard shell idioms.
+- **Sync messaging is fine.** All sync messages are two-turn (tool returns
+  immediately, reply arrives as next wake). The CLI call never blocks long
+  enough to hit provider bash timeouts.
+
+### Trade-offs
+
+- **No structured tool results.** MCP/function calling returns typed JSON.
+  CLI returns text on stdout. The agent parses it, which is less reliable.
+- **Weaker interception.** The daemon sees the call when the script hits
+  the socket, but can't preview it at the provider level before execution.
+  Logging still works; pre-flight approval does not.
+- **No schema validation at the provider level.** CLI args are strings.
+  Validation moves to the binary, errors surface as stderr text.
+- **Binary distribution.** A compiled binary (Go/Rust) is dependency-free
+  inside bwrap but adds a build/cross-compile step to a Python project.
+  A Python script avoids this but requires Python in the sandbox.
+- **Prompt cost unchanged.** Agents still need tool descriptions in the
+  system prompt — they won't reliably `--help` before first use.
+
+### Recommendation
+
+Keep MCP/function calling as the primary path for providers that support
+structured tool protocols. Build the CLI binary as a **fallback** for
+providers that only have shell access. The daemon socket protocol supports
+both — only the client differs.
+
 ## Open Questions
 
 - How replies are injected — provider-specific mechanism (e.g. new subprocess
