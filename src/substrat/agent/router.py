@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from substrat.agent.message import is_sentinel
+from substrat.agent.message import USER, is_sentinel
 from substrat.agent.tree import AgentTree
 
 
@@ -38,9 +38,20 @@ def reachable_set(tree: AgentTree, agent_id: UUID) -> set[UUID]:
 def validate_route(tree: AgentTree, sender: UUID, recipient: UUID) -> None:
     """Raise :class:`RoutingError` if *sender* cannot reach *recipient*.
 
-    Sentinels (SYSTEM, USER) bypass the one-hop constraint but the
-    recipient must still exist in the tree.
+    Sentinels (SYSTEM, USER) bypass the one-hop constraint as senders.
+    USER is also a valid recipient — but only root agents (no parent)
+    can send to it.
     """
+    if recipient == USER:
+        # Only sentinels and root agents may address USER.
+        if is_sentinel(sender):
+            return
+        if sender not in tree:
+            raise RoutingError(f"sender {sender} not in tree")
+        node = tree.get(sender)
+        if node.parent_id is not None:
+            raise RoutingError("only root agents can message USER")
+        return
     if recipient not in tree:
         raise RoutingError(f"recipient {recipient} not in tree")
     if is_sentinel(sender):

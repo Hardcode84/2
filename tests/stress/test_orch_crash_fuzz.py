@@ -569,8 +569,12 @@ class DualOrchCrashMachine(RuleBasedStateMachine):
             assert materialized == handler_ids, (
                 f"{label}: tree(materialized)={materialized}, handlers={handler_ids}"
             )
-            assert tree_ids == inbox_ids, (
-                f"{label}: tree={tree_ids}, inboxes={inbox_ids}"
+            # The USER sentinel inbox is always present — exclude it.
+            from substrat.model import is_sentinel
+
+            agent_inbox_ids = {k for k in inbox_ids if not is_sentinel(k)}
+            assert tree_ids == agent_inbox_ids, (
+                f"{label}: tree={tree_ids}, inboxes={agent_inbox_ids}"
             )
 
     @invariant()

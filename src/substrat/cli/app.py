@@ -283,6 +283,25 @@ def log(
         typer.echo(_format_event(entry))
 
 
+# -- inbox commands ------------------------------------------------------------
+
+
+@app.command("inbox")
+def inbox(
+    root: Path = _ROOT_OPT,
+) -> None:
+    """Read messages from agents to the user."""
+    result = _call(root, "inbox.list", {})
+    messages = result.get("messages", [])
+    if not messages:
+        typer.echo("no messages")
+        return
+    for m in messages:
+        ts = m.get("timestamp", "")
+        hms = ts.split("T")[1][:8] if "T" in ts else ts[:8]
+        typer.echo(f"{hms}  from={m['from']}  {m['text']}")
+
+
 # -- agent commands ------------------------------------------------------------
 
 

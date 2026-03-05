@@ -743,3 +743,55 @@ async def test_workspace_inspect_not_found(daemon: Daemon) -> None:
             )
     finally:
         await daemon.stop()
+
+
+# -- Inbox handler tests -------------------------------------------------------
+
+
+async def test_inbox_list_empty(daemon: Daemon) -> None:
+    """inbox.list returns empty list when no USER messages exist."""
+    await daemon.start()
+    try:
+        result = await daemon._handle_inbox_list({})
+        assert result == {"messages": []}
+    finally:
+        await daemon.stop()
+
+
+async def test_inbox_list_drains_messages(daemon: Daemon) -> None:
+    """inbox.list returns and drains USER-targeted messages."""
+    from substrat.agent.message import MessageEnvelope, MessageKind
+
+    await daemon.start()
+    try:
+        # Create a root agent so it can send to USER.
+        create_result = await daemon._handle_agent_create(
+            {"name": "root-inbox", "instructions": "test"}
+        )
+        agent_id_hex = create_result["agent_id"]
+        from uuid import UUID
+
+        agent_id = UUID(agent_id_hex)
+
+        # Manually deliver a message to the USER inbox.
+        from substrat.agent.message import USER
+
+        envelope = MessageEnvelope(
+            sender=agent_id,
+            recipient=USER,
+            kind=MessageKind.REQUEST,
+            payload="hello human",
+        )
+        daemon.orchestrator.user_inbox.deliver(envelope)
+
+        # First call returns the message.
+        result = await daemon._handle_inbox_list({})
+        assert len(result["messages"]) == 1
+        assert result["messages"][0]["text"] == "hello human"
+        assert result["messages"][0]["from"] == "root-inbox"
+
+        # Second call returns empty (drained).
+        result2 = await daemon._handle_inbox_list({})
+        assert result2["messages"] == []
+    finally:
+        await daemon.stop()

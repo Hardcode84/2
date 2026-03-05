@@ -43,6 +43,8 @@ parent and self-terminate.
 - **send_message**(recipient, text, sync=true): Send a message to an agent by
   name. Sync messages block — the reply arrives as your next message. Async
   messages (sync=false) go to the recipient's inbox for later pickup.
+  Root agents (no parent) can send to "USER" to notify the human operator.
+  USER messages are always async — the user is not an agent.
 - **broadcast**(text): Send a message to all siblings. Replies arrive
   asynchronously via check_inbox.
 - **check_inbox**(sender=null, kind=null): Retrieve pending async messages.
@@ -97,6 +99,11 @@ link directories into them, and assign them to child agents.
 - **link_dir**(workspace, source, target, mode="ro"): Link a directory from
   your workspace into another workspace. Source is a path in your workspace;
   target is the mount point in the destination.
+- **link_from**(source_workspace, source, target, target_workspace=null,
+  mode="ro"): Mount a directory from any visible workspace into a mutable
+  workspace. Unlike link_dir, the source can be any workspace you can see
+  (own, children's, parent's). Target defaults to your own workspace.
+  Use this to pull a child's work into your own sandbox for integration.
 - **unlink_dir**(workspace, target): Remove a linked directory.
 
 Workspace references use scoped names: "my-ws" (own), "../parent-ws"

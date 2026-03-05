@@ -99,6 +99,7 @@ class Daemon:
             "agent.inspect": self._handle_agent_inspect,
             "agent.terminate": self._handle_agent_terminate,
             "tool.call": self._handle_tool_call,
+            "inbox.list": self._handle_inbox_list,
             "workspace.create": self._handle_workspace_create,
             "workspace.list": self._handle_workspace_list,
             "workspace.delete": self._handle_workspace_delete,
@@ -399,6 +400,39 @@ class Daemon:
             handler = self._orch.get_handler(agent_id)
             method = getattr(handler, tool_name)
         return method(**arguments)  # type: ignore[no-any-return]
+
+    # -- Inbox RPC handler -----------------------------------------------------
+
+    async def _handle_inbox_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Read and drain the USER inbox.
+
+        Returns messages from agents to the operator.
+        """
+        inbox = self._orch.user_inbox
+        messages = inbox.collect()
+        return {
+            "messages": [
+                {
+                    "from": self._sender_name(m.sender),
+                    "text": m.payload,
+                    "message_id": m.id.hex,
+                    "timestamp": m.timestamp,
+                }
+                for m in messages
+            ],
+        }
+
+    def _sender_name(self, sender_id: UUID) -> str:
+        """Best-effort human name for a sender UUID."""
+        from substrat.model import sentinel_name as _sn
+
+        name = _sn(sender_id)
+        if name is not None:
+            return name
+        try:
+            return self._orch.tree.get(sender_id).name or sender_id.hex
+        except KeyError:
+            return sender_id.hex
 
     # -- Workspace RPC handlers ------------------------------------------------
 

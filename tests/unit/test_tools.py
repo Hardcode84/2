@@ -1513,3 +1513,197 @@ def test_inspect_agent_includes_metadata(fix: ToolFixture) -> None:
     fix.alice.metadata["status"] = "reviewing"
     result = fix.h_root.inspect_agent("alice")
     assert result["metadata"] == {"status": "reviewing"}
+
+
+# === USER messaging tests ===
+
+
+def test_send_message_to_user_from_root(fix: ToolFixture) -> None:
+    """Root agent can send to USER. Message lands in USER inbox."""
+    fix.inboxes[USER] = Inbox()
+    result = fix.h_root.send_message("USER", "all done")
+    assert result["status"] == "sent"
+    # USER messages are always async.
+    assert result["waiting_for_reply"] is False
+    msgs = fix.inboxes[USER].collect()
+    assert len(msgs) == 1
+    assert msgs[0].payload == "all done"
+    assert msgs[0].sender == fix.root.id
+
+
+def test_send_message_to_user_from_child_fails(fix: ToolFixture) -> None:
+    """Non-root agents cannot send to USER."""
+    fix.inboxes[USER] = Inbox()
+    result = fix.h_alice.send_message("USER", "sneaky")
+    assert "error" in result
+    assert "only root agents" in result["error"]
+    # No message should have been delivered.
+    assert len(fix.inboxes[USER]) == 0
+
+
+def test_send_message_to_user_forces_async(fix: ToolFixture) -> None:
+    """Even if sync=True is passed, USER messages are forced to async."""
+    fix.inboxes[USER] = Inbox()
+    result = fix.h_root.send_message("USER", "hello human", sync=True)
+    assert result["waiting_for_reply"] is False
+
+
+# === link_from workspace tests ===
+
+
+def test_link_from_child_workspace_into_own(ws_fix: WsFixture) -> None:
+    """Parent can link a child's workspace content into its own workspace."""
+    # Create child workspace with content.
+    child_ws_dir = (
+        ws_fix.ws_store.workspace_dir(ws_fix.alice.id, "child-output") / "root"
+    )
+    child_ws_dir.mkdir(parents=True)
+    (child_ws_dir / "result.txt").write_text("output")
+    child_ws = Workspace(
+        name="child-output",
+        scope=ws_fix.alice.id,
+        root_path=child_ws_dir,
+    )
+    ws_fix.ws_store.save(child_ws)
+
+    # Create root's own workspace and assign it.
+    root_ws_dir = ws_fix.ws_store.workspace_dir(ws_fix.root.id, "root-ws") / "root"
+    root_ws_dir.mkdir(parents=True)
+    root_ws = Workspace(
+        name="root-ws",
+        scope=ws_fix.root.id,
+        root_path=root_ws_dir,
+    )
+    ws_fix.ws_store.save(root_ws)
+    ws_fix.ws_mapping.assign(ws_fix.root.id, ws_fix.root.id, "root-ws")
+
+    # link_from child workspace into root's workspace.
+    result = ws_fix.wh_root.link_from(
+        source_workspace="alice/child-output",
+        source=".",
+        target="/child-view",
+        target_workspace="root-ws",
+    )
+    assert result["status"] == "linked"
+    # Verify the link was added.
+    loaded = ws_fix.ws_store.load(ws_fix.root.id, "root-ws")
+    assert any(lk.mount_path == Path("/child-view") for lk in loaded.links)
+
+
+def test_link_from_invisible_workspace_fails(ws_fix: WsFixture) -> None:
+    """Cannot link from a workspace that isn't visible."""
+    # Bob cannot see alice's workspaces (they are siblings, not parent/child).
+    child_ws_dir = ws_fix.ws_store.workspace_dir(ws_fix.alice.id, "secret") / "root"
+    child_ws_dir.mkdir(parents=True)
+    ws_fix.ws_store.save(
+        Workspace(
+            name="secret",
+            scope=ws_fix.alice.id,
+            root_path=child_ws_dir,
+        )
+    )
+    result = ws_fix.wh_bob.link_from(
+        source_workspace="alice/secret",
+        source=".",
+        target="/peek",
+    )
+    assert "error" in result
+
+
+def test_link_from_nonexistent_source_path_fails(ws_fix: WsFixture) -> None:
+    """link_from fails if the source path doesn't exist."""
+    child_ws_dir = ws_fix.ws_store.workspace_dir(ws_fix.alice.id, "empty") / "root"
+    child_ws_dir.mkdir(parents=True)
+    ws_fix.ws_store.save(
+        Workspace(
+            name="empty",
+            scope=ws_fix.alice.id,
+            root_path=child_ws_dir,
+        )
+    )
+    root_ws_dir = ws_fix.ws_store.workspace_dir(ws_fix.root.id, "root-ws2") / "root"
+    root_ws_dir.mkdir(parents=True)
+    ws_fix.ws_store.save(
+        Workspace(
+            name="root-ws2",
+            scope=ws_fix.root.id,
+            root_path=root_ws_dir,
+        )
+    )
+    ws_fix.ws_mapping.assign(ws_fix.root.id, ws_fix.root.id, "root-ws2")
+    result = ws_fix.wh_root.link_from(
+        source_workspace="alice/empty",
+        source="nonexistent",
+        target="/ghost",
+        target_workspace="root-ws2",
+    )
+    assert "error" in result
+    assert "does not exist" in result["error"]
+
+
+def test_link_from_into_immutable_scope_fails(ws_fix: WsFixture) -> None:
+    """Cannot link into a workspace that is read-only to the caller."""
+    # alice cannot mutate root's workspace (parent scope is read-only).
+    root_ws_dir = ws_fix.ws_store.workspace_dir(ws_fix.root.id, "parent-ws") / "root"
+    root_ws_dir.mkdir(parents=True)
+    (root_ws_dir / "file.txt").write_text("hi")
+    ws_fix.ws_store.save(
+        Workspace(
+            name="parent-ws",
+            scope=ws_fix.root.id,
+            root_path=root_ws_dir,
+        )
+    )
+    # alice's own workspace as source.
+    alice_ws_dir = ws_fix.ws_store.workspace_dir(ws_fix.alice.id, "mine") / "root"
+    alice_ws_dir.mkdir(parents=True)
+    (alice_ws_dir / "data.txt").write_text("data")
+    ws_fix.ws_store.save(
+        Workspace(
+            name="mine",
+            scope=ws_fix.alice.id,
+            root_path=alice_ws_dir,
+        )
+    )
+    result = ws_fix.wh_alice.link_from(
+        source_workspace="mine",
+        source=".",
+        target="/inject",
+        target_workspace="../parent-ws",
+    )
+    assert "error" in result
+    assert "not in a mutable scope" in result["error"]
+
+
+def test_link_from_defaults_to_own_workspace(ws_fix: WsFixture) -> None:
+    """When target_workspace is omitted, link goes into caller's assigned workspace."""
+    # Create child workspace with content.
+    child_ws_dir = ws_fix.ws_store.workspace_dir(ws_fix.alice.id, "src") / "root"
+    child_ws_dir.mkdir(parents=True)
+    (child_ws_dir / "code.py").write_text("pass")
+    ws_fix.ws_store.save(
+        Workspace(
+            name="src",
+            scope=ws_fix.alice.id,
+            root_path=child_ws_dir,
+        )
+    )
+    # Root's own workspace.
+    root_ws_dir = ws_fix.ws_store.workspace_dir(ws_fix.root.id, "my-ws") / "root"
+    root_ws_dir.mkdir(parents=True)
+    ws_fix.ws_store.save(
+        Workspace(
+            name="my-ws",
+            scope=ws_fix.root.id,
+            root_path=root_ws_dir,
+        )
+    )
+    ws_fix.ws_mapping.assign(ws_fix.root.id, ws_fix.root.id, "my-ws")
+    result = ws_fix.wh_root.link_from(
+        source_workspace="alice/src",
+        source=".",
+        target="/alice-src",
+    )
+    assert result["status"] == "linked"
+    loaded = ws_fix.ws_store.load(ws_fix.root.id, "my-ws")
+    assert any(lk.mount_path == Path("/alice-src") for lk in loaded.links)

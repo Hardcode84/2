@@ -62,6 +62,7 @@ One connection per request. Each connection spawns an asyncio task.
 | `agent.terminate` | `agent_id` | `Orchestrator.terminate_agent()` |
 | `agent.stream` | `agent_id`, `message` | `Orchestrator.stream_turn()` (NDJSON chunks) |
 | `tool.call` | `agent_id`, `tool`, `arguments` | `ToolHandler.<method>()` |
+| `inbox.list` | — | Drain USER inbox, return messages |
 
 Error codes: `ERR_NOT_FOUND=1`, `ERR_INVALID=2`, `ERR_INTERNAL=3`, `ERR_METHOD=4`.
 
@@ -298,10 +299,10 @@ canned responses for fast, deterministic integration tests.
   ever becomes necessary.
 - **Resource limits.** CPU/memory per workspace, token budgets per session.
 - ~~**Streaming UX.**~~ Resolved: `agent attach` is per-agent, no interleaving.
-- **Sentinel-as-recipient.** Agents cannot currently route messages to
-  SYSTEM/USER (they're not in the tree). The daemon will need to intercept
-  these at the boundary layer. Decide whether `validate_route` should
-  whitelist sentinel recipients or keep routing pure and handle it above.
+- ~~**Sentinel-as-recipient.**~~ Resolved: `validate_route` whitelists USER
+  as a valid recipient for root agents (no parent). Messages land in a
+  dedicated USER inbox; the CLI reads it via `substrat inbox` / `inbox.list`
+  RPC.
 - **Root-to-root routing.** Multiple root agents cannot communicate (no
   parent, so no siblings). Intentional for now — document or add a
   mechanism if multi-root topologies become real.

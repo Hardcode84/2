@@ -91,6 +91,32 @@ WORKSPACE_TOOLS: tuple[ToolDef, ...] = (
             ToolParam("target", "string", "Mount path to remove."),
         ),
     ),
+    ToolDef(
+        "link_from",
+        "Mount a directory from any visible workspace into a mutable workspace.",
+        (
+            ToolParam(
+                "source_workspace",
+                "string",
+                "Source workspace ref (scoped). Must be visible.",
+            ),
+            ToolParam("source", "string", "Path inside the source workspace."),
+            ToolParam("target", "string", "Mount path inside the target workspace."),
+            ToolParam(
+                "target_workspace",
+                "string",
+                "Target workspace ref (scoped). Defaults to caller's own.",
+                required=False,
+            ),
+            ToolParam(
+                "mode",
+                "string",
+                "Bind mode: ro or rw.",
+                required=False,
+                default="ro",
+            ),
+        ),
+    ),
 )
 
 # Fresh-read callback: returns (parent_id, children, child_lookup).
@@ -103,7 +129,7 @@ ScopeNamer = Callable[[UUID], str]
 class WorkspaceToolHandler:
     """Per-agent workspace tool handler.
 
-    All five workspace CRUD methods plus spawn-time validation.
+    All six workspace tools plus spawn-time validation.
     No agent-layer imports — tree access is via injected closures.
     """
 
@@ -293,6 +319,82 @@ class WorkspaceToolHandler:
                 self._store.save(ws)
                 return {"status": "unlinked"}
         return tool_error(f"no link at {target!r}")
+
+    def link_from(
+        self,
+        source_workspace: str,
+        source: str,
+        target: str,
+        *,
+        target_workspace: str | None = None,
+        mode: Literal["ro", "rw"] = "ro",
+    ) -> dict[str, Any]:
+        """Mount a directory from any visible workspace into a mutable workspace.
+
+        Unlike link_dir (which sources from the caller's own workspace),
+        this tool can pull content from any workspace visible to the caller
+        — own, children's, or parent's — into any mutable workspace.
+        """
+        parent_id, children, child_lookup = self._resolve_ctx()
+        vis = visible_scopes(self._caller_id, children, parent_id)
+        mut = mutable_scopes(self._caller_id, children)
+
+        # Resolve source workspace — must be visible.
+        try:
+            src_scope, src_name = resolve(
+                self._caller_id,
+                source_workspace,
+                parent_id=parent_id,
+                child_lookup=child_lookup,
+            )
+        except (ValueError, KeyError) as exc:
+            return tool_error(str(exc))
+        if src_scope not in vis:
+            return tool_error(f"workspace {source_workspace!r} not visible")
+        try:
+            src_ws = self._store.load(src_scope, src_name)
+        except FileNotFoundError:
+            return tool_error(f"workspace {source_workspace!r} not found")
+        host_path = src_ws.root_path / source
+        if not host_path.exists():
+            return tool_error(
+                f"source path {source!r} does not exist in {source_workspace!r}"
+            )
+
+        # Resolve target workspace — defaults to caller's first workspace.
+        if target_workspace is not None:
+            try:
+                tgt_scope, tgt_name = resolve(
+                    self._caller_id,
+                    target_workspace,
+                    parent_id=parent_id,
+                    child_lookup=child_lookup,
+                )
+            except (ValueError, KeyError) as exc:
+                return tool_error(str(exc))
+        else:
+            # Default: caller's own workspace via mapping.
+            caller_ws_key = self._mapping.get(self._caller_id)
+            if caller_ws_key is None:
+                return tool_error(
+                    "caller has no workspace assigned (specify target_workspace)"
+                )
+            tgt_scope, tgt_name = caller_ws_key
+
+        if tgt_scope not in mut:
+            tgt_ref = target_workspace or f"{tgt_scope.hex[:8]}/{tgt_name}"
+            return tool_error(f"workspace {tgt_ref!r} is not in a mutable scope")
+        try:
+            tgt_ws = self._store.load(tgt_scope, tgt_name)
+        except FileNotFoundError:
+            tgt_ref = target_workspace or f"{tgt_scope.hex[:8]}/{tgt_name}"
+            return tool_error(f"workspace {tgt_ref!r} not found")
+
+        tgt_ws.links.append(
+            LinkSpec(host_path=host_path, mount_path=Path(target), mode=mode)
+        )
+        self._store.save(tgt_ws)
+        return {"status": "linked"}
 
     def validate_ref(self, ref: str) -> tuple[UUID, str]:
         """Resolve a workspace ref, check visibility + existence.

@@ -7,6 +7,7 @@ path = [
     ".gitignore",
     "REUSE.toml",
     "docs/**",
+    "templates/**",
     "*.md",
 ]
 SPDX-FileCopyrightText = "2026 Substrat authors"

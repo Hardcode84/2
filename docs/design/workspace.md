@@ -222,8 +222,8 @@ recovery, the mapping is reconstructed from `agent.created` event log entries
 
 ## Agent-Facing Tools
 
-**Status:** All five workspace tools are implemented in `src/substrat/agent/tools.py`
-as methods on `ToolHandler`. The tool catalog (`WORKSPACE_TOOLS`) and unified
+**Status:** All six workspace tools are implemented in `src/substrat/workspace/handler.py`
+as methods on `WorkspaceToolHandler`. The tool catalog (`WORKSPACE_TOOLS`) and unified
 `ALL_TOOLS` tuple are exported from `substrat.agent`. Daemon and MCP server
 use `ALL_TOOLS` for dispatch.
 
@@ -279,6 +279,28 @@ does not, the call fails immediately rather than producing a broken bwrap
 invocation later.
 
 For linking host paths directly (e.g. a project repo), use the CLI.
+
+### `link_from`
+
+Mount a directory from any visible workspace into a mutable workspace.
+Unlike `link_dir`, the source is another workspace, not the caller's own
+filesystem. The source workspace must be visible; the target must be mutable.
+
+```
+Parameters:
+  source_workspace: str    # Source workspace ref (scoped).
+  source: str              # Path inside the source workspace.
+  target: str              # Mount path inside target workspace.
+  target_workspace: str | null  # Target workspace ref. Defaults to caller's own.
+  mode: "ro" | "rw" = "ro"
+
+Returns:
+  {"status": "linked"}
+```
+
+Use case: a project agent needs to access a worker's files for integration
+(git merge). Instead of spawning a throwaway integrator agent, the project
+agent calls `link_from` to mount the worker's workspace into its own sandbox.
 
 ### `unlink_dir`
 

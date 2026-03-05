@@ -32,7 +32,7 @@
 - [x] Scoped name resolution — resolve agent-relative refs to (scope, name)
 - [x] Agent-workspace mapping — bidirectional index, assign/release/lookup
 - [x] bwrap command builder — build_command + check_available sandbox probe
-- [x] Workspace MCP tools — create_workspace, link_dir, unlink_dir, delete_workspace, list_workspaces
+- [x] Workspace MCP tools — create_workspace, link_dir, unlink_dir, delete_workspace, list_workspaces, link_from
 - [x] View tree tracking — BFS discovery in store.view_tree(), cascade delete in delete_workspace
 - [x] CLI workspace commands — create, delete, list, link, unlink, view, inspect
 
@@ -103,7 +103,7 @@ Design: [docs/design/wake.md — Wake Failure Handling](docs/design/wake.md)
 
 ## Messaging — Deferred
 - [x] Self-send gives confusing "cannot reach" error — validate_route rejects it implicitly, needs explicit guard or clear message
-- [ ] Agents cannot route messages to SYSTEM/USER recipients — sentinels not in tree, daemon boundary layer needs to handle this
+- [x] Agents cannot route messages to SYSTEM/USER recipients — root agents can now send to USER; validate_route whitelists USER for root-only; inbox.list RPC + `substrat inbox` CLI
 - [x] Inbox.collect() non-atomic — add comment documenting single-threaded assumption (list + clear is two steps)
 - [x] MessageEnvelope.recipient=None not validated for non-broadcast kinds — __post_init__ enforces recipient for REQUEST/RESPONSE/ERROR
 - [x] Mutable envelopes shared on broadcast — broadcast() creates fresh envelope per sibling, not shared
@@ -204,6 +204,15 @@ Tasks are files in shared workspaces, not a new abstraction. Completion is a mes
 - [x] `agent/tools.py` ToolHandler holds workspace infrastructure — `ws_store`, `ws_mapping` and ~200 lines of workspace logic; extract to orchestrator callbacks (cebefa2, 8e9f85c)
 - [x] `AgentNode.workspace` field — workspace assignment embedded in node, should live only in `WorkspaceMapping` (cebefa2)
 - [x] Frozen `wrap_command` closure — factory now takes (scope, ws_name) and re-reads workspace from store each invocation
+
+## Multi-Project Agent Workflow
+Gap analysis in docs/user_story.md. Prompt templates in templates/.
+- [x] Role prompt templates — root coordinator, project agent, worker, reviewer (templates/*.md)
+- [x] USER messaging (G5) — root agents can send to USER; inbox.list RPC + `substrat inbox` CLI
+- [x] Cross-workspace linking (G6) — link_from tool mounts content from any visible workspace into a mutable workspace
+- [ ] Workspace update tool (G7) — toggle network_access after creation
+- [ ] Broadcast completion signal (G8) — agent has no way to know all broadcast replies arrived
+- [ ] Sync message timeout (G9) — recipient crash leaves sender stuck
 
 ## Open Design Questions
 - [x] Configuration format — CLI flags + env vars sufficient for current surface (3 flags). Revisit when there's actual config to put in a file

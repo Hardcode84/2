@@ -732,6 +732,41 @@ def test_agent_inspect_shows_inbox() -> None:
     assert "hello from alice" in result.output
 
 
+# -- inbox command -------------------------------------------------------------
+
+
+def test_inbox_no_messages() -> None:
+    """inbox with empty inbox prints 'no messages'."""
+    with patch("substrat.cli.app.sync_call") as mock:
+        mock.return_value = {"messages": []}
+        result = runner.invoke(app, ["inbox"])
+    assert result.exit_code == 0
+    assert "no messages" in result.output
+
+
+def test_inbox_with_messages() -> None:
+    """inbox prints messages from agents."""
+    with patch("substrat.cli.app.sync_call") as mock:
+        mock.return_value = {
+            "messages": [
+                {
+                    "from": "root",
+                    "text": "feature X done",
+                    "message_id": "aaa",
+                    "timestamp": "2026-01-01T12:34:56Z",
+                },
+            ]
+        }
+        result = runner.invoke(app, ["inbox"])
+    assert result.exit_code == 0
+    assert "root" in result.output
+    assert "feature X done" in result.output
+    assert "12:34:56" in result.output
+
+
+# -- daemon start popen --------------------------------------------------------
+
+
 def test_daemon_start_popen_args(tmp_path: Path) -> None:
     """daemon start passes correct arguments to Popen."""
     sock = tmp_path / "daemon.sock"

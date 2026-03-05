@@ -79,11 +79,13 @@ All tools return JSON. All tools are non-blocking.
 
 ### `send_message`
 
-Send a message to another agent (parent, child, or sibling).
+Send a message to another agent (parent, child, or sibling). Root agents
+can also send to `"USER"` to notify the human operator — USER messages are
+always async (sync is forced to false).
 
 ```
 Parameters:
-  recipient: str       # Agent name.
+  recipient: str       # Agent name, or "USER" for root agents.
   text: str            # Message body.
   sync: bool = true    # If true, daemon will deliver reply as next message.
 
@@ -332,6 +334,29 @@ Parameters:
 Returns:
   {"status": "linked"}
 ```
+
+### `link_from`
+
+Mount a directory from any visible workspace into a mutable workspace.
+Unlike `link_dir` (which sources from the caller's own workspace), this
+tool can pull content from any workspace the caller can see — own,
+children's, or parent's. The target must be in a mutable scope.
+
+```
+Parameters:
+  source_workspace: str         # Source workspace ref (scoped). Must be visible.
+  source: str                   # Path inside the source workspace.
+  target: str                   # Mount path inside the target workspace.
+  target_workspace: str | null  # Target workspace ref. Defaults to caller's own.
+  mode: "ro" | "rw" = "ro"
+
+Returns:
+  {"status": "linked"}
+```
+
+Primary use case: integration. A project agent needs to access a child
+worker's files for git merge. `link_from` avoids spawning a throwaway
+integrator agent — the parent can mount the child's workspace directly.
 
 ### `unlink_dir`
 

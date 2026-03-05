@@ -17,6 +17,7 @@ from uuid import UUID, uuid4
 
 from substrat.agent.inbox import Inbox
 from substrat.agent.message import (
+    USER,
     MessageEnvelope,
     MessageKind,
 )
@@ -30,7 +31,7 @@ from substrat.model import ToolDef, ToolParam, sentinel_name, tool_error
 AGENT_TOOLS: tuple[ToolDef, ...] = (
     ToolDef(
         "send_message",
-        "Send a message to a reachable agent (parent, child, or sibling).",
+        "Send a message to a reachable agent or USER (root agents only).",
         (
             ToolParam("recipient", "string", "Agent name."),
             ToolParam("text", "string", "Message body."),
@@ -185,23 +186,35 @@ class ToolHandler:
         *,
         sync: bool = True,
     ) -> dict[str, Any]:
-        """Send a message to a reachable agent by name."""
+        """Send a message to a reachable agent by name.
+
+        The special name "USER" addresses the human operator. Only root
+        agents (no parent) are allowed to send to USER. Sync is forced
+        to False for USER messages — the user is not an agent and cannot
+        reply within a turn.
+        """
+        if recipient == "USER":
+            target_id = USER
+            # USER messages are always async — no agent to reply.
+            sync = False
+        else:
+            try:
+                target = self._resolve_name(recipient)
+            except ToolError as exc:
+                return tool_error(str(exc))
+            target_id = target.id
         try:
-            target = self._resolve_name(recipient)
-        except ToolError as exc:
-            return tool_error(str(exc))
-        try:
-            validate_route(self._tree, self._caller_id, target.id)
+            validate_route(self._tree, self._caller_id, target_id)
         except RoutingError as exc:
             return tool_error(str(exc))
         envelope = MessageEnvelope(
             sender=self._caller_id,
-            recipient=target.id,
+            recipient=target_id,
             kind=MessageKind.REQUEST,
             payload=text,
             metadata={"sync": str(sync)},
         )
-        self._deliver(target.id, envelope)
+        self._deliver(target_id, envelope)
         return {
             "status": "sent",
             "message_id": str(envelope.id),

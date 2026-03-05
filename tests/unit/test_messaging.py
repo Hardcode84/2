@@ -210,6 +210,43 @@ def test_route_missing_sender_raises(
         validate_route(tree, uuid4(), alice.id)
 
 
+# --- validate_route to USER ---
+
+
+def test_route_root_to_user(
+    populated_tree: TreeFixture,
+) -> None:
+    """Root agents can send to USER."""
+    tree, root, _alice, _bob, _carol, _dave = populated_tree
+    validate_route(tree, root.id, USER)  # Should not raise.
+
+
+def test_route_child_to_user_raises(
+    populated_tree: TreeFixture,
+) -> None:
+    """Non-root agents cannot send to USER."""
+    tree, _root, alice, _bob, _carol, _dave = populated_tree
+    with pytest.raises(RoutingError, match="only root agents"):
+        validate_route(tree, alice.id, USER)
+
+
+def test_route_system_to_user(
+    populated_tree: TreeFixture,
+) -> None:
+    """SYSTEM sentinel can always reach USER."""
+    tree, _root, _alice, _bob, _carol, _dave = populated_tree
+    validate_route(tree, SYSTEM, USER)  # Should not raise.
+
+
+def test_route_deep_child_to_user_raises(
+    populated_tree: TreeFixture,
+) -> None:
+    """Even deeply nested agents cannot bypass the root-only restriction."""
+    tree, _root, _alice, _bob, _carol, dave = populated_tree
+    with pytest.raises(RoutingError, match="only root agents"):
+        validate_route(tree, dave.id, USER)
+
+
 # --- resolve_broadcast ---
 
 

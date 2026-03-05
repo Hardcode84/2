@@ -17,6 +17,7 @@ from uuid import UUID, uuid4
 from substrat.agent.inbox import Inbox
 from substrat.agent.message import (
     SYSTEM,
+    USER,
     MessageEnvelope,
     MessageKind,
     sentinel_name,
@@ -80,6 +81,8 @@ class Orchestrator:
         self._wake_task: asyncio.Task[None] | None = None
         # Per-agent reminder tasks: agent_id -> {reminder_id -> Task}.
         self._reminders: dict[UUID, dict[UUID, asyncio.Task[None]]] = {}
+        # USER inbox — collects messages from root agents to the operator.
+        self._inboxes[USER] = Inbox()
 
     @property
     def tree(self) -> AgentTree:
@@ -88,6 +91,11 @@ class Orchestrator:
     @property
     def inboxes(self) -> InboxRegistry:
         return self._inboxes
+
+    @property
+    def user_inbox(self) -> Inbox:
+        """The USER inbox — messages from root agents to the operator."""
+        return self._inboxes[USER]
 
     # -- Public API -----------------------------------------------------------
 
