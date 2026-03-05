@@ -7,6 +7,7 @@ from substrat.workspace.handler import WORKSPACE_TOOLS, WorkspaceToolHandler
 from substrat.workspace.mapping import WorkspaceKey, WorkspaceMapping
 from substrat.workspace.model import LinkSpec, Workspace
 from substrat.workspace.resolve import mutable_scopes, resolve, visible_scopes
+from substrat.workspace.shell_state import ensure_wrapper, wrap_command
 from substrat.workspace.store import WorkspaceStore, validate_name, view_tree
 
 __all__ = [
@@ -20,9 +21,11 @@ __all__ = [
     "WorkspaceToolHandler",
     "build_command",
     "check_available",
+    "ensure_wrapper",
     "mutable_scopes",
     "resolve",
     "validate_name",
     "view_tree",
     "visible_scopes",
+    "wrap_command",
 ]

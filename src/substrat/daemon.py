@@ -32,6 +32,7 @@ from substrat.workspace import bwrap
 from substrat.workspace.handler import WORKSPACE_TOOLS
 from substrat.workspace.mapping import WorkspaceMapping
 from substrat.workspace.model import Workspace
+from substrat.workspace.shell_state import ensure_wrapper, wrap_command
 from substrat.workspace.store import WorkspaceStore
 
 _ALL_TOOLS = AGENT_TOOLS + WORKSPACE_TOOLS
@@ -275,6 +276,7 @@ class Daemon:
         ws = ws_store.load(scope, ws_name)
         ws.root_path.parent.mkdir(parents=True, exist_ok=True)
         (ws.root_path.parent / ".substrat_socket").write_text(str(sock))
+        ensure_wrapper(ws.root_path)
 
         # Collect python prefix binds so the MCP server can import substrat.
         py_binds: list[LinkSpec] = []
@@ -302,7 +304,7 @@ class Daemon:
             return bwrap.build_command(
                 workspace,
                 all_binds,
-                command=cmd,
+                command=wrap_command(cmd),
                 env=all_env,
             )
 

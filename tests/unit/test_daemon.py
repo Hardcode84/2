@@ -416,8 +416,8 @@ def test_make_wrap_command_produces_bwrap(
             env_pairs.append((result[i + 1], result[i + 2]))
     env_dict = dict(env_pairs)
     assert env_dict["SUBSTRAT_SOCKET"] == sock_str
-    # Command at the end.
-    assert result[-2:] == ["echo", "hi"]
+    # Command at the end — wrapped via shell state wrapper.
+    assert result[-3:] == ["bash", ".substrat/wrap.sh", "echo hi"]
 
 
 def test_make_wrap_command_merges_extra_binds(

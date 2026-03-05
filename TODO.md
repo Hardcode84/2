@@ -37,7 +37,7 @@
 - [x] CLI workspace commands — create, delete, list, link, unlink, view, inspect
 
 ## Workspace — Shell State
-- [ ] Env snapshot wrapper — persist env vars + cwd across bwrap calls via `.substrat/env` + `.substrat/cwd` in workspace root (design in workspace.md)
+- [x] Env snapshot wrapper — persist env vars + cwd across bwrap calls via `.substrat/env` + `.substrat/cwd` in workspace root (shell_state.py)
 
 ## Daemon
 - [x] UDS server + event loop

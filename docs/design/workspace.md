@@ -463,10 +463,12 @@ restores `conda activate` / `conda deactivate` without manual intervention.
 
 ### Status
 
-Not implemented. Current agents work without this because cursor-agent
-manages its own shell state internally. Becomes necessary when agents run
-raw shell commands via bwrap (e.g., non-cursor providers, or a future
-`run_command` tool).
+Implemented in `src/substrat/workspace/shell_state.py`. The daemon
+integrates the wrapper in `_make_wrap_command()` — every bwrap invocation
+runs through `bash .substrat/wrap.sh`. The wrapper `eval`s its single
+argument (shlex-joined command) so env/cwd changes from shell builtins
+(export, cd, source) propagate across calls. Binary commands are eval'd
+harmlessly as subprocess launches.
 
 ## Open Questions
 
