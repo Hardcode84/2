@@ -227,7 +227,14 @@ Returns:
 ```
 
 Cancelled by `cancel_reminder`. All pending reminders are cancelled when
-the agent is terminated.
+the agent is terminated or the daemon shuts down.
+
+**Implementation notes.** Timers are `asyncio.Task`s created as deferred work
+(same pattern as spawn). Delivery reuses the existing inbox + wake path —
+no new state transitions. Ephemeral: lost on daemon crash (no persistence).
+Not in the orchestrator fuzzer: the code path under test (`inbox.deliver` +
+`_notify_wake`) is already stress-tested by messaging rules, and real
+`asyncio.sleep` timers would require mocked time for deterministic fuzzing.
 
 ### `cancel_reminder`
 

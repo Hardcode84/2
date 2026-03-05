@@ -162,6 +162,7 @@ The stateful fuzzer (`test_orchestrator_fuzz.py`) covers lifecycle interleavings
 - [x] Eviction failure paths: ChaosProvider suspend() can fail during eviction — exercises multiplexer rollback under random interleaving
 - [x] Spawn failure interleaving: ChaosProvider create() failure during deferred drain — shadow model reconciles orphaned children against real tree
 - [ ] Multiplexer invariants: no check that evicted sessions land in SUSPENDED state in the store or that restore round-trips correctly after eviction
+- [x] `remind_me` / `cancel_reminder`: not in fuzzer — reminders are a delayed `inbox.deliver()` + `_notify_wake()`, both already stress-tested via `send_message` / `broadcast`. Real `asyncio.sleep()` timers would require mocked time or sub-ms timeouts (flaky). Unit tests cover one-shot, repeating, cancel, terminate cleanup. Crash fuzzers N/A (reminders are ephemeral).
 
 ### ChaosProvider Design (implemented)
 See `tests/stress/test_orchestrator_fuzz.py`. ChaosProvider + ChaosProviderSession with Hypothesis-controlled deque schedule (False=succeed, True=fail, int=partial send). Per-provider shared schedule, drawn upfront via `@initialize`. Shadow model reconciles via `_shadow_drain` — checks which pending children survived deferred create().
