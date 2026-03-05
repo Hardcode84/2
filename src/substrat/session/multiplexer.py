@@ -26,7 +26,7 @@ class SessionMultiplexer:
     queue and get suspended when slots run out.
     """
 
-    def __init__(self, store: SessionStore, max_slots: int = 4) -> None:
+    def __init__(self, store: SessionStore, max_slots: int) -> None:
         self._store = store
         self._max_slots = max_slots
         self._slots: dict[UUID, ProviderSession] = {}

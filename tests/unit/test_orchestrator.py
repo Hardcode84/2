@@ -959,7 +959,7 @@ async def test_spawn_failure_cleans_up_child(tmp_path: Path) -> None:
 
     prov = FailOnSecondCreate()
     store = SessionStore(tmp_path / "agents")
-    mux = SessionMultiplexer(store)
+    mux = SessionMultiplexer(store, max_slots=4)
     sched = TurnScheduler({"fake": prov}, mux, store, log_root=tmp_path / "agents")
     orch = Orchestrator(sched, default_provider="fake", default_model="m")
 
