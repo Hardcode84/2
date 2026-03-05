@@ -36,6 +36,9 @@
 - [x] View tree tracking — BFS discovery in store.view_tree(), cascade delete in delete_workspace
 - [x] CLI workspace commands — create, delete, list, link, unlink, view, inspect
 
+## Workspace — Shell State
+- [ ] Env snapshot wrapper — persist env vars + cwd across bwrap calls via `.substrat/env` + `.substrat/cwd` in workspace root (design in workspace.md)
+
 ## Daemon
 - [x] UDS server + event loop
 - [x] Session + agent registries

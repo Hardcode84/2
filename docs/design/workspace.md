@@ -410,6 +410,64 @@ On daemon startup, workspace metadata is loaded from disk. No state machine
 recovery needed — workspaces are stateless resources. The agent-workspace
 mapping is reconstructed from agent records.
 
+## Shell State Persistence
+
+Each agent turn is a separate bwrap invocation — a fresh process tree. Shell
+state (env vars, working directory) dies with the process. Agents that
+activate a Python venv, set `$CXX`, or `cd` into a subdirectory lose that
+state on the next tool call.
+
+### What needs preserving
+
+**Environment variables** — the primary mechanism. Python venv activation is
+just env var manipulation:
+- `PATH` — prepends `venv/bin/`.
+- `VIRTUAL_ENV` — set to venv root.
+- `VIRTUAL_ENV_PROMPT` — prompt label.
+- Unsets `PYTHONHOME`.
+
+Conda is similar (`CONDA_PREFIX`, `CONDA_DEFAULT_ENV`, `CONDA_SHLVL`,
+`CONDA_EXE`, `PATH`). The `conda` shell function (from `conda shell.bash
+hook`) is lost between calls, but the activated *state* — which Python
+resolves, which packages are visible — survives as long as the env vars
+survive.
+
+**Working directory** — agents `cd` into project subdirs. Losing cwd between
+calls forces the agent to re-navigate every time.
+
+**Not needed**: shell functions, aliases, history. These are interactive
+conveniences, not meaningful state for automated agents.
+
+### Design: env snapshot wrapper
+
+A wrapper script runs inside bwrap, around each command:
+
+1. **Entry**: source `.substrat/env` if it exists. `cd` to saved cwd.
+2. **Run**: execute the actual command.
+3. **Exit**: diff env against baseline, write changes to `.substrat/env`.
+   Save `$PWD` to `.substrat/cwd`.
+
+The snapshot file lives inside the workspace backing dir — it persists
+across bwrap calls because the workspace root is bind-mounted read-write.
+
+Env diff at exit avoids dumping the entire environment (which includes
+bwrap-internal vars that shouldn't leak). Only vars that changed relative to
+the baseline (captured at entry, after sourcing the snapshot) are recorded.
+
+### Conda caveat
+
+Conda activation defines a `conda` shell function via `eval "$(conda
+shell.bash hook)"`. This function is lost between calls. The wrapper can
+re-source the hook at entry if `CONDA_EXE` is set in the snapshot — this
+restores `conda activate` / `conda deactivate` without manual intervention.
+
+### Status
+
+Not implemented. Current agents work without this because cursor-agent
+manages its own shell state internally. Becomes necessary when agents run
+raw shell commands via bwrap (e.g., non-cursor providers, or a future
+`run_command` tool).
+
 ## Open Questions
 
 - **Workspace naming rules.** Alphanumeric + hyphens? Length limits? Reserved
