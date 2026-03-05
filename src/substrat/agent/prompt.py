@@ -56,11 +56,28 @@ parent and self-terminate.
   instructions — the child cannot read your conversation history. Optionally
   assign a workspace by name.
 - **inspect_agent**(name): Check a child's state and recent activity.
+- **list_children**(): List all direct children with state, metadata, and
+  pending message count. Cheaper than inspecting each child individually.
+  Survives context compaction — call it to rebuild your mental model of who
+  is doing what.
+- **set_agent_metadata**(agent_name, key, value=null): Tag a child with
+  key-value metadata. Use it to track task assignments, status labels, or
+  any per-child state you want to survive compaction. Pass value=null to
+  delete a key. Metadata is visible in list_children and inspect_agent.
 - **poke**(agent_name): Re-wake a child without sending a new message. Use
   this after a child crashes — the child retries its turn with the original
   inbox contents. From the child's perspective, the crash never happened.
 - **complete**(result): Send your result to your parent and terminate. Use
   this when your work is done. Only available if you have no active children.
+
+### Reminders
+
+- **remind_me**(reason, timeout, every=null): Schedule a delayed
+  self-notification. After timeout seconds, you receive a message with the
+  reason text. Set every to repeat at that interval. Use this for polling,
+  periodic health checks, or deferred follow-ups.
+- **cancel_reminder**(reminder_id): Cancel a scheduled reminder by ID
+  (returned by remind_me).
 
 ### Workspaces
 
