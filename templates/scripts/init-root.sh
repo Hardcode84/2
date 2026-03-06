@@ -7,7 +7,7 @@ TEMPLATES="$(dirname "$SCRIPT_DIR")"
 
 name="${1:?usage: init-root.sh <name>}"
 
-substrat workspace create "${name}-scratch"
+substrat workspace create "${name}-scratch" --network
 substrat agent create "$name" \
     --instructions "$(cat "$TEMPLATES/root.md")" \
     --workspace "${name}-scratch"

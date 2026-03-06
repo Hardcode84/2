@@ -17,7 +17,7 @@ fi
 
 # Create workspace with repo linked RW.
 ws="${project}-ws"
-substrat workspace create "$ws"
+substrat workspace create "$ws" --network
 scope="$(substrat workspace list | grep "$ws" | awk '{print $1}' | cut -d/ -f1)"
 substrat workspace link "$ws" "$scope" --source "$repo" --target /repo --mode rw
 
