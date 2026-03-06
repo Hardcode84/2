@@ -122,22 +122,16 @@ substrat agent create root \
     --workspace scratch
 ```
 
-Save the returned agent ID:
-
-```bash
-ROOT=<agent-id-hex>
-```
-
 ### 4. Submit a task
 
 ```bash
-substrat agent send $ROOT "Implement a REST endpoint for user signup in project-A"
+substrat agent send root "Implement a REST endpoint for user signup in project-A"
 ```
 
 Or interactively:
 
 ```bash
-substrat agent attach $ROOT
+substrat agent attach root
 > Implement a REST endpoint for user signup in project-A
 ```
 
@@ -168,13 +162,13 @@ The project agent will then:
 substrat agent list
 
 # Inspect a specific agent.
-substrat agent inspect $ROOT
+substrat agent inspect root
 
 # Tail all event logs in real time.
 substrat daemon watch
 
 # Tail one agent's events.
-substrat daemon watch --agent-id $ROOT
+substrat daemon watch --agent-id root
 
 # Fine-grained task progress (run from project repo).
 cd ~/code/project-A && br epic status
@@ -201,15 +195,15 @@ Send follow-up tasks to the same root agent. It reuses existing project
 agents and their persistent reviewers:
 
 ```bash
-substrat agent send $ROOT "Add input validation to the signup endpoint in project-A"
-substrat agent send $ROOT "Set up CI pipeline in project-B"
+substrat agent send root "Add input validation to the signup endpoint in project-A"
+substrat agent send root "Set up CI pipeline in project-B"
 ```
 
 ### 8. Tear down
 
 ```bash
 # Terminate a specific agent (must be a leaf — terminate children first).
-substrat agent terminate <worker-id>
+substrat agent terminate root/project-A/worker-signup
 
 # Stop the daemon (terminates all agents).
 substrat daemon stop
@@ -219,16 +213,16 @@ substrat daemon stop
 
 ```
 substrat agent list
-<root-id>       root        [idle]
-<proj-A-id>     project-A   [busy]    parent=<root-id>
-<worker-id>     worker-signup [busy]  parent=<proj-A-id>
+root                           [idle]
+root/project-A                 [busy]
+root/project-A/worker-signup   [busy]
 ```
 
 After the worker finishes and a reviewer is spawned:
 
 ```
-<root-id>       root          [idle]
-<proj-A-id>     project-A     [idle]  parent=<root-id>
-<worker-id>     worker-signup  [idle]  parent=<proj-A-id>
-<reviewer-id>   reviewer       [busy]  parent=<proj-A-id>
+root                           [idle]
+root/project-A                 [idle]
+root/project-A/worker-signup   [idle]
+root/project-A/reviewer        [busy]
 ```
