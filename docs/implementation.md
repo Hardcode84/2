@@ -79,10 +79,10 @@ substrat daemon start|stop|status|watch|log
 
 substrat agent create [--provider cursor-agent] [--name <name>]
 substrat agent list
-substrat agent inspect <agent-id>
-substrat agent send <agent-id> <message>
-substrat agent attach <agent-id>
-substrat agent terminate <agent-id>
+substrat agent inspect <agent>
+substrat agent send <agent> <message>
+substrat agent attach <agent>
+substrat agent terminate <agent>
 
 substrat workspace create|list|delete|link|unlink|view|inspect
 ```
@@ -184,6 +184,19 @@ reachable by `_resolve_name`). Enforced at insertion time by `tree.add()`:
 Names are the addressing mechanism for agent-facing tools (`send_message`,
 `inspect_agent`). The uniqueness invariant guarantees unambiguous resolution
 within any agent's reachable set.
+
+### CLI Name Resolution
+
+The CLI and daemon accept agent references as names, not just UUIDs.
+`AgentTree.resolve()` implements the resolution:
+
+1. **Path** — `root/project-A/worker-1` walks from root by name.
+2. **Unique bare name** — `worker-1` if only one agent has that name.
+3. **UUID hex** — fallback for programmatic use.
+
+Names take priority over UUID hex — if an agent is named `deadbeef...`,
+the name match wins. Ambiguous bare names raise an error listing the
+matching paths.
 
 ### Routing
 

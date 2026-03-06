@@ -208,7 +208,9 @@ def status(
 @daemon_app.command()
 def watch(
     root: Path = _ROOT_OPT,
-    agent_id: str | None = typer.Option(None, help="Filter by agent UUID (hex)."),
+    agent_id: str | None = typer.Option(
+        None, help="Filter by agent name, path, or UUID."
+    ),
 ) -> None:
     """Tail event logs from all sessions (or one agent)."""
     agents_dir = root / "agents"
@@ -263,7 +265,7 @@ def watch(
 
 @daemon_app.command()
 def log(
-    agent_id: str = typer.Argument(help="Agent UUID (hex)."),
+    agent_id: str = typer.Argument(help="Agent name, path, or UUID."),
     root: Path = _ROOT_OPT,
 ) -> None:
     """Print an agent's event log, human-readable."""
@@ -337,13 +339,12 @@ def agent_list(
         typer.echo("no agents")
         return
     for a in agents:
-        parent = f"  parent={a['parent_id']}" if a.get("parent_id") else ""
-        typer.echo(f"{a['agent_id']}  {a['name']}  [{a['state']}]{parent}")
+        typer.echo(f"{a['path']}  [{a['state']}]")
 
 
 @agent_app.command("send")
 def agent_send(
-    agent_id: str = typer.Argument(help="Agent UUID (hex)."),
+    agent_id: str = typer.Argument(help="Agent name, path, or UUID."),
     message: str = typer.Argument(help="Message to send."),
     root: Path = _ROOT_OPT,
 ) -> None:
@@ -354,7 +355,7 @@ def agent_send(
 
 @agent_app.command("inspect")
 def agent_inspect(
-    agent_id: str = typer.Argument(help="Agent UUID (hex)."),
+    agent_id: str = typer.Argument(help="Agent name, path, or UUID."),
     root: Path = _ROOT_OPT,
 ) -> None:
     """Inspect an agent's state."""
@@ -375,7 +376,7 @@ def agent_inspect(
 
 @agent_app.command("attach")
 def agent_attach(
-    agent_id: str = typer.Argument(help="Agent UUID (hex)."),
+    agent_id: str = typer.Argument(help="Agent name, path, or UUID."),
     root: Path = _ROOT_OPT,
 ) -> None:
     """Attach to an agent — interactive streaming REPL."""
@@ -407,7 +408,7 @@ def agent_attach(
 
 @agent_app.command("terminate")
 def agent_terminate(
-    agent_id: str = typer.Argument(help="Agent UUID (hex)."),
+    agent_id: str = typer.Argument(help="Agent name, path, or UUID."),
     root: Path = _ROOT_OPT,
 ) -> None:
     """Terminate an agent."""

@@ -109,6 +109,60 @@ class AgentTree:
                 return child
         raise KeyError(name)
 
+    def resolve(self, ref: str) -> AgentNode:
+        """Resolve a name reference to a node.
+
+        Accepts:
+        - A path from root: "root/project-A/worker-1".
+        - A bare name: "worker-1" (must be unique across the tree).
+        - A UUID hex string (fallback).
+
+        Raises KeyError if not found, ValueError if ambiguous.
+        """
+        # Path resolution: walk from root.
+        if "/" in ref:
+            parts = ref.split("/")
+            # First segment must be a root name.
+            node = self._root_by_name(parts[0])
+            for part in parts[1:]:
+                node = self.child_by_name(node.id, part)
+            return node
+
+        # Bare name — try unique match across entire tree.
+        matches = [n for n in self._nodes.values() if n.name == ref]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            paths = [self._node_path(m) for m in matches]
+            raise ValueError(f"ambiguous name {ref!r}, matches: {', '.join(paths)}")
+
+        # Try UUID hex fallback.
+        try:
+            uid = UUID(ref)
+        except ValueError:
+            raise KeyError(ref) from None
+        return self._nodes[uid]
+
+    def _root_by_name(self, name: str) -> AgentNode:
+        """Find a root node by name. Raises KeyError if not found."""
+        for n in self._nodes.values():
+            if n.parent_id is None and n.name == name:
+                return n
+        raise KeyError(name)
+
+    def _node_path(self, node: AgentNode) -> str:
+        """Build the full slash-separated path from root to node."""
+        parts: list[str] = []
+        current: AgentNode | None = node
+        while current is not None:
+            parts.append(current.name or current.id.hex)
+            current = (
+                self._nodes.get(current.parent_id)
+                if current.parent_id is not None
+                else None
+            )
+        return "/".join(reversed(parts))
+
     def subtree(self, agent_id: UUID) -> list[AgentNode]:
         """Return all descendants depth-first. Does not include the node itself."""
         node = self._nodes[agent_id]

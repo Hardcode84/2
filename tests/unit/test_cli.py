@@ -73,12 +73,14 @@ def test_agent_list_with_agents() -> None:
                 {
                     "agent_id": "aaa",
                     "name": "alpha",
+                    "path": "alpha",
                     "state": "idle",
                     "parent_id": None,
                 },
                 {
                     "agent_id": "bbb",
                     "name": "beta",
+                    "path": "alpha/beta",
                     "state": "busy",
                     "parent_id": "aaa",
                 },
@@ -87,7 +89,7 @@ def test_agent_list_with_agents() -> None:
         result = runner.invoke(app, ["agent", "list"])
     assert result.exit_code == 0
     assert "alpha" in result.output
-    assert "beta" in result.output
+    assert "alpha/beta" in result.output
     assert "[busy]" in result.output
 
 
@@ -687,20 +689,22 @@ def test_daemon_status_live_pid_no_socket(tmp_path: Path) -> None:
     assert "socket missing" in result.output
 
 
-def test_agent_list_shows_parent() -> None:
-    """agent list displays parent_id for child agents."""
+def test_agent_list_shows_paths() -> None:
+    """agent list displays paths for child agents."""
     with patch("substrat.cli.app.sync_call") as mock:
         mock.return_value = {
             "agents": [
                 {
                     "agent_id": "aaa",
-                    "name": "parent",
+                    "name": "root",
+                    "path": "root",
                     "state": "idle",
                     "parent_id": None,
                 },
                 {
                     "agent_id": "bbb",
                     "name": "child",
+                    "path": "root/child",
                     "state": "idle",
                     "parent_id": "aaa",
                 },
@@ -708,7 +712,7 @@ def test_agent_list_shows_parent() -> None:
         }
         result = runner.invoke(app, ["agent", "list"])
     assert result.exit_code == 0
-    assert "parent=aaa" in result.output
+    assert "root/child" in result.output
 
 
 def test_agent_inspect_shows_inbox() -> None:

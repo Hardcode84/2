@@ -267,3 +267,73 @@ def test_child_by_name_missing(tree: AgentTree) -> None:
     tree.add(root)
     with pytest.raises(KeyError):
         tree.child_by_name(root.id, "ghost")
+
+
+# --- resolve ---
+
+
+def test_resolve_bare_name_unique(tree: AgentTree) -> None:
+    root = AgentNode(session_id=uuid4(), name="root")
+    child = AgentNode(session_id=uuid4(), name="worker", parent_id=root.id)
+    tree.add(root)
+    tree.add(child)
+    assert tree.resolve("worker") is child
+    assert tree.resolve("root") is root
+
+
+def test_resolve_path(tree: AgentTree) -> None:
+    root = AgentNode(session_id=uuid4(), name="root")
+    proj = AgentNode(session_id=uuid4(), name="project-A", parent_id=root.id)
+    worker = AgentNode(session_id=uuid4(), name="worker-1", parent_id=proj.id)
+    tree.add(root)
+    tree.add(proj)
+    tree.add(worker)
+    assert tree.resolve("root/project-A") is proj
+    assert tree.resolve("root/project-A/worker-1") is worker
+
+
+def test_resolve_ambiguous_bare_name(tree: AgentTree) -> None:
+    root = AgentNode(session_id=uuid4(), name="root")
+    p1 = AgentNode(session_id=uuid4(), name="proj-A", parent_id=root.id)
+    p2 = AgentNode(session_id=uuid4(), name="proj-B", parent_id=root.id)
+    w1 = AgentNode(session_id=uuid4(), name="worker", parent_id=p1.id)
+    w2 = AgentNode(session_id=uuid4(), name="worker", parent_id=p2.id)
+    tree.add(root)
+    tree.add(p1)
+    tree.add(p2)
+    tree.add(w1)
+    tree.add(w2)
+    with pytest.raises(ValueError, match="ambiguous"):
+        tree.resolve("worker")
+
+
+def test_resolve_uuid_hex(tree: AgentTree) -> None:
+    root = AgentNode(session_id=uuid4(), name="root")
+    tree.add(root)
+    assert tree.resolve(root.id.hex) is root
+
+
+def test_resolve_missing_raises(tree: AgentTree) -> None:
+    root = AgentNode(session_id=uuid4(), name="root")
+    tree.add(root)
+    with pytest.raises(KeyError):
+        tree.resolve("ghost")
+
+
+def test_resolve_bad_path_raises(tree: AgentTree) -> None:
+    root = AgentNode(session_id=uuid4(), name="root")
+    tree.add(root)
+    with pytest.raises(KeyError):
+        tree.resolve("root/nonexistent")
+
+
+def test_resolve_name_takes_priority_over_uuid(tree: AgentTree) -> None:
+    """If an agent name looks like a UUID hex, name match wins."""
+    other = AgentNode(session_id=uuid4(), name="other")
+    # Name this agent with the hex of the other agent's UUID.
+    hexname = AgentNode(session_id=uuid4(), name=other.id.hex)
+    tree.add(other)
+    tree.add(hexname)
+    # Resolving the hex string returns the agent named that, not the one
+    # whose UUID matches.
+    assert tree.resolve(other.id.hex) is hexname

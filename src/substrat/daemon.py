@@ -235,7 +235,7 @@ class Daemon:
     ) -> None:
         """Stream response chunks as NDJSON frames."""
         try:
-            agent_id = UUID(params["agent_id"])
+            agent_id = self._resolve_agent(params["agent_id"])
             message = params.get("message", "")
             async for chunk in self._orch.stream_turn(agent_id, message):
                 frame = json.dumps({"chunk": chunk}).encode() + b"\n"
@@ -311,6 +311,16 @@ class Daemon:
 
         return wrapper
 
+    # -- Agent resolution ------------------------------------------------------
+
+    def _resolve_agent(self, raw: str) -> UUID:
+        """Resolve an agent reference to a UUID.
+
+        Accepts UUID hex, slash-separated path, or unique bare name.
+        """
+        node = self._orch.tree.resolve(raw)
+        return node.id
+
     # -- RPC handlers ----------------------------------------------------------
 
     async def _handle_agent_create(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -352,13 +362,13 @@ class Daemon:
         return {"agents": nodes}
 
     async def _handle_agent_send(self, params: dict[str, Any]) -> dict[str, Any]:
-        agent_id = UUID(params["agent_id"])
+        agent_id = self._resolve_agent(params["agent_id"])
         message = params.get("message", "")
         response = await self._orch.run_turn(agent_id, message)
         return {"response": response}
 
     async def _handle_agent_inspect(self, params: dict[str, Any]) -> dict[str, Any]:
-        agent_id = UUID(params["agent_id"])
+        agent_id = self._resolve_agent(params["agent_id"])
         node = self._orch.tree.get(agent_id)
         children = self._orch.tree.children(agent_id)
         inbox = self._orch.inboxes.get(agent_id)
@@ -379,14 +389,14 @@ class Daemon:
         }
 
     async def _handle_agent_terminate(self, params: dict[str, Any]) -> dict[str, Any]:
-        agent_id = UUID(params["agent_id"])
+        agent_id = self._resolve_agent(params["agent_id"])
         await self._orch.terminate_agent(agent_id)
         return {"status": "terminated", "agent_id": agent_id.hex}
 
     _TOOL_NAMES: frozenset[str] = frozenset(t.name for t in _ALL_TOOLS)
 
     async def _handle_tool_call(self, params: dict[str, Any]) -> dict[str, Any]:
-        agent_id = UUID(params["agent_id"])
+        agent_id = self._resolve_agent(params["agent_id"])
         tool_name = params["tool"]
         arguments = params.get("arguments", {})
         if tool_name not in self._TOOL_NAMES:
@@ -530,18 +540,20 @@ class Daemon:
 
     # -- Helpers ---------------------------------------------------------------
 
-    def _walk_tree(self, node: Any) -> list[dict[str, Any]]:
-        """Flatten a subtree into a list of dicts."""
+    def _walk_tree(self, node: Any, prefix: str = "") -> list[dict[str, Any]]:
+        """Flatten a subtree into a list of dicts with paths."""
+        path = f"{prefix}/{node.name}" if prefix else node.name
         result: list[dict[str, Any]] = [
             {
                 "agent_id": node.id.hex,
                 "name": node.name,
+                "path": path,
                 "state": node.state.value,
                 "parent_id": node.parent_id.hex if node.parent_id else None,
             }
         ]
         for child in self._orch.tree.children(node.id):
-            result.extend(self._walk_tree(child))
+            result.extend(self._walk_tree(child, path))
         return result
 
 
