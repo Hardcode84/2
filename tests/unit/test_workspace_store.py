@@ -183,6 +183,12 @@ def test_validate_name_rejects_bad_names(bad_name: str) -> None:
         validate_name(bad_name)
 
 
+@pytest.mark.parametrize("reserved", ["USER", "user", "User", "SYSTEM", "system"])
+def test_validate_name_rejects_reserved_names(reserved: str) -> None:
+    with pytest.raises(ValueError, match="reserved name"):
+        validate_name(reserved)
+
+
 @pytest.mark.parametrize(
     "good_name",
     ["env", "worker-env", "ws_01", "A", "my-workspace-2"],

@@ -21,7 +21,7 @@ from uuid import UUID
 
 from substrat.agent.node import AgentStateError
 from substrat.agent.tools import AGENT_TOOLS
-from substrat.model import CommandWrapper, LinkSpec
+from substrat.model import SYSTEM, USER, CommandWrapper, LinkSpec
 from substrat.orchestrator import Orchestrator
 from substrat.provider import default_providers
 from substrat.provider.base import AgentProvider
@@ -321,6 +321,22 @@ class Daemon:
         node = self._orch.tree.resolve(raw)
         return node.id
 
+    def _resolve_scope(self, raw: str) -> UUID:
+        """Resolve a scope reference to a UUID.
+
+        Accepts "USER", "SYSTEM", agent name/path, or raw UUID hex.
+        """
+        upper = raw.upper()
+        if upper == "USER":
+            return USER
+        if upper == "SYSTEM":
+            return SYSTEM
+        # Try agent resolution first.
+        with contextlib.suppress(KeyError, ValueError):
+            return self._resolve_agent(raw)
+        # Fall back to raw UUID hex.
+        return UUID(raw)
+
     # -- RPC handlers ----------------------------------------------------------
 
     async def _handle_agent_create(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -447,11 +463,9 @@ class Daemon:
     # -- Workspace RPC handlers ------------------------------------------------
 
     async def _handle_workspace_create(self, params: dict[str, Any]) -> dict[str, Any]:
-        from uuid import uuid4
-
         ws_name = params["name"]
-        scope_hex = params.get("scope")
-        scope = UUID(scope_hex) if scope_hex else uuid4()
+        scope_raw = params.get("scope")
+        scope = self._resolve_scope(scope_raw) if scope_raw else USER
         network = params.get("network_access", False)
         ws = Workspace(
             name=ws_name,
@@ -468,6 +482,7 @@ class Daemon:
             "workspaces": [
                 {
                     "scope": ws.scope.hex,
+                    "scope_label": self._sender_name(ws.scope),
                     "name": ws.name,
                     "network_access": ws.network_access,
                     "root_path": str(ws.root_path),
@@ -477,13 +492,13 @@ class Daemon:
         }
 
     async def _handle_workspace_delete(self, params: dict[str, Any]) -> dict[str, Any]:
-        scope = UUID(params["scope"])
+        scope = self._resolve_scope(params["scope"])
         ws_name = params["name"]
         self._ws_store.delete(scope, ws_name)
         return {"status": "deleted", "scope": scope.hex, "name": ws_name}
 
     async def _handle_workspace_link(self, params: dict[str, Any]) -> dict[str, Any]:
-        scope = UUID(params["scope"])
+        scope = self._resolve_scope(params["scope"])
         ws_name = params["name"]
         try:
             ws = self._ws_store.load(scope, ws_name)
@@ -499,7 +514,7 @@ class Daemon:
         return {"status": "linked", "scope": scope.hex, "name": ws_name}
 
     async def _handle_workspace_unlink(self, params: dict[str, Any]) -> dict[str, Any]:
-        scope = UUID(params["scope"])
+        scope = self._resolve_scope(params["scope"])
         ws_name = params["name"]
         mount_path = Path(params["mount_path"])
         try:
@@ -516,7 +531,7 @@ class Daemon:
         return {"status": "unlinked", "scope": scope.hex, "name": ws_name}
 
     async def _handle_workspace_inspect(self, params: dict[str, Any]) -> dict[str, Any]:
-        scope = UUID(params["scope"])
+        scope = self._resolve_scope(params["scope"])
         ws_name = params["name"]
         try:
             ws = self._ws_store.load(scope, ws_name)

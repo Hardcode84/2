@@ -423,7 +423,7 @@ def agent_terminate(
 def workspace_create(
     name: str = typer.Argument(help="Workspace name."),
     scope: str | None = typer.Option(
-        None, help="Scope UUID (hex). Auto-generated if omitted."
+        None, help="Scope: agent name, USER, or UUID. Defaults to USER."
     ),
     network: bool = typer.Option(False, help="Allow network access."),
     root: Path = _ROOT_OPT,
@@ -448,13 +448,14 @@ def workspace_list(
         return
     for ws in workspaces:
         net = "  [net]" if ws.get("network_access") else ""
-        typer.echo(f"{ws['scope']}/{ws['name']}{net}")
+        label = ws.get("scope_label", ws["scope"])
+        typer.echo(f"{label}/{ws['name']}{net}")
 
 
 @workspace_app.command("delete")
 def workspace_delete(
     name: str = typer.Argument(help="Workspace name."),
-    scope: str = typer.Argument(help="Scope UUID (hex)."),
+    scope: str = typer.Argument(help="Scope: agent name, USER, or UUID."),
     root: Path = _ROOT_OPT,
 ) -> None:
     """Delete a workspace."""
@@ -465,7 +466,7 @@ def workspace_delete(
 @workspace_app.command("link")
 def workspace_link(
     name: str = typer.Argument(help="Workspace name."),
-    scope: str = typer.Argument(help="Scope UUID (hex)."),
+    scope: str = typer.Argument(help="Scope: agent name, USER, or UUID."),
     source: str = typer.Option(..., help="Host path to bind."),
     target: str = typer.Option(..., help="Mount path inside sandbox."),
     mode: str = typer.Option("ro", help="Mount mode (ro or rw)."),
@@ -489,7 +490,7 @@ def workspace_link(
 @workspace_app.command("unlink")
 def workspace_unlink(
     name: str = typer.Argument(help="Workspace name."),
-    scope: str = typer.Argument(help="Scope UUID (hex)."),
+    scope: str = typer.Argument(help="Scope: agent name, USER, or UUID."),
     target: str = typer.Option(..., help="Mount path to remove."),
     root: Path = _ROOT_OPT,
 ) -> None:
@@ -505,10 +506,10 @@ def workspace_unlink(
 @workspace_app.command("view")
 def workspace_view(
     source_name: str = typer.Argument(help="Source workspace name."),
-    source_scope: str = typer.Argument(help="Source workspace scope (hex)."),
+    source_scope: str = typer.Argument(help="Source scope: agent name, USER, or UUID."),
     name: str = typer.Option(..., help="Name for the view workspace."),
     scope: str | None = typer.Option(
-        None, help="Scope for the view (auto if omitted)."
+        None, help="Scope for the view. Defaults to USER."
     ),
     subdir: str | None = typer.Option(None, help="Source subdirectory to expose."),
     mode: str = typer.Option("ro", help="Mount mode (ro or rw)."),
@@ -549,7 +550,7 @@ def workspace_view(
 @workspace_app.command("inspect")
 def workspace_inspect(
     name: str = typer.Argument(help="Workspace name."),
-    scope: str = typer.Argument(help="Scope UUID (hex)."),
+    scope: str = typer.Argument(help="Scope: agent name, USER, or UUID."),
     root: Path = _ROOT_OPT,
 ) -> None:
     """Inspect a workspace's details."""

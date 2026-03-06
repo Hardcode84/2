@@ -17,10 +17,13 @@ from substrat.workspace.model import LinkSpec, Workspace
 
 _META_FILE = "meta.json"
 _NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
+_RESERVED_NAMES = frozenset({"USER", "SYSTEM"})
 
 
 def validate_name(name: str) -> None:
-    """Reject names that would escape the directory layout."""
+    """Reject names that would escape the directory layout or collide with sentinels."""
+    if name.upper() in _RESERVED_NAMES:
+        raise ValueError(f"reserved name {name!r}: cannot use sentinel names")
     if not _NAME_RE.match(name):
         msg = (
             f"invalid workspace name {name!r}: "
