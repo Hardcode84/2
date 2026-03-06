@@ -19,7 +19,7 @@ def test_returned_provider_satisfies_protocol() -> None:
     assert isinstance(result["cursor-agent"], AgentProvider)
 
 
-def test_returned_provider_has_mcp_disabled() -> None:
+def test_returned_provider_has_mcp_enabled() -> None:
     result = default_providers()
     provider = result["cursor-agent"]
-    assert provider._use_mcp is False  # type: ignore[attr-defined]
+    assert provider._use_mcp is True  # type: ignore[attr-defined]

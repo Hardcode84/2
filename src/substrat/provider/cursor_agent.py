@@ -90,7 +90,22 @@ def _write_mcp_config(workspace: Path, agent_id: UUID) -> Path:
     # calls. The --trust CLI flag is unreliable in headless mode — the
     # on-disk marker is the mechanism cursor-agent actually checks.
     (cursor_dir / ".workspace-trusted").touch()
+    # Pre-approve the MCP server on disk. --approve-mcps is flaky in
+    # some cursor-agent versions; explicit enable writes the approval
+    # hash to ~/.cursor/projects/<slug>/mcp-approvals.json.
+    _pre_approve_mcp(workspace, "substrat")
     return config_path
+
+
+def _pre_approve_mcp(workspace: Path, server_name: str) -> None:
+    """Run `cursor-agent mcp enable <name>` to pre-approve the server."""
+    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+        subprocess.run(
+            [_cursor_binary(), "mcp", "enable", server_name],
+            cwd=str(workspace),
+            capture_output=True,
+            timeout=10,
+        )
 
 
 _TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
@@ -305,6 +320,7 @@ class CursorSession:
             "--output-format",
             "stream-json",
             "--trust",
+            "--yolo",
             "--approve-mcps",
         ]
         if self._model is not None:

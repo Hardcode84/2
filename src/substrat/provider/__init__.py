@@ -29,4 +29,4 @@ def default_providers(
     """Build the default provider dict for the daemon."""
     from substrat.provider.cursor_agent import CursorAgentProvider
 
-    return {"cursor-agent": CursorAgentProvider(tools=tools, use_mcp=False)}
+    return {"cursor-agent": CursorAgentProvider(tools=tools, use_mcp=True)}
