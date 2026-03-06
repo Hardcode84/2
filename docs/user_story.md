@@ -15,20 +15,24 @@
 
 1. User tells root: "I want feature X in project Y".
 2. Root relays to the corresponding project agent.
-3. Project agent creates a git worktree and spawns a worker for the feature.
-   * Project agent runs `git worktree add` in its repo, mounts the
-     worktree into the worker's sandbox via `link_dir`.
-   * Worker writes code, commits to the feature branch.
-4. Worker messages project agent when ready or has questions.
-   * Project agent answers directly or relays to root/user.
-5. Project agent creates ro view of worker's workspace, launches reviewer(s).
-   * Reviewers read worker's code, message back and forth with worker.
-   * Worker iterates until reviewers are satisfied.
-6. Project agent merges the worker's branch locally — both share the same
-   git object store via worktrees, so the branch is already available.
-   Worker never touches the project agent's working tree.
-7. Project agent relays to user for final review.
-8. When user satisfied, worker is terminated. Reviewer persists for next feature.
+3. Project agent decomposes the request into a beads epic with child issues:
+   * `br create --type=epic --title="feature X"` → epic ID.
+   * `br create --title="implement API" --parent=<epic>` (repeat per subtask).
+   * Dependencies between issues encode sequencing.
+4. Project agent creates a git worktree and spawns a worker:
+   * `git worktree add /worktrees/<feature> -b <feature>` in its repo.
+   * Mounts the worktree into the worker's sandbox via `link_dir`.
+5. Worker picks up work via `br ready --claim` and iterates:
+   * Implement → commit → `br close <id> --suggest-next` → next issue.
+   * If stuck, messages project agent via `send_message`.
+6. When all implementation issues are closed, project agent spawns a
+   reviewer with an RO view of the worktree.
+   * Reviewer creates issues for feedback (linked to the epic).
+   * Worker claims and fixes review issues the same way.
+7. Project agent monitors progress via `br epic status`. When the epic
+   is fully closed, merges the branch locally (`git merge <feature>`).
+8. Project agent relays result to user via root.
+9. Worker terminated. Reviewer persists for next feature.
 
 ## Workspace topology
 
@@ -52,16 +56,25 @@ root (lightweight ws, scratch notes)
   branch. Git handles concurrent object writes atomically. Project agent
   is the single integration point — merges sequentially, resolves conflicts
   in its own working tree.
+* **Beads as shared state.** `.beads/issues.jsonl` lives in the repo and is
+  shared across worktrees. Each agent has its own SQLite DB, syncs via
+  `br sync`. The dependency graph replaces most polling — agents pick up
+  work as it becomes unblocked.
 * **One-hop routing.** Root can't reach workers directly (two hops). Project
   agent is the coordination layer. This is intentional.
+* **Messages for escalation, beads for coordination.** `send_message` is
+  for human-facing summaries and cross-layer escalation. Day-to-day task
+  sequencing runs through the beads dependency graph.
 * **User communication.** Root sends results to the user via
   `send_message("USER", ...)`. The CLI reads them with `substrat inbox`.
+  Users can also check `br epic status` directly for fine-grained progress.
 
 ## Deployment walkthrough
 
 Concrete steps from cold start to checking results. Assumes the daemon
-binary is installed and two repos (`~/code/project-A`, `~/code/project-B`)
-exist on the host.
+binary is installed, `br` is on PATH, and two repos (`~/code/project-A`,
+`~/code/project-B`) exist on the host with beads initialized
+(`br init` in each repo).
 
 ### 1. Start the daemon
 
@@ -135,11 +148,18 @@ The root agent will:
 4. `send_message("project-A", "implement REST endpoint for user signup")`.
 
 The project agent will then:
-1. Create a worktree: `git worktree add /worktrees/signup -b signup`.
-2. Create a worker workspace and mount the worktree into it.
-3. Spawn a worker — no cloning needed, the worktree is ready to use.
-4. After the worker finishes, spawn a reviewer with an RO view.
-5. Once approved, merge the branch locally: `git merge signup`.
+1. Decompose into issues:
+   `br create --type=epic --title="user signup endpoint"` → epic.
+   `br create --title="implement POST /signup" --parent=<epic>`.
+   `br create --title="add input validation" --parent=<epic>`.
+   `br create --title="write tests" --parent=<epic>`.
+2. Create a worktree: `git worktree add /worktrees/signup -b signup`.
+3. Create a worker workspace and mount the worktree into it.
+4. Spawn a worker — it picks up issues via `br ready --claim`.
+5. After implementation issues close, spawn a reviewer with an RO view.
+   Reviewer creates review issues; worker fixes them the same way.
+6. When `br epic status` shows the epic fully closed, merge locally:
+   `git merge signup`.
 
 ### 5. Monitor progress
 
@@ -155,6 +175,10 @@ substrat daemon watch
 
 # Tail one agent's events.
 substrat daemon watch --agent-id $ROOT
+
+# Fine-grained task progress (run from project repo).
+cd ~/code/project-A && br epic status
+cd ~/code/project-A && br list --json
 ```
 
 ### 6. Check results
@@ -168,7 +192,8 @@ substrat inbox
 
 The inbox drains on read — each call returns new messages since the last
 check. For continuous monitoring, poll in a loop or combine with
-`daemon watch`.
+`daemon watch`. For task-level detail, check beads directly in the
+project repo.
 
 ### 7. Iterate
 
