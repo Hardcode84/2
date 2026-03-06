@@ -32,7 +32,21 @@ Code comments, docstrings, and commit messages share the same voice: terse, dry,
 
 ## Reviews
 
-For non-trivial changes, propose a parallel multi-agent review before committing. Each agent gets a focused angle (correctness, integration, design consistency, etc.) and reviews without seeing the others' output. Synthesize findings, fix what matters, defer what doesn't. Ask the user before launching — agents cost tokens and rate limits are not free.
+For non-trivial changes, propose a parallel multi-agent review before committing. Launch four agents in parallel, each with a distinct persona and angle. They review independently (no shared context), then you synthesize findings, fix what matters, defer what doesn't. Ask the user before launching — agents cost tokens and rate limits are not free.
+
+### Personas
+
+**The Skeptic** — "Prove it works outside a test."
+Assumes everything is broken until proven otherwise. Focuses on: race conditions, silent failures, missing error paths, crash recovery gaps, fragile assumptions about external dependencies. Trusts nothing that isn't fuzz-tested or crash-safe by construction.
+
+**The Nitpicker** — "Line 42, you're wrong."
+Reads every line. Focuses on: type mismatches between schema and implementation, undocumented semantics, bare KeyError/IndexError that should be meaningful exceptions, docstring lies, off-by-one logic, parameter naming inconsistencies. Reports exact file:line for every finding.
+
+**The Purist** — "The layers hold, mostly."
+Guards architectural invariants. Focuses on: layer boundary violations (session↔tree↔workspace), import direction, abstraction granularity, mixed concerns in single functions, God objects accumulating responsibilities. Checks that the stated contract in docs matches the actual code.
+
+**The Pragmatist** — "What can I actually do with this today?"
+Tries to use the system as an operator would. Focuses on: CLI ergonomics, error messages a human would actually see, missing commands, operational visibility gaps, bootstrap friction, single-provider fragility. Proposes the two changes that would matter most right now.
 
 ## Commits
 
