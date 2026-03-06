@@ -174,13 +174,14 @@ See `tests/stress/test_orchestrator_fuzz.py`. ChaosProvider + ChaosProviderSessi
 Code bugs that prevent the full stack from working end-to-end.
 - [x] `--approve-mcps` missing from CursorSession._build_cmd() — now unconditional
 - [x] `.workspace-trusted` marker — cursor-agent gates MCP calls behind workspace trust in headless mode
-- [ ] cursor-agent MCP approval still flaky (~50%) despite --approve-mcps + .workspace-trusted — fallback plan: drop MCP entirely, have cursor-agent output structured JSON tool calls parsed from stream-json output
+- [x] cursor-agent MCP approval — `--yolo` + `_pre_approve_mcp` + `.workspace-trusted` combo works reliably in interactive sessions
 - [x] `workspace=Path("/tmp")` fallback in CursorAgentProvider.create() — now uses tempfile.mkdtemp(), cleaned up on stop()
 - [x] check_available() probe missed linker libs — /lib and /lib64 not bound, dynamically-linked /usr/bin/true failed inside sandbox (3b32c9f)
 - [x] bwrap test fixtures used unresolved tilde mount paths — Path("~/.local") doesn't expand, cursor-agent invisible inside sandbox (3b32c9f)
 - [x] CursorSession.send() swallowed stderr — non-zero exit with no output silently returned empty string (a2258e2)
 - [ ] .mdc rules bind-mount wiring — only matters for shared workspaces (multiple agents same workspace); single-agent-per-workspace works fine with current host-side writes
 - [x] Deferred spawn error recovery — do_spawn catches exceptions, removes orphaned child from tree/inbox/mapping
+- [x] CLI workspace scoping — CLI-created workspaces defaulted to random uuid4 scope, invisible to all agents; now defaults to USER scope, scope args accept agent names
 
 ## E2E — Missing Integration Tests
 - [x] Daemon + real cursor-agent (no bwrap) — daemon.start, agent.create, agent.send with CursorAgentProvider, verify real response
@@ -213,6 +214,31 @@ Gap analysis in docs/user_story.md. Prompt templates in templates/.
 - [ ] Workspace update tool (G7) — toggle network_access after creation
 - [ ] Broadcast completion signal (G8) — agent has no way to know all broadcast replies arrived
 - [ ] Sync message timeout (G9) — recipient crash leaves sender stuck
+
+## Review Findings (independent review, cross-referenced)
+Correctness — fix now:
+- [ ] `session/store.py` `_deserialize` bare dict access — `created_at`, `suspended_at`, `provider_state` raise KeyError on missing/legacy keys; use `.get()` with defaults
+- [ ] `scheduler.py` bare KeyError for unknown session IDs — `send_turn`, `stream_turn`, `terminate_session` give opaque errors; wrap with meaningful messages
+- [ ] `agent/tree.py` `resolve("")` — falls through to KeyError via UUID parse; should be explicit ValueError for empty input
+- [ ] `agent/tools.py` `remind_me` ToolParam says "integer" but implementation accepts float — schema should say "number"
+
+Reliability — fix soon:
+- [ ] RPC no timeouts — `sync_call`/`async_call` can hang forever on unresponsive daemon
+- [ ] PID file race in `_cleanup_stale` — no advisory lock, concurrent daemon starts can both pass check
+- [ ] `logging/decorator.py` `@log_method` on sync function — silently wraps in async shell, no error
+
+Low priority:
+- [ ] `agent/inbox.py` `collect` AND semantics for sender+kind undocumented
+- [ ] `session/multiplexer.py` `_evict` stop() failure logs session_id but not orphan PID
+- [ ] CLI workspace commands take scope as separate positional arg — `workspace list` shows `label/name` but delete/link/inspect need separate args
+
+Already addressed:
+- [x] MCP ~50% flaky — `--yolo` + `_pre_approve_mcp` resolved this
+- [x] `agent/message.py` `as X` re-exports — correct PEP 484 idiom, not redundant
+
+Design debt (defer):
+- [ ] Extract `RecoveryService` from `Orchestrator.recover()` — ~200 lines mixing 5 concerns
+- [ ] `substrat quickstart` one-command demo
 
 ## Open Design Questions
 - [x] Configuration format — CLI flags + env vars sufficient for current surface (3 flags). Revisit when there's actual config to put in a file
