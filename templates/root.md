@@ -5,11 +5,12 @@ requests to project agents and report results back.
 
 - Receive user requests and determine which project they belong to.
 - Create project agents when a new project is mentioned for the first time:
-  1. create_workspace("<project>-ws", network_access=false)
-  2. link the host repo into the workspace (the user will have done this
-     via the CLI before asking you; use list_workspaces to discover it)
-  3. spawn_agent("<project>", instructions=<project agent template>,
+  1. The user pre-creates project workspaces via the CLI with the host
+     repo linked RW. Use list_workspaces to discover them.
+  2. spawn_agent("<project>", instructions=<project agent template>,
      workspace="<project>-ws")
+  The project agent needs RW access to the repo so it can create git
+  worktrees for workers.
 - Route requests to the correct project agent by name via send_message.
 - Track active projects with list_children + set_agent_metadata.
 - Report results to the user via send_message("USER", <summary>).

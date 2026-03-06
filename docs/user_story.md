@@ -3,9 +3,10 @@
 ## Agents
 
 * **Root agent** — pure coordinator, no code. Lightweight workspace for scratch notes.
-* **Project agent** (N, one per project) — owns a cloned repo in its workspace.
-  Created via root: "start new project \<git repo\>".
-* **Worker agent** (per feature) — own workspace with own clone, can wreck it freely.
+* **Project agent** (N, one per project) — owns the repo in its workspace,
+  creates git worktrees for workers. Created via root: "start new project \<git repo\>".
+* **Worker agent** (per feature) — own workspace with a git worktree of the
+  project repo. Isolated working tree, shared object store.
   Spawned by project agent.
 * **Reviewer agent** (persistent, per project) — sibling of workers under project agent.
   Reads worker workspaces via ro views.
@@ -14,16 +15,18 @@
 
 1. User tells root: "I want feature X in project Y".
 2. Root relays to the corresponding project agent.
-3. Project agent spawns a worker for the feature.
-   * Worker gets its own workspace with a fresh clone (network at startup only).
-   * Worker writes code, commits to a feature branch.
+3. Project agent creates a git worktree and spawns a worker for the feature.
+   * Project agent runs `git worktree add` in its repo, mounts the
+     worktree into the worker's sandbox via `link_dir`.
+   * Worker writes code, commits to the feature branch.
 4. Worker messages project agent when ready or has questions.
    * Project agent answers directly or relays to root/user.
 5. Project agent creates ro view of worker's workspace, launches reviewer(s).
    * Reviewers read worker's code, message back and forth with worker.
    * Worker iterates until reviewers are satisfied.
-6. Project agent pulls worker's branch into its own repo (ro view of worker workspace).
-   Worker never touches project repo — project agent is the integration point.
+6. Project agent merges the worker's branch locally — both share the same
+   git object store via worktrees, so the branch is already available.
+   Worker never touches the project agent's working tree.
 7. Project agent relays to user for final review.
 8. When user satisfied, worker is terminated. Reviewer persists for next feature.
 
@@ -31,23 +34,24 @@
 
 ```
 root (lightweight ws, scratch notes)
-├── project-A (ws: cloned repo A)
-│   ├── worker-1 (ws: own clone of repo A)
-│   ├── worker-2 (ws: own clone of repo A)
-│   └── reviewer (ws: ro views of worker repos as needed)
-└── project-B (ws: cloned repo B)
-    ├── worker-3 (ws: own clone of repo B)
+├── project-A (ws: repo A, owns worktrees)
+│   ├── worker-1 (ws: worktree of repo A, branch feature-1)
+│   ├── worker-2 (ws: worktree of repo A, branch feature-2)
+│   └── reviewer (ws: ro view of worker worktree)
+└── project-B (ws: repo B, owns worktrees)
+    ├── worker-3 (ws: worktree of repo B)
     └── reviewer (ws: ro view)
 ```
 
 ## Key design points
 
-* **No cross-workspace writes.** Workers write only to their own workspace.
-  Project agent reads worker workspace (ro view) and pulls into its own repo.
-  No network needed for intra-project code movement.
-* **Concurrent workers are safe.** Each has an isolated clone. Project agent
-  is the single integration point — pulls sequentially, resolves conflicts
-  in its own repo.
+* **Worktree isolation.** Workers write only to their own worktree.
+  The project agent merges branches locally — no cross-repo fetch needed
+  because worktrees share the object store.
+* **Concurrent workers are safe.** Each has an isolated worktree on its own
+  branch. Git handles concurrent object writes atomically. Project agent
+  is the single integration point — merges sequentially, resolves conflicts
+  in its own working tree.
 * **One-hop routing.** Root can't reach workers directly (two hops). Project
   agent is the coordination layer. This is intentional.
 * **User communication.** Root sends results to the user via
@@ -130,8 +134,12 @@ The root agent will:
 3. `spawn_agent("project-A", instructions=<project template>, workspace="project-A-ws")`.
 4. `send_message("project-A", "implement REST endpoint for user signup")`.
 
-The project agent will then spawn a worker, the worker writes code, a
-reviewer is spawned, and the cycle runs autonomously.
+The project agent will then:
+1. Create a worktree: `git worktree add /worktrees/signup -b signup`.
+2. Create a worker workspace and mount the worktree into it.
+3. Spawn a worker — no cloning needed, the worktree is ready to use.
+4. After the worker finishes, spawn a reviewer with an RO view.
+5. Once approved, merge the branch locally: `git merge signup`.
 
 ### 5. Monitor progress
 
