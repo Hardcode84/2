@@ -188,6 +188,9 @@ substrat agent terminate root/project-A/worker-signup
 
 # Stop the daemon (terminates all agents).
 substrat daemon stop
+
+# Nuclear option — wipe all state and start fresh.
+substrat daemon stop 2>/dev/null; rm -rf ~/.substrat
 ```
 
 ### Expected agent tree after step 3
