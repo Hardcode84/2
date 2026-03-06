@@ -82,47 +82,28 @@ binary is installed, `br` is on PATH, and two repos (`~/code/project-A`,
 substrat daemon start --max-slots 4
 ```
 
-### 2. Create workspaces
+### 2. Set up root and projects
 
-One scratch workspace for the root coordinator, one per project with the
-host repo linked in read-write.
+Helper scripts in `templates/scripts/` automate workspace and agent
+creation. They call the generic CLI under the hood.
 
 ```bash
-# Root scratch pad.
-substrat workspace create scratch
+# Create root coordinator (scratch workspace + agent).
+./templates/scripts/init-root.sh root
 
-# Project A.
-substrat workspace create project-A-ws
-substrat workspace link project-A-ws $(substrat workspace list | grep project-A-ws | awk '{print $1}' | cut -d/ -f1) \
-    --source ~/code/project-A --target /repo --mode rw
-
-# Project B.
-substrat workspace create project-B-ws
-substrat workspace link project-B-ws $(substrat workspace list | grep project-B-ws | awk '{print $1}' | cut -d/ -f1) \
-    --source ~/code/project-B --target /repo --mode rw
+# Create project workspaces (links repo RW, inits beads if needed).
+./templates/scripts/init-project.sh root project-A ~/code/project-A
+./templates/scripts/init-project.sh root project-B ~/code/project-B
 ```
 
 Verify:
 
 ```bash
 substrat workspace list
-# <scope>/scratch
-# <scope>/project-A-ws  [net]  (if --network was passed)
-# <scope>/project-B-ws
+substrat agent list
 ```
 
-### 3. Seed the root agent
-
-Pass the root coordinator template as instructions. The root agent's job
-is pure dispatch — it never touches code.
-
-```bash
-substrat agent create root \
-    --instructions "$(cat templates/root.md)" \
-    --workspace scratch
-```
-
-### 4. Submit a task
+### 3. Submit a task
 
 ```bash
 substrat agent send root "Implement a REST endpoint for user signup in project-A"
@@ -155,7 +136,7 @@ The project agent will then:
 6. When `br epic status` shows the epic fully closed, merge locally:
    `git merge signup`.
 
-### 5. Monitor progress
+### 4. Monitor progress
 
 ```bash
 # Tree view — see all agents and their states.
@@ -175,7 +156,7 @@ cd ~/code/project-A && br epic status
 cd ~/code/project-A && br list --json
 ```
 
-### 6. Check results
+### 5. Check results
 
 Messages from the root agent to the user land in the inbox:
 
@@ -189,7 +170,7 @@ check. For continuous monitoring, poll in a loop or combine with
 `daemon watch`. For task-level detail, check beads directly in the
 project repo.
 
-### 7. Iterate
+### 6. Iterate
 
 Send follow-up tasks to the same root agent. It reuses existing project
 agents and their persistent reviewers:
@@ -199,7 +180,7 @@ substrat agent send root "Add input validation to the signup endpoint in project
 substrat agent send root "Set up CI pipeline in project-B"
 ```
 
-### 8. Tear down
+### 7. Tear down
 
 ```bash
 # Terminate a specific agent (must be a leaf — terminate children first).
@@ -209,7 +190,7 @@ substrat agent terminate root/project-A/worker-signup
 substrat daemon stop
 ```
 
-### Expected agent tree after step 4
+### Expected agent tree after step 3
 
 ```
 substrat agent list

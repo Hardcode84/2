@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Create the root coordinator agent with a scratch workspace.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+TEMPLATES="$(dirname "$SCRIPT_DIR")"
+
+name="${1:?usage: init-root.sh <name>}"
+
+substrat workspace create "${name}-scratch"
+substrat agent create "$name" \
+    --instructions "$(cat "$TEMPLATES/root.md")" \
+    --workspace "${name}-scratch"
+
+echo "root agent '$name' ready"
