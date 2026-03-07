@@ -456,7 +456,9 @@ class Orchestrator:
             try:
                 await self._execute_turn(
                     node,
-                    "You have been spawned. Read your instructions and begin work.",
+                    "You have been spawned. Your task is in your system prompt."
+                    " Start working now — read any referenced files and execute"
+                    " your instructions. Do not wait for further messages.",
                 )
             except Exception:
                 _log.warning(
