@@ -68,15 +68,27 @@ def _pid_path(root: Path) -> Path:
     return root / "daemon.pid"
 
 
-def _call(root: Path, method: str, params: dict[str, Any]) -> dict[str, Any]:
+def _call(
+    root: Path,
+    method: str,
+    params: dict[str, Any],
+    *,
+    timeout: float | None = None,
+) -> dict[str, Any]:
     """Wrap sync_call with CLI error handling."""
+    kwargs: dict[str, Any] = {}
+    if timeout is not None:
+        kwargs["timeout"] = timeout
     try:
-        return sync_call(_sock_path(root), method, params)
+        return sync_call(_sock_path(root), method, params, **kwargs)
     except RpcError as exc:
         typer.echo(f"error: {exc.message}", err=True)
         raise typer.Exit(1) from exc
     except json.JSONDecodeError:
         typer.echo("error: invalid response from daemon", err=True)
+        raise typer.Exit(1) from None
+    except TimeoutError:
+        typer.echo("error: request timed out", err=True)
         raise typer.Exit(1) from None
     except OSError:
         typer.echo("error: daemon not running", err=True)
@@ -349,7 +361,10 @@ def agent_send(
     root: Path = _ROOT_OPT,
 ) -> None:
     """Send a message to an agent and print the response."""
-    result = _call(root, "agent.send", {"agent_id": agent_id, "message": message})
+    # Agent turns can take minutes — use a generous timeout.
+    result = _call(
+        root, "agent.send", {"agent_id": agent_id, "message": message}, timeout=600.0
+    )
     typer.echo(result.get("response", ""))
 
 
@@ -395,12 +410,17 @@ def agent_attach(
             return
         try:
             for chunk in sync_stream(
-                sock, "agent.stream", {"agent_id": agent_id, "message": prompt}
+                sock,
+                "agent.stream",
+                {"agent_id": agent_id, "message": prompt},
+                timeout=600.0,
             ):
                 typer.echo(chunk, nl=False)
             typer.echo()  # Newline after response.
         except RpcError as exc:
             typer.echo(f"\nerror: {exc.message}", err=True)
+        except TimeoutError:
+            typer.echo("\nerror: request timed out", err=True)
         except OSError:
             typer.echo("\nerror: daemon not running", err=True)
             raise typer.Exit(1) from None

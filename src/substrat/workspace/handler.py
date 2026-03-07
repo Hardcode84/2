@@ -154,15 +154,26 @@ class WorkspaceToolHandler:
         parent_id, children, _child_lookup = self._resolve_ctx()
         vis = visible_scopes(self._caller_id, children, parent_id)
         mut = mutable_scopes(self._caller_id, children)
-        workspaces = [
-            {
-                "name": ws.name,
-                "scope": self._scope_namer(ws.scope),
-                "mutable": ws.scope in mut,
-            }
-            for ws in self._store.scan()
-            if ws.scope in vis
-        ]
+        workspaces = []
+        for ws in self._store.scan():
+            if ws.scope not in vis:
+                continue
+            label = self._scope_namer(ws.scope)
+            # Build a ref the agent can use directly in tool calls.
+            if label == "self":
+                ref = ws.name
+            elif label == "parent":
+                ref = f"../{ws.name}"
+            else:
+                ref = f"{label}/{ws.name}"
+            workspaces.append(
+                {
+                    "name": ws.name,
+                    "scope": label,
+                    "ref": ref,
+                    "mutable": ws.scope in mut,
+                }
+            )
         return {"workspaces": workspaces}
 
     def create_workspace(
