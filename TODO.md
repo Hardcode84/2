@@ -183,7 +183,7 @@ Code bugs that prevent the full stack from working end-to-end.
 - [x] Deferred spawn error recovery — do_spawn catches exceptions, removes orphaned child from tree/inbox/mapping
 - [x] CLI workspace scoping — CLI-created workspaces defaulted to random uuid4 scope, invisible to all agents; now defaults to USER scope, scope args accept agent names
 - [x] send_message sync=true caused sender to poll for reply indefinitely — removed sync messages entirely; all delivery is async with auto-wake
-- [ ] cursor-agent runs outside bwrap — workspace links are bwrap bind mounts, invisible to cursor-agent process; agent sees empty workspace root
+- [x] workspace link mount_path absolute vs relative — `/repo` resolved to absolute path in bwrap, bypassing workspace root; now normalized to relative
 
 ## E2E — Missing Integration Tests
 - [x] Daemon + real cursor-agent (no bwrap) — daemon.start, agent.create, agent.send with CursorAgentProvider, verify real response

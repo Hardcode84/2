@@ -21,6 +21,13 @@ from substrat.workspace.resolve import (
 )
 from substrat.workspace.store import WorkspaceStore, validate_name, view_tree
 
+
+def _relative_mount(raw: str) -> Path:
+    """Normalize a mount path to be relative to workspace root."""
+    stripped = raw.lstrip("/")
+    return Path(stripped) if stripped else Path(".")
+
+
 # -- Workspace tool catalog -------------------------------------------------
 
 WORKSPACE_TOOLS: tuple[ToolDef, ...] = (
@@ -299,7 +306,7 @@ class WorkspaceToolHandler:
         except FileNotFoundError:
             return tool_error(f"workspace {workspace!r} not found")
         target_ws.links.append(
-            LinkSpec(host_path=host_path, mount_path=Path(target), mode=mode)
+            LinkSpec(host_path=host_path, mount_path=_relative_mount(target), mode=mode)
         )
         self._store.save(target_ws)
         return {"status": "linked"}
@@ -323,7 +330,7 @@ class WorkspaceToolHandler:
             ws = self._store.load(scope, local_name)
         except FileNotFoundError:
             return tool_error(f"workspace {workspace!r} not found")
-        mount = Path(target)
+        mount = _relative_mount(target)
         for i, link in enumerate(ws.links):
             if link.mount_path == mount:
                 ws.links.pop(i)
@@ -402,7 +409,7 @@ class WorkspaceToolHandler:
             return tool_error(f"workspace {tgt_ref!r} not found")
 
         tgt_ws.links.append(
-            LinkSpec(host_path=host_path, mount_path=Path(target), mode=mode)
+            LinkSpec(host_path=host_path, mount_path=_relative_mount(target), mode=mode)
         )
         self._store.save(tgt_ws)
         return {"status": "linked"}

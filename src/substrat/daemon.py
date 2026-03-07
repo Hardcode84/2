@@ -511,9 +511,11 @@ class Daemon:
             ws = self._ws_store.load(scope, ws_name)
         except FileNotFoundError:
             raise KeyError(f"workspace not found: {scope.hex}/{ws_name}") from None
+        # Strip leading / — mount_path is relative to workspace root.
+        raw_mount = params["mount_path"].lstrip("/")
         link = LinkSpec(
             host_path=Path(params["host_path"]),
-            mount_path=Path(params["mount_path"]),
+            mount_path=Path(raw_mount) if raw_mount else Path("."),
             mode=params.get("mode", "ro"),
         )
         ws.links.append(link)
@@ -523,7 +525,8 @@ class Daemon:
     async def _handle_workspace_unlink(self, params: dict[str, Any]) -> dict[str, Any]:
         scope = self._resolve_scope(params["scope"])
         ws_name = params["name"]
-        mount_path = Path(params["mount_path"])
+        raw_mount = params["mount_path"].lstrip("/")
+        mount_path = Path(raw_mount) if raw_mount else Path(".")
         try:
             ws = self._ws_store.load(scope, ws_name)
         except FileNotFoundError:

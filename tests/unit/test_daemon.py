@@ -590,7 +590,7 @@ async def test_workspace_link(daemon: Daemon) -> None:
         info = await daemon._handle_workspace_inspect({"scope": scope, "name": "dev"})
         assert len(info["links"]) == 1
         assert info["links"][0]["host_path"] == "/opt/data"
-        assert info["links"][0]["mount_path"] == "/mnt/data"
+        assert info["links"][0]["mount_path"] == "mnt/data"
         assert info["links"][0]["mode"] == "rw"
     finally:
         await daemon.stop()

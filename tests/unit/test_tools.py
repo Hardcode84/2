@@ -1075,7 +1075,7 @@ def test_link_dir_basic(ws_fix: WsFixture) -> None:
     assert result == {"status": "linked"}
     dst_ws = ws_fix.ws_store.load(ws_fix.alice.id, "dst-ws")
     assert len(dst_ws.links) == 1
-    assert dst_ws.links[0].mount_path.as_posix() == "/mnt/data"
+    assert dst_ws.links[0].mount_path.as_posix() == "mnt/data"
 
 
 def test_link_dir_caller_no_workspace(ws_fix: WsFixture) -> None:
@@ -1576,7 +1576,7 @@ def test_link_from_child_workspace_into_own(ws_fix: WsFixture) -> None:
     assert result["status"] == "linked"
     # Verify the link was added.
     loaded = ws_fix.ws_store.load(ws_fix.root.id, "root-ws")
-    assert any(lk.mount_path == Path("/child-view") for lk in loaded.links)
+    assert any(lk.mount_path == Path("child-view") for lk in loaded.links)
 
 
 def test_link_from_invisible_workspace_fails(ws_fix: WsFixture) -> None:
@@ -1695,4 +1695,4 @@ def test_link_from_defaults_to_own_workspace(ws_fix: WsFixture) -> None:
     )
     assert result["status"] == "linked"
     loaded = ws_fix.ws_store.load(ws_fix.root.id, "my-ws")
-    assert any(lk.mount_path == Path("/alice-src") for lk in loaded.links)
+    assert any(lk.mount_path == Path("alice-src") for lk in loaded.links)
