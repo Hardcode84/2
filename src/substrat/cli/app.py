@@ -148,12 +148,16 @@ def start(
     ]
     if model is not None:
         cmd.extend(["--model", model])
+    root.mkdir(parents=True, exist_ok=True)
+    log_path = root / "daemon.log"
+    log_file = open(log_path, "a")  # noqa: SIM115
     subprocess.Popen(
         cmd,
         start_new_session=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=log_file,
+        stderr=log_file,
     )
+    log_file.close()
 
     # Wait for socket to appear.
     sock = root / "daemon.sock"

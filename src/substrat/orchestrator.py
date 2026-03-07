@@ -280,14 +280,18 @@ class Orchestrator:
         branch is frozen until someone pokes or the parent intervenes.
         """
         if agent_id not in self._tree:
+            _log.debug("wake skip: %s not in tree", agent_id.hex[:8])
             return
         node = self._tree.get(agent_id)
         if node.state != AgentState.IDLE:
+            _log.debug("wake skip: %s state=%s", node.name, node.state.value)
             return
         inbox = self._inboxes.get(agent_id)
         if not inbox:
+            _log.debug("wake skip: %s empty inbox", node.name)
             return
         if agent_id not in self._handlers:
+            _log.debug("wake skip: %s no handler (pending spawn)", node.name)
             return  # Session not ready yet (pending spawn).
         try:
             node.begin_turn()
@@ -933,5 +937,14 @@ class Orchestrator:
             return
         for child in self._tree.children(agent_id):
             inbox = self._inboxes.get(child.id)
+            has_handler = child.id in self._handlers
+            _log.debug(
+                "post-drain check: child=%s state=%s inbox=%d handler=%s",
+                child.name,
+                child.state.value,
+                len(inbox) if inbox else 0,
+                has_handler,
+            )
             if inbox and child.state == AgentState.IDLE:
+                _log.debug("post-drain wake: %s", child.name)
                 self._notify_wake(child.id)

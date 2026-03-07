@@ -614,6 +614,11 @@ def main() -> None:
     parser.add_argument("--max-slots", type=int, default=4)
     args = parser.parse_args()
 
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
     daemon = Daemon(
         args.root,
         default_provider="cursor-agent",
