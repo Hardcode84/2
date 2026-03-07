@@ -589,6 +589,41 @@ class DualOrchCrashMachine(RuleBasedStateMachine):
         self.ref.get_handler(ref_id).permit_turn(child_name)
         self.test.get_handler(test_id).permit_turn(child_name)
 
+    _TRANSITIONS = st.sampled_from(
+        ["busy->idle", "*->terminated", "idle->busy", "*->*"]
+    )
+
+    @precondition(lambda self: bool(_all_tree_ids(self.ref)))
+    @rule(agent=agents, data=st.data(), transition=_TRANSITIONS)
+    def subscribe_to_child(
+        self, agent: NamePath, data: st.DataObject, transition: str
+    ) -> None:
+        """Subscribe to a materialized child's transitions."""
+        if _is_dead(agent) or agent in self.pending_paths:
+            return
+        ref_id = _resolve(self.ref, agent)
+        test_id = _resolve(self.test, agent)
+        if ref_id is None or test_id is None:
+            return
+        materialized: list[str] = []
+        for child in self.ref.tree.children(ref_id):
+            child_path = agent + (child.name,)
+            if child_path not in self.pending_paths:
+                materialized.append(child.name)
+        if not materialized:
+            return
+        child_name = data.draw(st.sampled_from(sorted(materialized)))
+        ref_result = self.ref.get_handler(ref_id).subscribe(
+            child_name,
+            transition,
+        )
+        test_result = self.test.get_handler(test_id).subscribe(
+            child_name,
+            transition,
+        )
+        # Both should succeed or both fail.
+        assert ("error" in ref_result) == ("error" in test_result)
+
     # -- Invariants --------------------------------------------------------
 
     @invariant()

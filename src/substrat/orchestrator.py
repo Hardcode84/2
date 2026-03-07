@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncGenerator, Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -50,6 +51,24 @@ WrapCommandFactory = Callable[[UUID, str], CommandWrapper]
 _log = logging.getLogger(__name__)
 
 
+@dataclass
+class Subscription:
+    """A state transition subscription."""
+
+    id: UUID = field(default_factory=uuid4)
+    subscriber_id: UUID = field(default_factory=uuid4)
+    target_id: UUID = field(default_factory=uuid4)
+    from_state: str = "*"  # State name or "*" for any.
+    to_state: str = "*"
+    once: bool = False
+
+    def matches(self, from_s: AgentState, to_s: AgentState) -> bool:
+        """Check if a transition matches this subscription."""
+        if self.from_state != "*" and self.from_state != from_s.value:
+            return False
+        return self.to_state == "*" or self.to_state == to_s.value
+
+
 class Orchestrator:
     """Wires agent lifecycle to session management.
 
@@ -81,6 +100,10 @@ class Orchestrator:
         self._wake_task: asyncio.Task[None] | None = None
         # Per-agent reminder tasks: agent_id -> {reminder_id -> Task}.
         self._reminders: dict[UUID, dict[UUID, asyncio.Task[None]]] = {}
+        # Subscriptions: target_id -> list of subscriptions.
+        self._subscriptions: dict[UUID, list[Subscription]] = {}
+        # Reverse index: subscription_id -> (subscriber_id, target_id).
+        self._sub_index: dict[UUID, tuple[UUID, UUID]] = {}
         # USER inbox — collects messages from root agents to the operator.
         self._inboxes[USER] = Inbox()
 
@@ -187,9 +210,15 @@ class Orchestrator:
         except Exception:
             if node.state == AgentState.BUSY:
                 node.end_turn()
+                self._fire_transition(
+                    node.id,
+                    AgentState.BUSY,
+                    AgentState.IDLE,
+                )
             await self._drain_deferred(node.id, wake_children=False)
             raise
         node.end_turn()
+        self._fire_transition(node.id, AgentState.BUSY, AgentState.IDLE)
         await self._drain_deferred(node.id)
         self._rewake_if_pending(node.id)
 
@@ -198,7 +227,9 @@ class Orchestrator:
         node = self._tree.get(agent_id)
         if node.children:
             raise ValueError(f"agent {agent_id} has children; terminate them first")
+        prev_state = node.state
         node.terminate()
+        self._fire_transition(node.id, prev_state, AgentState.TERMINATED)
         self._log_lifecycle(
             node.session_id,
             "agent.terminated",
@@ -208,6 +239,7 @@ class Orchestrator:
         )
         await self._scheduler.terminate_session(node.session_id)
         self._cancel_all_reminders(agent_id)
+        self._cleanup_subscriptions(agent_id)
         self._tree.remove(agent_id)
         self._handlers.pop(agent_id, None)
         self._ws_handlers.pop(agent_id, None)
@@ -307,6 +339,11 @@ class Orchestrator:
         if not prompt:
             # Inbox drained by a concurrent check_inbox — don't waste permit.
             node.end_turn()
+            self._fire_transition(
+                agent_id,
+                AgentState.BUSY,
+                AgentState.IDLE,
+            )
             return
         # Consume permit_once only after confirming a turn will actually run.
         if node.gated and node.permit_once:
@@ -437,9 +474,15 @@ class Orchestrator:
         except Exception:
             if node.state == AgentState.BUSY:
                 node.end_turn()
+                self._fire_transition(
+                    node.id,
+                    AgentState.BUSY,
+                    AgentState.IDLE,
+                )
             await self._drain_deferred(node.id, wake_children=False)
             raise
         node.end_turn()
+        self._fire_transition(node.id, AgentState.BUSY, AgentState.IDLE)
         await self._drain_deferred(node.id)
         # Re-wake if messages arrived during the turn.
         self._rewake_if_pending(node.id)
@@ -480,6 +523,107 @@ class Orchestrator:
 
         if self._wake_task is not None:
             asyncio.get_event_loop().create_task(_run())
+
+    # -- Subscriptions -------------------------------------------------------
+
+    def _add_subscription(
+        self,
+        subscriber_id: UUID,
+        target_id: UUID,
+        from_state: str,
+        to_state: str,
+        once: bool,
+    ) -> UUID:
+        """Register a subscription. Returns the subscription ID."""
+        sub = Subscription(
+            subscriber_id=subscriber_id,
+            target_id=target_id,
+            from_state=from_state,
+            to_state=to_state,
+            once=once,
+        )
+        self._subscriptions.setdefault(target_id, []).append(sub)
+        self._sub_index[sub.id] = (subscriber_id, target_id)
+        return sub.id
+
+    def _remove_subscription(self, subscription_id: UUID) -> bool:
+        """Remove a subscription by ID. Returns True if found."""
+        entry = self._sub_index.pop(subscription_id, None)
+        if entry is None:
+            return False
+        _, target_id = entry
+        subs = self._subscriptions.get(target_id)
+        if subs is not None:
+            self._subscriptions[target_id] = [
+                s for s in subs if s.id != subscription_id
+            ]
+            if not self._subscriptions[target_id]:
+                del self._subscriptions[target_id]
+        return True
+
+    def _fire_transition(
+        self,
+        agent_id: UUID,
+        from_state: AgentState,
+        to_state: AgentState,
+    ) -> None:
+        """Deliver notifications for matching subscriptions."""
+        subs = self._subscriptions.get(agent_id)
+        if not subs:
+            return
+        try:
+            node = self._tree.get(agent_id)
+        except KeyError:
+            return
+        name = node.name or agent_id.hex[:8]
+        fired: list[UUID] = []
+        for sub in subs:
+            if not sub.matches(from_state, to_state):
+                continue
+            payload = f"[state] {name}: {from_state.value} -> {to_state.value}"
+            envelope = MessageEnvelope(
+                sender=SYSTEM,
+                recipient=sub.subscriber_id,
+                kind=MessageKind.NOTIFICATION,
+                payload=payload,
+                metadata={
+                    "subscription_id": sub.id.hex,
+                    "agent": name,
+                    "from": from_state.value,
+                    "to": to_state.value,
+                },
+            )
+            inbox = self._inboxes.get(sub.subscriber_id)
+            if inbox is not None:
+                self._log_lifecycle_for_agent(
+                    sub.subscriber_id,
+                    "message.enqueued",
+                    {
+                        "message_id": envelope.id.hex,
+                        "sender": SYSTEM.hex,
+                        "recipient": sub.subscriber_id.hex,
+                        "kind": "notification",
+                        "payload": payload,
+                    },
+                )
+                inbox.deliver(envelope)
+                self._notify_wake(sub.subscriber_id)
+            if sub.once:
+                fired.append(sub.id)
+        for sid in fired:
+            self._remove_subscription(sid)
+
+    def _cleanup_subscriptions(self, agent_id: UUID) -> None:
+        """Remove all subscriptions involving an agent (as target or subscriber)."""
+        # Remove as target.
+        for sub in self._subscriptions.pop(agent_id, []):
+            self._sub_index.pop(sub.id, None)
+        # Remove as subscriber.
+        to_remove = [
+            sid for sid, (sub_id, _) in self._sub_index.items() if sub_id == agent_id
+        ]
+        for sid in to_remove:
+            self._remove_subscription(sid)
 
     def _rewake_if_pending(self, agent_id: UUID) -> None:
         """Re-enqueue wake if agent is IDLE with a non-empty inbox.
@@ -541,6 +685,8 @@ class Orchestrator:
             validate_ws_ref=validate_ws_ref,
             remind_callback=self._make_remind_callback(agent_id),
             cancel_reminder_callback=self._make_cancel_reminder_callback(agent_id),
+            subscribe_callback=self._make_subscribe_callback(agent_id),
+            unsubscribe_callback=self._make_unsubscribe_callback(agent_id),
         )
 
     def _make_resolve_ctx(
@@ -635,6 +781,39 @@ class Orchestrator:
                 return False
             task.cancel()
             return True
+
+        return callback
+
+    def _make_subscribe_callback(
+        self, agent_id: UUID
+    ) -> Callable[[UUID, str, str, bool], UUID]:
+        """Return a callback that registers a subscription."""
+
+        def callback(
+            target_id: UUID,
+            from_state: str,
+            to_state: str,
+            once: bool,
+        ) -> UUID:
+            return self._add_subscription(
+                agent_id,
+                target_id,
+                from_state,
+                to_state,
+                once,
+            )
+
+        return callback
+
+    def _make_unsubscribe_callback(self, agent_id: UUID) -> Callable[[UUID], bool]:
+        """Return a callback that removes a subscription owned by agent."""
+
+        def callback(subscription_id: UUID) -> bool:
+            # Only allow removing own subscriptions.
+            entry = self._sub_index.get(subscription_id)
+            if entry is None or entry[0] != agent_id:
+                return False
+            return self._remove_subscription(subscription_id)
 
         return callback
 
@@ -959,6 +1138,53 @@ class Orchestrator:
                 inbox = self._inboxes.get(recipient_id)
                 if inbox is not None:
                     inbox.deliver(envelope)
+
+        # -- Subscription recovery: replay subscribe/unsubscribe events. --
+        for _sid, info in valid.items():
+            subscriber_id = info["agent_id"]
+            if subscriber_id not in placed:
+                continue
+            for entry in info.get("entries", []):
+                ev = entry.get("event")
+                if ev == "tool.subscribe":
+                    d = entry.get("data", {})
+                    target_hex = d.get("target_id")
+                    if not target_hex:
+                        continue
+                    target_id = UUID(target_hex)
+                    if target_id not in placed:
+                        continue
+                    sub_id = self._add_subscription(
+                        subscriber_id,
+                        target_id,
+                        d.get("from", "*"),
+                        d.get("to", "*"),
+                        d.get("once", False),
+                    )
+                    # Patch the subscription ID to match the logged one.
+                    logged_id = d.get("subscription_id")
+                    if logged_id:
+                        old_id = sub_id
+                        real_id = UUID(logged_id)
+                        # Find and patch.
+                        target_subs = self._subscriptions.get(
+                            target_id,
+                            [],
+                        )
+                        for sub in target_subs:
+                            if sub.id == old_id:
+                                sub.id = real_id
+                                break
+                        self._sub_index.pop(old_id, None)
+                        self._sub_index[real_id] = (
+                            subscriber_id,
+                            target_id,
+                        )
+                elif ev == "tool.unsubscribe":
+                    d = entry.get("data", {})
+                    sid_hex = d.get("subscription_id")
+                    if sid_hex:
+                        self._remove_subscription(UUID(sid_hex))
 
         # -- Recovery wake: agents with pending messages get woken. --
         for nid in placed:

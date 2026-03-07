@@ -4,7 +4,7 @@
 
 """Tool catalog and logic layer.
 
-AGENT_TOOLS is the catalog of Substrat's fourteen agent-facing tools.
+AGENT_TOOLS is the catalog of Substrat's sixteen agent-facing tools.
 ToolHandler implements agent tools as pure operations on the agent tree
 and inboxes. Workspace validation is injected as a callable.
 """
@@ -120,6 +120,29 @@ AGENT_TOOLS: tuple[ToolDef, ...] = (
         ),
     ),
     ToolDef(
+        "subscribe",
+        "Watch a reachable agent's state transitions. Delivers system messages.",
+        (
+            ToolParam("agent_name", "string", "Agent to watch."),
+            ToolParam(
+                "transition",
+                "string",
+                'Transition pattern, e.g. "busy->idle", "*->terminated".',
+            ),
+            ToolParam(
+                "once",
+                "boolean",
+                "Auto-remove after first delivery.",
+                required=False,
+            ),
+        ),
+    ),
+    ToolDef(
+        "unsubscribe",
+        "Remove a state transition subscription by ID.",
+        (ToolParam("subscription_id", "string", "Subscription UUID."),),
+    ),
+    ToolDef(
         "gate",
         "Prevent a child from being woken. Messages queue silently.",
         (ToolParam("agent_name", "string", "Name of a direct child."),),
@@ -149,6 +172,10 @@ TerminateCallback = Callable[[UUID], DeferredWork]
 ValidateWsRef = Callable[[str], tuple[UUID, str]]
 RemindCallback = Callable[[str, float, float | None], tuple[UUID, DeferredWork]]
 CancelReminderCallback = Callable[[UUID], bool]
+# subscribe(target_id, from_state, to_state, once) -> subscription_id.
+SubscribeCallback = Callable[[UUID, str, str, bool], UUID]
+# unsubscribe(subscription_id) -> removed.
+UnsubscribeCallback = Callable[[UUID], bool]
 InboxRegistry = dict[UUID, Inbox]
 
 
@@ -172,6 +199,8 @@ class ToolHandler:
         validate_ws_ref: ValidateWsRef | None = None,
         remind_callback: RemindCallback | None = None,
         cancel_reminder_callback: CancelReminderCallback | None = None,
+        subscribe_callback: SubscribeCallback | None = None,
+        unsubscribe_callback: UnsubscribeCallback | None = None,
     ) -> None:
         self._tree = tree
         self._inboxes = inboxes
@@ -183,6 +212,8 @@ class ToolHandler:
         self._validate_ws_ref = validate_ws_ref
         self._remind_callback = remind_callback
         self._cancel_reminder_callback = cancel_reminder_callback
+        self._subscribe_callback = subscribe_callback
+        self._unsubscribe_callback = unsubscribe_callback
         self._deferred: list[DeferredWork] = []
 
     # --- Public tools ---
@@ -470,6 +501,71 @@ class ToolHandler:
             "key": key,
             "value": value,
         }
+
+    def subscribe(
+        self,
+        agent_name: str,
+        transition: str,
+        *,
+        once: bool = False,
+    ) -> dict[str, Any]:
+        """Subscribe to a reachable agent's state transitions."""
+        if self._subscribe_callback is None:
+            return tool_error("subscribe not available")
+        # Parse transition pattern.
+        parts = transition.split("->")
+        if len(parts) != 2:
+            return tool_error(
+                f'invalid transition format: {transition!r} (expected "from->to")'
+            )
+        from_s, to_s = parts[0].strip(), parts[1].strip()
+        valid = {"idle", "busy", "waiting", "terminated", "*"}
+        if from_s not in valid or to_s not in valid:
+            return tool_error(f"unknown state in transition: {transition!r}")
+        # Resolve target — one-hop visibility (parent, children, siblings).
+        try:
+            target = self._resolve_name(agent_name)
+        except ToolError as exc:
+            return tool_error(str(exc))
+        sub_id = self._subscribe_callback(
+            target.id,
+            from_s,
+            to_s,
+            once,
+        )
+        self._log_event(
+            self._caller_id,
+            "tool.subscribe",
+            {
+                "subscription_id": sub_id.hex,
+                "target": agent_name,
+                "target_id": target.id.hex,
+                "from": from_s,
+                "to": to_s,
+                "once": once,
+            },
+        )
+        return {
+            "subscription_id": str(sub_id),
+            "status": "active",
+        }
+
+    def unsubscribe(self, subscription_id: str) -> dict[str, Any]:
+        """Remove a state transition subscription."""
+        if self._unsubscribe_callback is None:
+            return tool_error("unsubscribe not available")
+        try:
+            sid = UUID(subscription_id)
+        except ValueError:
+            return tool_error(f"invalid subscription_id: {subscription_id!r}")
+        if self._unsubscribe_callback(sid):
+            self._log_event(
+                self._caller_id,
+                "tool.unsubscribe",
+                {"subscription_id": sid.hex},
+            )
+            return {"status": "removed"}
+        return tool_error(f"unknown subscription: {subscription_id}")
 
     def gate(self, agent_name: str) -> dict[str, Any]:
         """Prevent a child from being woken. Parent-only authority."""

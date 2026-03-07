@@ -1350,3 +1350,116 @@ async def test_gated_child_skips_first_turn_bootstrap(
         assert child.gated is True
     finally:
         await orch.stop_wake_loop()
+
+
+# --- Subscription tests ---
+
+
+async def test_subscribe_fires_on_turn_end(
+    provider: FakeProvider,
+    orch: Orchestrator,
+) -> None:
+    """Subscriber gets notified when target finishes a turn (busy->idle)."""
+    parent = await orch.create_root_agent("parent", "p")
+    handler = orch.get_handler(parent.id)
+    handler.spawn_agent("worker", "w")
+    await orch.run_turn(parent.id, "go")
+
+    worker = orch.tree.children(parent.id)[0]
+    # Parent subscribes to worker's busy->idle transition.
+    result = handler.subscribe("worker", "busy->idle")
+    assert result["status"] == "active"
+
+    # Run a turn on worker — should fire the subscription.
+    await orch.run_turn(worker.id, "do work")
+
+    # Parent's inbox should have a notification.
+    inbox = orch.inboxes[parent.id]
+    msgs = inbox.peek()
+    assert any("[state] worker: busy -> idle" in m.payload for m in msgs)
+
+
+async def test_subscribe_once_auto_removes(
+    provider: FakeProvider,
+    orch: Orchestrator,
+) -> None:
+    """One-shot subscription fires once then is removed."""
+    parent = await orch.create_root_agent("parent", "p")
+    handler = orch.get_handler(parent.id)
+    handler.spawn_agent("worker", "w")
+    await orch.run_turn(parent.id, "go")
+
+    worker = orch.tree.children(parent.id)[0]
+    result = handler.subscribe("worker", "busy->idle", once=True)
+    sub_id = result["subscription_id"]
+
+    await orch.run_turn(worker.id, "turn 1")
+    # Drain parent inbox.
+    handler.check_inbox()
+
+    # Second turn — should NOT fire (one-shot removed).
+    await orch.run_turn(worker.id, "turn 2")
+    msgs = orch.inboxes[parent.id].peek()
+    assert not any("[state]" in m.payload for m in msgs)
+    # Subscription ID should be gone.
+    assert UUID(sub_id) not in orch._sub_index
+
+
+async def test_subscribe_wildcard_from(
+    provider: FakeProvider,
+    orch: Orchestrator,
+) -> None:
+    """Wildcard from-state matches any transition to the target state."""
+    parent = await orch.create_root_agent("parent", "p")
+    handler = orch.get_handler(parent.id)
+    handler.spawn_agent("worker", "w")
+    await orch.run_turn(parent.id, "go")
+
+    worker = orch.tree.children(parent.id)[0]
+    handler.subscribe("worker", "*->terminated")
+
+    await orch.terminate_agent(worker.id)
+
+    msgs = orch.inboxes[parent.id].peek()
+    assert any("terminated" in m.payload for m in msgs)
+
+
+async def test_subscribe_cleanup_on_terminate(
+    provider: FakeProvider,
+    orch: Orchestrator,
+) -> None:
+    """Subscriptions are cleaned up when target or subscriber is terminated."""
+    parent = await orch.create_root_agent("parent", "p")
+    handler = orch.get_handler(parent.id)
+    handler.spawn_agent("worker", "w")
+    await orch.run_turn(parent.id, "go")
+
+    worker = orch.tree.children(parent.id)[0]
+    result = handler.subscribe("worker", "busy->idle")
+    sub_id = UUID(result["subscription_id"])
+
+    await orch.terminate_agent(worker.id)
+
+    # Subscription should be cleaned up.
+    assert sub_id not in orch._sub_index
+    assert worker.id not in orch._subscriptions
+
+
+async def test_unsubscribe_stops_notifications(
+    provider: FakeProvider,
+    orch: Orchestrator,
+) -> None:
+    """unsubscribe() prevents further notifications."""
+    parent = await orch.create_root_agent("parent", "p")
+    handler = orch.get_handler(parent.id)
+    handler.spawn_agent("worker", "w")
+    await orch.run_turn(parent.id, "go")
+
+    worker = orch.tree.children(parent.id)[0]
+    result = handler.subscribe("worker", "busy->idle")
+    handler.unsubscribe(result["subscription_id"])
+
+    await orch.run_turn(worker.id, "do work")
+
+    msgs = orch.inboxes[parent.id].peek()
+    assert not any("[state]" in m.payload for m in msgs)

@@ -1821,3 +1821,152 @@ def test_permit_turn_logs_event(fix: ToolFixture) -> None:
     h.permit_turn("alice")
     events = [(ev, d) for _, ev, d in cap.events if ev == "tool.permit_turn"]
     assert len(events) == 1
+
+
+# === Subscription tests ===
+
+
+def _sub_handler(
+    fix: ToolFixture,
+    caller_id: UUID,
+    *,
+    subs: dict[UUID, list[Any]] | None = None,
+    sub_index: dict[UUID, tuple[UUID, UUID]] | None = None,
+    cap: LogCapture | None = None,
+) -> ToolHandler:
+    """Build a ToolHandler with subscribe/unsubscribe callbacks."""
+    if subs is None:
+        subs = {}
+    if sub_index is None:
+        sub_index = {}
+
+    def subscribe_cb(target_id: UUID, from_s: str, to_s: str, once: bool) -> UUID:
+        from substrat.orchestrator import Subscription
+
+        s = Subscription(
+            subscriber_id=caller_id,
+            target_id=target_id,
+            from_state=from_s,
+            to_state=to_s,
+            once=once,
+        )
+        subs.setdefault(target_id, []).append(s)
+        sub_index[s.id] = (caller_id, target_id)
+        return s.id
+
+    def unsubscribe_cb(sub_id: UUID) -> bool:
+        entry = sub_index.pop(sub_id, None)
+        if entry is None or entry[0] != caller_id:
+            return False
+        _, tid = entry
+        if tid in subs:
+            subs[tid] = [x for x in subs[tid] if x.id != sub_id]
+        return True
+
+    return ToolHandler(
+        fix.tree,
+        fix.inboxes,
+        caller_id,
+        log_callback=cap,
+        subscribe_callback=subscribe_cb,
+        unsubscribe_callback=unsubscribe_cb,
+    )
+
+
+def test_subscribe_returns_id(fix: ToolFixture) -> None:
+    """subscribe() returns a subscription ID."""
+    h = _sub_handler(fix, fix.root.id)
+    result = h.subscribe("alice", "busy->idle")
+    assert result["status"] == "active"
+    assert "subscription_id" in result
+
+
+def test_subscribe_invalid_format(fix: ToolFixture) -> None:
+    """subscribe() rejects malformed transition strings."""
+    h = _sub_handler(fix, fix.root.id)
+    result = h.subscribe("alice", "busyidle")
+    assert "error" in result
+
+
+def test_subscribe_invalid_state(fix: ToolFixture) -> None:
+    """subscribe() rejects unknown state names."""
+    h = _sub_handler(fix, fix.root.id)
+    result = h.subscribe("alice", "running->idle")
+    assert "error" in result
+
+
+def test_subscribe_unreachable_agent(fix: ToolFixture) -> None:
+    """subscribe() fails for agents outside one-hop visibility."""
+    # dave is carol's child — not reachable from alice.
+    h = _sub_handler(fix, fix.alice.id)
+    result = h.subscribe("dave", "busy->idle")
+    assert "error" in result
+
+
+def test_subscribe_to_sibling(fix: ToolFixture) -> None:
+    """Siblings can subscribe to each other."""
+    h = _sub_handler(fix, fix.alice.id)
+    result = h.subscribe("bob", "*->terminated")
+    assert result["status"] == "active"
+
+
+def test_subscribe_to_parent(fix: ToolFixture) -> None:
+    """Children can subscribe to their parent."""
+    h = _sub_handler(fix, fix.alice.id)
+    result = h.subscribe("root", "busy->idle")
+    assert result["status"] == "active"
+
+
+def test_subscribe_wildcard(fix: ToolFixture) -> None:
+    """Wildcard transitions are accepted."""
+    h = _sub_handler(fix, fix.root.id)
+    result = h.subscribe("alice", "*->*")
+    assert result["status"] == "active"
+
+
+def test_unsubscribe_removes(fix: ToolFixture) -> None:
+    """unsubscribe() removes an active subscription."""
+    sub_index: dict[UUID, tuple[UUID, UUID]] = {}
+    h = _sub_handler(fix, fix.root.id, sub_index=sub_index)
+    result = h.subscribe("alice", "busy->idle")
+    sid = result["subscription_id"]
+    result2 = h.unsubscribe(sid)
+    assert result2["status"] == "removed"
+    assert UUID(sid) not in sub_index
+
+
+def test_unsubscribe_unknown_id(fix: ToolFixture) -> None:
+    """unsubscribe() returns error for unknown ID."""
+    h = _sub_handler(fix, fix.root.id)
+    result = h.unsubscribe(uuid4().hex)
+    assert "error" in result
+
+
+def test_unsubscribe_invalid_uuid(fix: ToolFixture) -> None:
+    """unsubscribe() returns error for malformed UUID."""
+    h = _sub_handler(fix, fix.root.id)
+    result = h.unsubscribe("not-a-uuid")
+    assert "error" in result
+
+
+def test_subscribe_logs_event(fix: ToolFixture) -> None:
+    """subscribe() logs tool.subscribe event on caller's log."""
+    cap = LogCapture()
+    h = _sub_handler(fix, fix.root.id, cap=cap)
+    h.subscribe("alice", "busy->idle", once=True)
+    events = [(aid, d) for aid, ev, d in cap.events if ev == "tool.subscribe"]
+    assert len(events) == 1
+    assert events[0][0] == fix.root.id
+    assert events[0][1]["from"] == "busy"
+    assert events[0][1]["to"] == "idle"
+    assert events[0][1]["once"] is True
+
+
+def test_unsubscribe_logs_event(fix: ToolFixture) -> None:
+    """unsubscribe() logs tool.unsubscribe event."""
+    cap = LogCapture()
+    h = _sub_handler(fix, fix.root.id, cap=cap)
+    result = h.subscribe("alice", "busy->idle")
+    h.unsubscribe(result["subscription_id"])
+    events = [d for _, ev, d in cap.events if ev == "tool.unsubscribe"]
+    assert len(events) == 1
