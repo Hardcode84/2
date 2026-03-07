@@ -465,7 +465,8 @@ class Orchestrator:
                     "first turn failed for agent %s", node.id.hex, exc_info=True
                 )
 
-        asyncio.get_event_loop().create_task(_run())
+        if self._wake_task is not None:
+            asyncio.get_event_loop().create_task(_run())
 
     def _rewake_if_pending(self, agent_id: UUID) -> None:
         """Re-enqueue wake if agent is IDLE with a non-empty inbox.
