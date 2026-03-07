@@ -1223,3 +1223,105 @@ async def test_existing_child_not_bootstrap_waked(
         assert len(child_wakes) == 0
     finally:
         await orch.stop_wake_loop()
+
+
+# --- Gating tests ---
+
+
+async def test_gated_agent_not_woken(
+    provider: FakeProvider,
+    orch: Orchestrator,
+) -> None:
+    """A gated agent with pending messages is not woken."""
+    orch.start_wake_loop()
+    try:
+        parent = await orch.create_root_agent("parent", "p")
+        handler = orch.get_handler(parent.id)
+        handler.spawn_agent("child", "ci")
+        await orch.run_turn(parent.id, "go")
+        await asyncio.sleep(0.05)
+
+        child = orch.tree.children(parent.id)[0]
+        assert child.state == AgentState.IDLE
+
+        # Gate the child, then send it a message.
+        handler.gate("child")
+        assert child.gated is True
+        provider.prompts.clear()
+        handler.send_message("child", "you there?")
+        await asyncio.sleep(0.05)
+
+        # Child should NOT have been woken — it's gated.
+        child_prompts = [p for p in provider.prompts if "you there?" in p]
+        assert len(child_prompts) == 0
+        assert child.state == AgentState.IDLE
+    finally:
+        await orch.stop_wake_loop()
+
+
+async def test_permit_turn_allows_one_wake(
+    provider: FakeProvider,
+    orch: Orchestrator,
+) -> None:
+    """permit_turn allows exactly one wake, then re-gates."""
+    orch.start_wake_loop()
+    try:
+        parent = await orch.create_root_agent("parent", "p")
+        handler = orch.get_handler(parent.id)
+        handler.spawn_agent("child", "ci")
+        await orch.run_turn(parent.id, "go")
+        await asyncio.sleep(0.05)
+
+        child = orch.tree.children(parent.id)[0]
+        # Gate, send message, permit one turn.
+        handler.gate("child")
+        handler.send_message("child", "do this")
+        handler.permit_turn("child")
+        provider.prompts.clear()
+        await asyncio.sleep(0.05)
+
+        # Child should have processed the message.
+        child_prompts = [p for p in provider.prompts if "do this" in p]
+        assert len(child_prompts) == 1
+        # Still gated after the turn.
+        assert child.gated is True
+        assert child.permit_once is False
+
+        # Send another message — should NOT be processed.
+        provider.prompts.clear()
+        handler.send_message("child", "second msg")
+        await asyncio.sleep(0.05)
+        child_prompts = [p for p in provider.prompts if "second msg" in p]
+        assert len(child_prompts) == 0
+    finally:
+        await orch.stop_wake_loop()
+
+
+async def test_ungate_allows_pending_wake(
+    provider: FakeProvider,
+    orch: Orchestrator,
+) -> None:
+    """ungating a child with pending messages wakes it."""
+    orch.start_wake_loop()
+    try:
+        parent = await orch.create_root_agent("parent", "p")
+        handler = orch.get_handler(parent.id)
+        handler.spawn_agent("child", "ci")
+        await orch.run_turn(parent.id, "go")
+        await asyncio.sleep(0.05)
+
+        child = orch.tree.children(parent.id)[0]
+        handler.gate("child")
+        handler.send_message("child", "queued")
+        await asyncio.sleep(0.05)
+        assert child.state == AgentState.IDLE
+
+        # Ungate — should trigger wake.
+        provider.prompts.clear()
+        handler.ungate("child")
+        await asyncio.sleep(0.05)
+
+        child_prompts = [p for p in provider.prompts if "queued" in p]
+        assert len(child_prompts) == 1
+    finally:
+        await orch.stop_wake_loop()

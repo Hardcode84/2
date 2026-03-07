@@ -46,6 +46,8 @@ class AgentNode:
     metadata: dict[str, str] = field(default_factory=dict)
     state: AgentState = AgentState.IDLE
     created_at: str = field(default_factory=now_iso)
+    gated: bool = False
+    permit_once: bool = False
 
     def transition(self, target: AgentState) -> None:
         """Transition to a new state. Raises AgentStateError if invalid."""

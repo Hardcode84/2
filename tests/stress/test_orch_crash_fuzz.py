@@ -523,6 +523,70 @@ class DualOrchCrashMachine(RuleBasedStateMachine):
         if crash_at > 0:
             self.test_vfs.disarm()
 
+    @precondition(lambda self: bool(_all_tree_ids(self.ref)))
+    @rule(agent=agents, data=st.data())
+    def gate_child(self, agent: NamePath, data: st.DataObject) -> None:
+        """Gate a materialized child."""
+        if _is_dead(agent) or agent in self.pending_paths:
+            return
+        ref_id = _resolve(self.ref, agent)
+        test_id = _resolve(self.test, agent)
+        if ref_id is None or test_id is None:
+            return
+        materialized: list[str] = []
+        for child in self.ref.tree.children(ref_id):
+            child_path = agent + (child.name,)
+            if child_path not in self.pending_paths:
+                materialized.append(child.name)
+        if not materialized:
+            return
+        child_name = data.draw(st.sampled_from(sorted(materialized)))
+        self.ref.get_handler(ref_id).gate(child_name)
+        self.test.get_handler(test_id).gate(child_name)
+
+    @precondition(lambda self: bool(_all_tree_ids(self.ref)))
+    @rule(agent=agents, data=st.data())
+    def ungate_child(self, agent: NamePath, data: st.DataObject) -> None:
+        """Ungate a materialized child."""
+        if _is_dead(agent) or agent in self.pending_paths:
+            return
+        ref_id = _resolve(self.ref, agent)
+        test_id = _resolve(self.test, agent)
+        if ref_id is None or test_id is None:
+            return
+        materialized: list[str] = []
+        for child in self.ref.tree.children(ref_id):
+            child_path = agent + (child.name,)
+            if child_path not in self.pending_paths:
+                materialized.append(child.name)
+        if not materialized:
+            return
+        child_name = data.draw(st.sampled_from(sorted(materialized)))
+        self.ref.get_handler(ref_id).ungate(child_name)
+        self.test.get_handler(test_id).ungate(child_name)
+
+    @precondition(lambda self: bool(_all_tree_ids(self.ref)))
+    @rule(agent=agents, data=st.data())
+    def permit_turn_child(self, agent: NamePath, data: st.DataObject) -> None:
+        """Permit one turn on a gated child."""
+        if _is_dead(agent) or agent in self.pending_paths:
+            return
+        ref_id = _resolve(self.ref, agent)
+        test_id = _resolve(self.test, agent)
+        if ref_id is None or test_id is None:
+            return
+        # Find gated children.
+        gated: list[str] = []
+        for child in self.ref.tree.children(ref_id):
+            child_path = agent + (child.name,)
+            if child_path not in self.pending_paths and child.gated:
+                gated.append(child.name)
+        if not gated:
+            return
+        child_name = data.draw(st.sampled_from(sorted(gated)))
+        self.ref.get_handler(ref_id).permit_turn(child_name)
+        self.test.get_handler(test_id).permit_turn(child_name)
+
     # -- Invariants --------------------------------------------------------
 
     @invariant()

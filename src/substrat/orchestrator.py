@@ -294,10 +294,17 @@ class Orchestrator:
         if agent_id not in self._handlers:
             _log.debug("wake skip: %s no handler (pending spawn)", node.name)
             return  # Session not ready yet (pending spawn).
+        # Gate check: gated agents don't wake unless permit_once is set.
+        if node.gated and not node.permit_once:
+            _log.debug("wake skip: %s gated", node.name)
+            return
         try:
             node.begin_turn()
         except AgentStateError:
             return
+        # If permit_once, consume the permit and re-gate immediately.
+        if node.gated and node.permit_once:
+            node.permit_once = False
         prompt = self._format_wake_prompt(agent_id)
         if not prompt:
             # Inbox drained by a concurrent check_inbox.

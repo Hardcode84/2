@@ -4,7 +4,7 @@
 
 """Tool catalog and logic layer.
 
-AGENT_TOOLS is the catalog of Substrat's eleven agent-facing tools.
+AGENT_TOOLS is the catalog of Substrat's fourteen agent-facing tools.
 ToolHandler implements agent tools as pure operations on the agent tree
 and inboxes. Workspace validation is injected as a callable.
 """
@@ -21,7 +21,7 @@ from substrat.agent.message import (
     MessageEnvelope,
     MessageKind,
 )
-from substrat.agent.node import AgentNode
+from substrat.agent.node import AgentNode, AgentState
 from substrat.agent.router import RoutingError, resolve_broadcast, validate_route
 from substrat.agent.tree import AgentTree
 from substrat.model import ToolDef, ToolParam, sentinel_name, tool_error
@@ -118,6 +118,21 @@ AGENT_TOOLS: tuple[ToolDef, ...] = (
                 "value", "string", "Value to set. Null to delete.", required=False
             ),
         ),
+    ),
+    ToolDef(
+        "gate",
+        "Prevent a child from being woken. Messages queue silently.",
+        (ToolParam("agent_name", "string", "Name of a direct child."),),
+    ),
+    ToolDef(
+        "ungate",
+        "Allow a child agent to be woken normally.",
+        (ToolParam("agent_name", "string", "Name of a direct child."),),
+    ),
+    ToolDef(
+        "permit_turn",
+        "Allow a gated child exactly one turn, then auto-re-gate.",
+        (ToolParam("agent_name", "string", "Name of a direct child."),),
     ),
 )
 
@@ -453,6 +468,61 @@ class ToolHandler:
             "key": key,
             "value": value,
         }
+
+    def gate(self, agent_name: str) -> dict[str, Any]:
+        """Prevent a child from being woken. Parent-only authority."""
+        try:
+            child = self._resolve_child_name(agent_name)
+        except ToolError as exc:
+            return tool_error(str(exc))
+        child.gated = True
+        child.permit_once = False
+        self._log_event(
+            child.id,
+            "tool.gate",
+            {"action": "gate", "agent_name": agent_name},
+        )
+        return {"status": "gated", "agent_name": agent_name}
+
+    def ungate(self, agent_name: str) -> dict[str, Any]:
+        """Allow a child to be woken normally."""
+        try:
+            child = self._resolve_child_name(agent_name)
+        except ToolError as exc:
+            return tool_error(str(exc))
+        child.gated = False
+        child.permit_once = False
+        self._log_event(
+            child.id,
+            "tool.gate",
+            {"action": "ungate", "agent_name": agent_name},
+        )
+        # Wake if there are pending messages.
+        inbox = self._inboxes.get(child.id)
+        if inbox and self._wake_callback is not None:
+            self._wake_callback(child.id)
+        return {"status": "ungated", "agent_name": agent_name}
+
+    def permit_turn(self, agent_name: str) -> dict[str, Any]:
+        """Allow a gated child exactly one turn, then auto-re-gate."""
+        try:
+            child = self._resolve_child_name(agent_name)
+        except ToolError as exc:
+            return tool_error(str(exc))
+        if not child.gated:
+            return tool_error("agent is not gated")
+        if child.state == AgentState.BUSY:
+            return tool_error("agent is busy")
+        child.permit_once = True
+        self._log_event(
+            child.id,
+            "tool.permit_turn",
+            {"agent_name": agent_name},
+        )
+        # Wake so the orchestrator picks it up.
+        if self._wake_callback is not None:
+            self._wake_callback(child.id)
+        return {"status": "permitted", "agent_name": agent_name}
 
     def drain_deferred(self) -> list[DeferredWork]:
         """Return and clear accumulated deferred callbacks."""

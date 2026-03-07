@@ -16,6 +16,7 @@ import pytest
 from substrat.agent import (
     SYSTEM,
     AgentNode,
+    AgentState,
     AgentTree,
     Inbox,
     InboxRegistry,
@@ -1696,3 +1697,118 @@ def test_link_from_defaults_to_own_workspace(ws_fix: WsFixture) -> None:
     assert result["status"] == "linked"
     loaded = ws_fix.ws_store.load(ws_fix.root.id, "my-ws")
     assert any(lk.mount_path == Path("alice-src") for lk in loaded.links)
+
+
+# === Gating tests ===
+
+
+def test_gate_sets_flag(fix: ToolFixture) -> None:
+    """gate() sets gated=True on child, clears permit_once."""
+    fix.alice.permit_once = True
+    result = fix.h_root.gate("alice")
+    assert result["status"] == "gated"
+    assert fix.alice.gated is True
+    assert fix.alice.permit_once is False
+
+
+def test_gate_non_child_fails(fix: ToolFixture) -> None:
+    """gate() on a non-child returns error."""
+    result = fix.h_alice.gate("bob")
+    assert "error" in result
+
+
+def test_ungate_clears_flag(fix: ToolFixture) -> None:
+    """ungate() clears gated and permit_once."""
+    fix.alice.gated = True
+    fix.alice.permit_once = True
+    result = fix.h_root.ungate("alice")
+    assert result["status"] == "ungated"
+    assert fix.alice.gated is False
+    assert fix.alice.permit_once is False
+
+
+def test_ungate_wakes_if_inbox_pending(fix: ToolFixture) -> None:
+    """ungate() triggers wake callback when child has pending messages."""
+    fix.alice.gated = True
+    from substrat.agent.message import MessageEnvelope
+
+    fix.inboxes[fix.alice.id].deliver(
+        MessageEnvelope(
+            sender=fix.root.id,
+            recipient=fix.alice.id,
+            kind=MessageKind.REQUEST,
+            payload="hi",
+        )
+    )
+    woken: list[UUID] = []
+    h = ToolHandler(
+        fix.tree,
+        fix.inboxes,
+        fix.root.id,
+        wake_callback=woken.append,
+    )
+    h.ungate("alice")
+    assert fix.alice.id in woken
+
+
+def test_permit_turn_sets_flag(fix: ToolFixture) -> None:
+    """permit_turn() sets permit_once on a gated child."""
+    fix.alice.gated = True
+    woken: list[UUID] = []
+    h = ToolHandler(
+        fix.tree,
+        fix.inboxes,
+        fix.root.id,
+        wake_callback=woken.append,
+    )
+    result = h.permit_turn("alice")
+    assert result["status"] == "permitted"
+    assert fix.alice.permit_once is True
+    assert fix.alice.id in woken
+
+
+def test_permit_turn_ungated_fails(fix: ToolFixture) -> None:
+    """permit_turn() on an ungated child returns error."""
+    result = fix.h_root.permit_turn("alice")
+    assert "error" in result
+    assert "not gated" in result["error"]
+
+
+def test_permit_turn_busy_fails(fix: ToolFixture) -> None:
+    """permit_turn() on a busy child returns error."""
+    fix.alice.gated = True
+    fix.alice.state = AgentState.BUSY
+    result = fix.h_root.permit_turn("alice")
+    assert "error" in result
+    assert "busy" in result["error"]
+
+
+def test_gate_logs_event(fix: ToolFixture) -> None:
+    """gate() fires tool.gate log event."""
+    cap = LogCapture()
+    h = ToolHandler(fix.tree, fix.inboxes, fix.root.id, log_callback=cap)
+    h.gate("alice")
+    events = [(ev, d) for _, ev, d in cap.events if ev == "tool.gate"]
+    assert len(events) == 1
+    assert events[0][1]["action"] == "gate"
+
+
+def test_ungate_logs_event(fix: ToolFixture) -> None:
+    """ungate() fires tool.gate log event with action=ungate."""
+    fix.alice.gated = True
+    cap = LogCapture()
+    h = ToolHandler(fix.tree, fix.inboxes, fix.root.id, log_callback=cap)
+    h.ungate("alice")
+    events = [(ev, d) for _, ev, d in cap.events if ev == "tool.gate"]
+    assert len(events) == 1
+    assert events[0][1]["action"] == "ungate"
+
+
+def test_permit_turn_logs_event(fix: ToolFixture) -> None:
+    """permit_turn() fires tool.permit_turn log event."""
+    fix.alice.gated = True
+    cap = LogCapture()
+    h = ToolHandler(fix.tree, fix.inboxes, fix.root.id, log_callback=cap)
+    h.permit_turn("alice")
+    events = [(ev, d) for _, ev, d in cap.events if ev == "tool.permit_turn"]
+    assert len(events) == 1
