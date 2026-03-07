@@ -127,6 +127,7 @@ class Orchestrator:
             metadata=dict(metadata) if metadata else {},
         )
         prompt = build_prompt(instructions)
+        _log.info("system prompt for %s:\n%s", name, prompt)
         session = await self._scheduler.create_session(
             prov,
             mdl,
@@ -436,6 +437,34 @@ class Orchestrator:
         self._rewake_if_pending(node.id)
         return response
 
+    def _enqueue_first_turn(self, node: AgentNode) -> None:
+        """Schedule a first turn for a newly spawned agent with empty inbox.
+
+        Runs as a background task — the agent gets a simple bootstrap prompt
+        instead of formatted inbox messages.
+        """
+
+        async def _run() -> None:
+            if node.state != AgentState.IDLE:
+                return
+            if node.id not in self._handlers:
+                return
+            try:
+                node.begin_turn()
+            except AgentStateError:
+                return
+            try:
+                await self._execute_turn(
+                    node,
+                    "You have been spawned. Read your instructions and begin work.",
+                )
+            except Exception:
+                _log.warning(
+                    "first turn failed for agent %s", node.id.hex, exc_info=True
+                )
+
+        asyncio.get_event_loop().create_task(_run())
+
     def _rewake_if_pending(self, agent_id: UUID) -> None:
         """Re-enqueue wake if agent is IDLE with a non-empty inbox.
 
@@ -673,6 +702,7 @@ class Orchestrator:
                         self._ws_mapping.assign(child.id, ws_key[0], ws_key[1])
                     ws_path, wrap_cmd = self._resolve_workspace(ws_key)
                     prompt = build_prompt(child.instructions)
+                    _log.info("system prompt for %s:\n%s", child.name, prompt)
                     session = await self._scheduler.create_session(
                         provider,
                         model,
@@ -925,6 +955,15 @@ class Orchestrator:
         to avoid infinite wake loops between a failing parent and child.
         """
         handler = self._handlers[agent_id]
+        # Snapshot which children have handlers before drain. Children added
+        # to the tree during tool calls won't have handlers yet — the deferred
+        # work creates them. After drain, a child with a new handler is newly
+        # spawned and needs its first-turn wake.
+        pre_handlers = (
+            {c.id for c in self._tree.children(agent_id) if c.id in self._handlers}
+            if agent_id in self._tree
+            else set()
+        )
         for work in handler.drain_deferred():
             try:
                 await work()
@@ -932,19 +971,28 @@ class Orchestrator:
                 _log.exception("deferred work failed for agent %s", agent_id)
         if not wake_children:
             return
-        # Post-spawn wake: newly created children with non-empty inboxes.
+        # Post-spawn wake: new children get their first turn, existing
+        # children with non-empty inboxes get re-woken.
         if agent_id not in self._tree:
             return
         for child in self._tree.children(agent_id):
             inbox = self._inboxes.get(child.id)
             has_handler = child.id in self._handlers
+            is_new = child.id not in pre_handlers
             _log.debug(
-                "post-drain check: child=%s state=%s inbox=%d handler=%s",
+                "post-drain check: child=%s state=%s inbox=%d handler=%s new=%s",
                 child.name,
                 child.state.value,
                 len(inbox) if inbox else 0,
                 has_handler,
+                is_new,
             )
-            if inbox and child.state == AgentState.IDLE:
-                _log.debug("post-drain wake: %s", child.name)
-                self._notify_wake(child.id)
+            if child.state == AgentState.IDLE and (is_new or inbox):
+                _log.debug("post-drain wake: %s (new=%s)", child.name, is_new)
+                if is_new and not inbox:
+                    # First turn with no inbox — run directly with bootstrap
+                    # prompt instead of going through the wake loop (which
+                    # requires inbox messages).
+                    self._enqueue_first_turn(child)
+                else:
+                    self._notify_wake(child.id)

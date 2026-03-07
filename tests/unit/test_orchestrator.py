@@ -1138,3 +1138,88 @@ async def test_spawn_child_with_metadata(orch: Orchestrator) -> None:
 
     child = orch.tree.get(child_id)
     assert child.metadata == {"role": "analyst"}
+
+
+# --- first-turn wake for spawned children ---------------------------------
+
+
+async def test_spawn_without_message_wakes_child(
+    provider: FakeProvider,
+    orch: Orchestrator,
+) -> None:
+    """Freshly spawned child with empty inbox gets a bootstrap wake."""
+    orch.start_wake_loop()
+    try:
+        parent = await orch.create_root_agent("parent", "p")
+        handler = orch.get_handler(parent.id)
+        # Spawn child but do NOT send it a message.
+        handler.spawn_agent("child", "do stuff")
+        provider.prompts.clear()
+        await orch.run_turn(parent.id, "go")
+
+        # Give the wake loop enough ticks to process (wake → send_turn → drain).
+        await asyncio.sleep(0.05)
+
+        # Child should have been woken with a bootstrap message.
+        child = orch.tree.children(parent.id)[0]
+        assert any("spawned" in p.lower() for p in provider.prompts), provider.prompts
+        # Child ran its turn (went BUSY then back to IDLE).
+        assert child.state == AgentState.IDLE
+    finally:
+        await orch.stop_wake_loop()
+
+
+async def test_spawn_with_message_no_double_wake(
+    provider: FakeProvider,
+    orch: Orchestrator,
+) -> None:
+    """Spawned child that already has an inbox message gets one wake, not two."""
+    orch.start_wake_loop()
+    try:
+        parent = await orch.create_root_agent("parent", "p")
+        handler = orch.get_handler(parent.id)
+        handler.spawn_agent("child", "ci")
+        handler.send_message("child", "real task")
+        provider.prompts.clear()
+        await orch.run_turn(parent.id, "go")
+
+        await asyncio.sleep(0.05)
+
+        # Child got the real message, not a bootstrap one.
+        wake_prompts = [p for p in provider.prompts if "real task" in p]
+        boot_prompts = [p for p in provider.prompts if "spawned" in p.lower()]
+        assert len(wake_prompts) == 1
+        assert len(boot_prompts) == 0
+    finally:
+        await orch.stop_wake_loop()
+
+
+async def test_existing_child_not_bootstrap_waked(
+    provider: FakeProvider,
+    orch: Orchestrator,
+) -> None:
+    """Existing children with empty inbox are NOT woken by drain."""
+    orch.start_wake_loop()
+    try:
+        parent = await orch.create_root_agent("parent", "p")
+        handler = orch.get_handler(parent.id)
+        handler.spawn_agent("child", "ci")
+        await orch.run_turn(parent.id, "go")
+
+        # Let first-turn wake finish.
+        await asyncio.sleep(0.05)
+
+        child = orch.tree.children(parent.id)[0]
+        assert child.state == AgentState.IDLE
+
+        # Run another turn on parent (no new spawns, no messages to child).
+        provider.prompts.clear()
+        await orch.run_turn(parent.id, "another turn")
+
+        await asyncio.sleep(0.05)
+
+        # Child should NOT have been woken — no new spawn, no inbox.
+        child_wakes = [p for p in provider.prompts if "spawned" in p.lower()]
+        assert len(child_wakes) == 0
+    finally:
+        await orch.stop_wake_loop()
