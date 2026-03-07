@@ -1463,3 +1463,31 @@ async def test_unsubscribe_stops_notifications(
 
     msgs = orch.inboxes[parent.id].peek()
     assert not any("[state]" in m.payload for m in msgs)
+
+
+async def test_subscribe_cleanup_on_subscriber_terminate(
+    provider: FakeProvider,
+    orch: Orchestrator,
+) -> None:
+    """Subscriptions are cleaned up when the subscriber is terminated."""
+    parent = await orch.create_root_agent("parent", "p")
+    handler = orch.get_handler(parent.id)
+    handler.spawn_agent("watcher", "w")
+    handler.spawn_agent("target", "t")
+    await orch.run_turn(parent.id, "go")
+
+    watcher = orch.tree.children(parent.id)[0]
+    target = orch.tree.children(parent.id)[1]
+    # Watcher subscribes to target.
+    wh = orch.get_handler(watcher.id)
+    result = wh.subscribe("target", "busy->idle")
+    sub_id = UUID(result["subscription_id"])
+    assert sub_id in orch._sub_index
+
+    # Terminate the watcher (subscriber).
+    await orch.terminate_agent(watcher.id)
+
+    # Subscription should be cleaned up.
+    assert sub_id not in orch._sub_index
+    subs = orch._subscriptions.get(target.id, [])
+    assert not any(s.id == sub_id for s in subs)

@@ -55,12 +55,12 @@ _log = logging.getLogger(__name__)
 class Subscription:
     """A state transition subscription."""
 
-    id: UUID = field(default_factory=uuid4)
-    subscriber_id: UUID = field(default_factory=uuid4)
-    target_id: UUID = field(default_factory=uuid4)
+    subscriber_id: UUID
+    target_id: UUID
     from_state: str = "*"  # State name or "*" for any.
     to_state: str = "*"
     once: bool = False
+    id: UUID = field(default_factory=uuid4)
 
     def matches(self, from_s: AgentState, to_s: AgentState) -> bool:
         """Check if a transition matches this subscription."""
@@ -574,6 +574,7 @@ class Orchestrator:
         try:
             node = self._tree.get(agent_id)
         except KeyError:
+            _log.debug("fire_transition skip: %s not in tree", agent_id.hex[:8])
             return
         name = node.name or agent_id.hex[:8]
         fired: list[UUID] = []
@@ -620,7 +621,9 @@ class Orchestrator:
             self._sub_index.pop(sub.id, None)
         # Remove as subscriber.
         to_remove = [
-            sid for sid, (sub_id, _) in self._sub_index.items() if sub_id == agent_id
+            sid
+            for sid, (subscriber_id, _) in self._sub_index.items()
+            if subscriber_id == agent_id
         ]
         for sid in to_remove:
             self._remove_subscription(sid)
@@ -1148,10 +1151,18 @@ class Orchestrator:
                 ev = entry.get("event")
                 if ev == "tool.subscribe":
                     d = entry.get("data", {})
+                    # One-shot subscriptions are not restored — if they
+                    # fired before crash we'd duplicate; if not, the
+                    # pipeline re-subscribes after recovery.
+                    if d.get("once", False):
+                        continue
                     target_hex = d.get("target_id")
                     if not target_hex:
                         continue
-                    target_id = UUID(target_hex)
+                    try:
+                        target_id = UUID(target_hex)
+                    except ValueError:
+                        continue
                     if target_id not in placed:
                         continue
                     sub_id = self._add_subscription(
@@ -1159,14 +1170,16 @@ class Orchestrator:
                         target_id,
                         d.get("from", "*"),
                         d.get("to", "*"),
-                        d.get("once", False),
+                        once=False,
                     )
                     # Patch the subscription ID to match the logged one.
                     logged_id = d.get("subscription_id")
                     if logged_id:
+                        try:
+                            real_id = UUID(logged_id)
+                        except ValueError:
+                            continue
                         old_id = sub_id
-                        real_id = UUID(logged_id)
-                        # Find and patch.
                         target_subs = self._subscriptions.get(
                             target_id,
                             [],
@@ -1184,7 +1197,10 @@ class Orchestrator:
                     d = entry.get("data", {})
                     sid_hex = d.get("subscription_id")
                     if sid_hex:
-                        self._remove_subscription(UUID(sid_hex))
+                        try:
+                            self._remove_subscription(UUID(sid_hex))
+                        except ValueError:
+                            continue
 
         # -- Recovery wake: agents with pending messages get woken. --
         for nid in placed:
