@@ -217,10 +217,10 @@ Gap analysis in docs/user_story.md. Prompt templates in templates/.
 
 ## Review Findings (independent review, cross-referenced)
 Correctness — fix now:
-- [ ] `session/store.py` `_deserialize` bare dict access — `created_at`, `suspended_at`, `provider_state` raise KeyError on missing/legacy keys; use `.get()` with defaults
-- [ ] `scheduler.py` bare KeyError for unknown session IDs — `send_turn`, `stream_turn`, `terminate_session` give opaque errors; wrap with meaningful messages
-- [ ] `agent/tree.py` `resolve("")` — falls through to KeyError via UUID parse; should be explicit ValueError for empty input
-- [ ] `agent/tools.py` `remind_me` ToolParam says "integer" but implementation accepts float — schema should say "number"
+- [x] `session/store.py` `_deserialize` bare dict access — use `.get()` with safe defaults
+- [x] `scheduler.py` bare KeyError for unknown session IDs — `_get_session` / `_get_provider` helpers with meaningful messages
+- [x] `agent/tree.py` `resolve("")` — explicit ValueError for empty input
+- [x] `agent/tools.py` `remind_me` ToolParam "integer" → "number" to match float implementation
 
 Reliability — fix soon:
 - [ ] RPC no timeouts — `sync_call`/`async_call` can hang forever on unresponsive daemon

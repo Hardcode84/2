@@ -313,6 +313,11 @@ def test_resolve_uuid_hex(tree: AgentTree) -> None:
     assert tree.resolve(root.id.hex) is root
 
 
+def test_resolve_empty_raises_valueerror(tree: AgentTree) -> None:
+    with pytest.raises(ValueError, match="empty"):
+        tree.resolve("")
+
+
 def test_resolve_missing_raises(tree: AgentTree) -> None:
     root = AgentNode(session_id=uuid4(), name="root")
     tree.add(root)

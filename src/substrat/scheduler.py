@@ -129,10 +129,24 @@ class TurnScheduler:
             self._logs[session.id] = log
         return session
 
+    def _get_session(self, session_id: UUID) -> "Session":
+        """Look up a registered session or raise with a useful message."""
+        try:
+            return self._sessions[session_id]
+        except KeyError:
+            raise KeyError(f"unknown session: {session_id.hex}") from None
+
+    def _get_provider(self, name: str) -> "AgentProvider":
+        """Look up a registered provider or raise with a useful message."""
+        try:
+            return self._providers[name]
+        except KeyError:
+            raise KeyError(f"unknown provider: {name!r}") from None
+
     async def send_turn(self, session_id: UUID, prompt: str) -> str:
         """Acquire slot, send prompt, release, drain deferred, return response."""
-        session = self._sessions[session_id]
-        provider = self._providers[session.provider_name]
+        session = self._get_session(session_id)
+        provider = self._get_provider(session.provider_name)
         log = self._logs.get(session_id)
 
         if log is not None:
@@ -169,8 +183,8 @@ class TurnScheduler:
         self, session_id: UUID, prompt: str
     ) -> AsyncGenerator[str, None]:
         """Acquire slot, stream prompt chunks, release. Mirrors send_turn."""
-        session = self._sessions[session_id]
-        provider = self._providers[session.provider_name]
+        session = self._get_session(session_id)
+        provider = self._get_provider(session.provider_name)
         log = self._logs.get(session_id)
 
         if log is not None:
@@ -202,7 +216,7 @@ class TurnScheduler:
 
     async def terminate_session(self, session_id: UUID) -> None:
         """Remove from mux, terminate state, persist, cleanup."""
-        session = self._sessions[session_id]
+        session = self._get_session(session_id)
         await self._mux.remove(session_id)
         session.terminate()
         self._store.save(session)

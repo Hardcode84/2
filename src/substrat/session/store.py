@@ -76,9 +76,9 @@ class SessionStore:
         return Session(
             id=UUID(obj["id"]),
             state=SessionState(obj["state"]),
-            provider_name=obj["provider_name"],
-            model=obj["model"],
-            created_at=obj["created_at"],
-            suspended_at=obj["suspended_at"],
-            provider_state=base64.b64decode(obj["provider_state"]),
+            provider_name=obj.get("provider_name", ""),
+            model=obj.get("model", ""),
+            created_at=obj.get("created_at", ""),
+            suspended_at=obj.get("suspended_at"),
+            provider_state=base64.b64decode(obj.get("provider_state", "")),
         )

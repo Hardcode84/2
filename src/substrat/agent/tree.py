@@ -117,8 +117,10 @@ class AgentTree:
         - A bare name: "worker-1" (must be unique across the tree).
         - A UUID hex string (fallback).
 
-        Raises KeyError if not found, ValueError if ambiguous.
+        Raises KeyError if not found, ValueError if ambiguous or empty.
         """
+        if not ref:
+            raise ValueError("empty agent reference")
         # Path resolution: walk from root.
         if "/" in ref:
             parts = ref.split("/")

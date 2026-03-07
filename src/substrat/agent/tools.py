@@ -97,10 +97,10 @@ AGENT_TOOLS: tuple[ToolDef, ...] = (
         "Schedule a delayed self-notification. One-shot or repeating.",
         (
             ToolParam("reason", "string", "Reminder reason / payload."),
-            ToolParam("timeout", "integer", "Seconds until first delivery."),
+            ToolParam("timeout", "number", "Seconds until first delivery."),
             ToolParam(
                 "every",
-                "integer",
+                "number",
                 "Repeat interval in seconds after first delivery. Omit for one-shot.",
                 required=False,
             ),
