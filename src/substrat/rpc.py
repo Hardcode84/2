@@ -41,10 +41,20 @@ def _parse_response(data: bytes) -> dict[str, Any]:
     return resp.get("result", {})  # type: ignore[no-any-return]
 
 
-def sync_call(sock_path: str, method: str, params: dict[str, Any]) -> dict[str, Any]:
+_DEFAULT_TIMEOUT = 120.0  # Seconds.
+
+
+def sync_call(
+    sock_path: str,
+    method: str,
+    params: dict[str, Any],
+    *,
+    timeout: float = _DEFAULT_TIMEOUT,
+) -> dict[str, Any]:
     """Synchronous UDS client. One request, one response, close."""
     request = _make_request(method, params)
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
     try:
         sock.connect(sock_path)
         sock.sendall(request)
@@ -60,10 +70,17 @@ def sync_call(sock_path: str, method: str, params: dict[str, Any]) -> dict[str, 
     return _parse_response(b"".join(chunks))
 
 
-def sync_stream(sock_path: str, method: str, params: dict[str, Any]) -> Iterator[str]:
+def sync_stream(
+    sock_path: str,
+    method: str,
+    params: dict[str, Any],
+    *,
+    timeout: float = _DEFAULT_TIMEOUT,
+) -> Iterator[str]:
     """Synchronous streaming UDS client. Yields chunk strings."""
     request = _make_request(method, params)
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
     try:
         sock.connect(sock_path)
         sock.sendall(request)
@@ -91,7 +108,11 @@ def sync_stream(sock_path: str, method: str, params: dict[str, Any]) -> Iterator
 
 
 async def async_call(
-    sock_path: str, method: str, params: dict[str, Any]
+    sock_path: str,
+    method: str,
+    params: dict[str, Any],
+    *,
+    timeout: float = _DEFAULT_TIMEOUT,
 ) -> dict[str, Any]:
     """Async UDS client. For integration tests and async callers."""
     request = _make_request(method, params)
@@ -99,7 +120,7 @@ async def async_call(
     try:
         writer.write(request)
         writer.write_eof()
-        data = await reader.read()
+        data = await asyncio.wait_for(reader.read(), timeout=timeout)
     finally:
         writer.close()
         await writer.wait_closed()

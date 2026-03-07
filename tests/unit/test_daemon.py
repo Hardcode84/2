@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from uuid import uuid4
 
@@ -331,24 +332,27 @@ async def test_malformed_json_returns_error(daemon: Daemon) -> None:
         await daemon.stop()
 
 
-async def test_cleanup_stale_permission_error(
+async def test_lock_prevents_concurrent_start(
     tmp_path: Path, provider: FakeProvider
 ) -> None:
-    """PermissionError during PID check means process is alive — raise RuntimeError."""
-    import os
-    from unittest.mock import patch
+    """Second daemon cannot start while the first holds the lock file."""
+    import fcntl
 
-    root = tmp_path / "perm"
+    root = tmp_path / "locktest"
     root.mkdir()
-    pid_file = root / "daemon.pid"
-    pid_file.write_text("12345")
-
-    d = Daemon(root, providers={"fake": provider}, default_provider="fake", max_slots=4)
-    with (
-        patch.object(os, "kill", side_effect=PermissionError("not yours")),
-        pytest.raises(RuntimeError, match="already running"),
-    ):
-        await d.start()
+    lock_path = root / "daemon.lock"
+    # Simulate a held lock from another process.
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        d = Daemon(
+            root, providers={"fake": provider}, default_provider="fake", max_slots=4
+        )
+        with pytest.raises(RuntimeError, match="already running"):
+            await d.start()
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
 
 
 async def test_agent_state_error_returns_invalid(daemon: Daemon) -> None:

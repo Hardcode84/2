@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import fcntl
 import json
 import logging
 import os
@@ -67,6 +68,8 @@ class Daemon:
         self._root = root
         self._sock_path = root / "daemon.sock"
         self._pid_path = root / "daemon.pid"
+        self._lock_path = root / "daemon.lock"
+        self._lock_fd: int | None = None
         self._server: asyncio.AbstractServer | None = None
 
         # Build composition stack.
@@ -120,8 +123,9 @@ class Daemon:
     # -- Lifecycle -------------------------------------------------------------
 
     async def start(self) -> None:
-        """Start the daemon: cleanup stale state, recover, serve."""
+        """Start the daemon: acquire lock, cleanup stale state, recover, serve."""
         self._root.mkdir(parents=True, exist_ok=True)
+        self._acquire_lock()
         self._cleanup_stale()
         await self._orch.recover()
         self._orch.start_wake_loop()
@@ -133,47 +137,50 @@ class Daemon:
         _log.info("daemon started, socket=%s pid=%d", self._sock_path, os.getpid())
 
     async def stop(self) -> None:
-        """Stop the daemon: close server, remove socket and PID file."""
+        """Stop the daemon: close server, remove socket/PID/lock."""
         await self._orch.stop_wake_loop()
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
             self._server = None
-        if self._sock_path.exists():
+        with contextlib.suppress(FileNotFoundError):
             self._sock_path.unlink()
-        if self._pid_path.exists():
+        with contextlib.suppress(FileNotFoundError):
             self._pid_path.unlink()
+        self._release_lock()
         _log.info("daemon stopped")
 
+    def _acquire_lock(self) -> None:
+        """Acquire an exclusive lock file. Prevents concurrent daemon starts."""
+        self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(self._lock_path), os.O_CREAT | os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            raise RuntimeError(
+                f"daemon already running (lock held: {self._lock_path})"
+            ) from None
+        self._lock_fd = fd
+
+    def _release_lock(self) -> None:
+        """Release the lock file."""
+        if self._lock_fd is not None:
+            fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
+            os.close(self._lock_fd)
+            self._lock_fd = None
+        with contextlib.suppress(FileNotFoundError):
+            self._lock_path.unlink()
+
     def _cleanup_stale(self) -> None:
-        """Remove leftover socket/PID from a dead daemon."""
-        if not self._pid_path.exists():
-            # No PID file — clean up any orphaned socket.
-            if self._sock_path.exists():
-                self._sock_path.unlink()
-            return
-        try:
-            pid = int(self._pid_path.read_text().strip())
-        except ValueError:
-            # PID file is garbage.
-            if self._sock_path.exists():
-                self._sock_path.unlink()
+        """Remove leftover socket/PID from a previous run.
+
+        Called after _acquire_lock, so we know no other daemon is alive.
+        """
+        with contextlib.suppress(FileNotFoundError):
+            self._sock_path.unlink()
+        with contextlib.suppress(FileNotFoundError):
             self._pid_path.unlink()
-            return
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            # Process is dead.
-            if self._sock_path.exists():
-                self._sock_path.unlink()
-            self._pid_path.unlink()
-            return
-        except PermissionError:
-            pass  # Different user but alive — fall through.
-        # Process exists (PermissionError means different user but alive).
-        raise RuntimeError(
-            f"daemon already running (pid {pid}, socket {self._sock_path})"
-        )
 
     # -- Connection handler ----------------------------------------------------
 

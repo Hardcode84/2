@@ -129,7 +129,7 @@ Design: [docs/design/wake.md — Wake Failure Handling](docs/design/wake.md)
 - [x] Decorator: keyword-only args, default values omitted, empty generator (yields nothing), before=True/after=False, before=False/after=False
 - [ ] Daemon: malformed JSON over UDS, empty request body, missing required fields, invalid UUID strings
 - [x] Daemon: concurrent tool.call during run_turn — ScriptedProvider + test_tool_callbacks.py (a2998ea)
-- [ ] Daemon: _cleanup_stale branch with no PID file + orphaned socket
+- [x] Daemon: _cleanup_stale replaced with flock-based locking — stale socket/PID cleaned unconditionally after lock acquired
 - [x] Daemon: handler raising unexpected Exception → ERR_INTERNAL mapping
 - [ ] CLI: daemon stop with a live process (actual SIGTERM + socket disappear flow)
 - [x] CLI: daemon start socket wait timeout warning path
@@ -223,9 +223,9 @@ Correctness — fix now:
 - [x] `agent/tools.py` `remind_me` ToolParam "integer" → "number" to match float implementation
 
 Reliability — fix soon:
-- [ ] RPC no timeouts — `sync_call`/`async_call` can hang forever on unresponsive daemon
-- [ ] PID file race in `_cleanup_stale` — no advisory lock, concurrent daemon starts can both pass check
-- [ ] `logging/decorator.py` `@log_method` on sync function — silently wraps in async shell, no error
+- [x] RPC timeouts — `sync_call`/`async_call`/`sync_stream` default to 120s timeout
+- [x] PID file race — replaced PID-check with `fcntl.flock` on daemon.lock
+- [x] `logging/decorator.py` `@log_method` on sync function — raises TypeError at decoration time
 
 Low priority:
 - [ ] `agent/inbox.py` `collect` AND semantics for sender+kind undocumented

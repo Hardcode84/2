@@ -68,6 +68,10 @@ def log_method(
     """
 
     def decorator(fn: _F) -> _F:
+        if not (inspect.iscoroutinefunction(fn) or inspect.isasyncgenfunction(fn)):
+            raise TypeError(
+                f"@log_method requires an async function, got {fn.__name__!r}"
+            )
         event_name = fn.__name__
 
         if inspect.isasyncgenfunction(fn):
