@@ -217,6 +217,25 @@ Gap analysis in docs/user_story.md. Prompt templates in templates/.
 - [ ] Broadcast completion signal (G8) — agent has no way to know all broadcast replies arrived
 - [x] Sync message timeout (G9) — removed sync messages; all delivery is async with auto-wake
 
+## Review Pipeline
+Design: [docs/design/review_pipeline.md](docs/design/review_pipeline.md)
+- [x] Phase 1: Gate / ungate / permit_turn tools — wake eligibility control, parent-only authority, gate check in _process_wake
+- [x] Phase 2: Subscribe / unsubscribe tools — state transition notifications, one-shot + persistent, crash recovery
+- [ ] Phase 3: Sender-side event logging — tool.send_message logged to caller's session for WAL recovery
+- [ ] Phase 4: Scripted provider — deterministic Python functions, same provider protocol, lazy handler resolver
+- [ ] Phase 5: CLI `--parent` flag — `substrat agent create` with `--parent` for non-root agents
+- [ ] Phase 6: Review pipeline script — state machine, routing rules, fan-out/fan-in, WAL recovery
+- [ ] Phase 7: Init scripts — init-pipeline.sh creates pipeline, worker, critics, sends task
+- [ ] Phase 8: Polish — configurable routing, critic timeout, synthesis agent, `substrat pipeline status`
+
+### Review Deferred Items
+From subscription review (REVIEW-subscriptions.md):
+- [ ] Update docs/design/tool_integration.md with subscribe/unsubscribe sections
+- [ ] Update docs/design/crash_recovery.md with subscription replay
+- [ ] Add `list_subscriptions` tool — agents can't discover active subscriptions after context loss
+- [ ] Add subscribe/unsubscribe guidance to BASE_PROMPT (next to reminders/delegation)
+- [ ] Fuzzer: subscribe rule should pass `once=True`, add `crash_at` for recovery testing
+
 ## Review Findings (independent review, cross-referenced)
 Correctness — fix now:
 - [x] `session/store.py` `_deserialize` bare dict access — use `.get()` with safe defaults
