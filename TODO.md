@@ -230,8 +230,8 @@ Design: [docs/design/review_pipeline.md](docs/design/review_pipeline.md)
 
 ### Review Deferred Items
 From subscription review (REVIEW-subscriptions.md):
-- [ ] Update docs/design/tool_integration.md with subscribe/unsubscribe sections
-- [ ] Update docs/design/crash_recovery.md with subscription replay
+- [x] Update docs/design/tool_integration.md with gate/subscribe tool sections
+- [x] Update docs/design/crash_recovery.md with gate/subscription recovery
 - [ ] Add `list_subscriptions` tool — agents can't discover active subscriptions after context loss
 - [ ] Add subscribe/unsubscribe guidance to BASE_PROMPT (next to reminders/delegation)
 - [ ] Fuzzer: subscribe rule should pass `once=True`, add `crash_at` for recovery testing

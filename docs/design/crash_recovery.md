@@ -41,6 +41,10 @@ Implemented events (logged by `Orchestrator`):
 {"session_id":"...","ts":"...","event":"agent.terminated","data":{"agent_id":"<hex>"}}
 {"session_id":"...","ts":"...","event":"message.enqueued","data":{"message_id":"<hex>","sender":"<hex>","recipient":"<hex>","kind":"...","payload":"...","timestamp":"...","reply_to":null,"metadata":{...}}}
 {"session_id":"...","ts":"...","event":"message.delivered","data":{"message_id":"<hex>"}}
+{"session_id":"...","ts":"...","event":"tool.gate","data":{"agent_id":"<hex>"}}
+{"session_id":"...","ts":"...","event":"tool.ungate","data":{"agent_id":"<hex>"}}
+{"session_id":"...","ts":"...","event":"tool.subscribe","data":{"subscription_id":"<hex>","subscriber_id":"<hex>","target_id":"<hex>","from_state":"...","to_state":"...","once":false}}
+{"session_id":"...","ts":"...","event":"tool.unsubscribe","data":{"subscription_id":"<hex>"}}
 ```
 
 `message.enqueued` is logged to the **recipient's** session log before
@@ -188,8 +192,8 @@ session is unrecoverable.
   on recovery by cross-referencing logs.
 - **Exact message ordering.** After recovery, messages may be re-delivered.
   Agents must tolerate this.
-- **Ephemeral state.** Provider processes, multiplexer slots — rebuilt from
-  scratch.
+- **Ephemeral state.** Provider processes, multiplexer slots, one-shot
+  subscriptions, reminders — rebuilt from scratch.
 
 ## What Substrat persists
 
@@ -231,7 +235,19 @@ On daemon startup:
    the agent's inbox. No new events are logged during re-injection —
    duplicate delivery on subsequent recovery is tolerable.
 
-5. **Resume root agents.** Recovered agents with non-empty inboxes are
+5. **Restore gate state.** Replay `tool.gate` and `tool.ungate` events
+   from each agent's event log. The last event wins — if the final gate
+   event is `tool.gate`, set `node.gated = True`. Gate state is persistent
+   and survives crashes.
+
+6. **Restore subscriptions.** Replay `tool.subscribe` and
+   `tool.unsubscribe` events. Subscriptions with `once=true` are
+   intentionally skipped — one-shot subscriptions are ephemeral by design,
+   and the subscribing agent should re-subscribe after recovery. Malformed
+   subscription UUIDs are logged and skipped (defensive against corrupted
+   log entries).
+
+7. **Resume root agents.** Recovered agents with non-empty inboxes are
    woken via `_notify_wake`. For agentic providers: `--resume` with saved
    session ID. For bare LLM: replay event log to reconstruct context.
 

@@ -152,7 +152,7 @@ Parameters:
   name: str
 
 Returns:
-  {"state": "idle|busy|waiting", "metadata": {...}, "recent_messages": [...]}
+  {"state": "idle|busy|waiting", "metadata": {...}, "gated": bool, "recent_messages": [...]}
 ```
 
 ### `complete`
@@ -208,7 +208,7 @@ inspecting each one individually.
 Parameters: (none)
 
 Returns:
-  {"children": [{"name": "str", "agent_id": "uuid", "state": "idle|busy|waiting|terminated", "metadata": {...}, "pending_messages": int}, ...]}
+  {"children": [{"name": "str", "agent_id": "uuid", "state": "idle|busy|waiting|terminated", "metadata": {...}, "gated": bool, "pending_messages": int}, ...]}
 ```
 
 ### `set_agent_metadata`
@@ -265,6 +265,94 @@ Parameters:
 Returns:
   {"status": "cancelled", "reminder_id": "uuid"}
 ```
+
+### `gate`
+
+Prevent a child from being woken. Messages queue silently. The child
+remains IDLE but the wake loop skips it until ungated or given a one-shot
+permit. Parent-only authority — only a direct parent can gate a child.
+
+```
+Parameters:
+  agent_name: str       # Name of a direct child.
+
+Returns:
+  {"status": "gated", "agent_name": "str"}
+```
+
+Persisted via `tool.gate` event in the child's session log. Survives crash
+recovery. See [crash_recovery.md](crash_recovery.md).
+
+### `ungate`
+
+Remove the gate on a child. If the child has pending messages, a wake is
+triggered immediately.
+
+```
+Parameters:
+  agent_name: str       # Name of a direct child.
+
+Returns:
+  {"status": "ungated", "agent_name": "str"}
+```
+
+Persisted via `tool.ungate` event. Clears both `gated` and `permit_once`.
+
+### `permit_turn`
+
+Allow exactly one turn on a gated child. The child must be gated and IDLE.
+After the turn completes, the gate re-engages automatically (`permit_once`
+is consumed before prompt formatting).
+
+```
+Parameters:
+  agent_name: str       # Name of a direct child.
+
+Returns:
+  {"status": "permitted", "agent_name": "str"}
+```
+
+Errors if the child is not gated, or if the child is BUSY or WAITING.
+Triggers a wake if the child has pending messages.
+
+### `subscribe`
+
+Subscribe to state transitions on a reachable agent (parent, child, or
+sibling). Notifications are delivered as system messages:
+`[state] <name>: <from> -> <to>`.
+
+```
+Parameters:
+  agent_name: str       # Target agent name (one-hop reachable).
+  transition: str       # Pattern: "from->to". Either side can be "*".
+                        # Valid states: idle, busy, waiting, terminated.
+  once: bool = false    # If true, auto-remove after first match.
+
+Returns:
+  {"status": "subscribed", "subscription_id": "uuid"}
+```
+
+Examples: `"busy->idle"`, `"*->terminated"`, `"*->*"`.
+
+Persistent subscriptions survive crash recovery. One-shot (`once=true`)
+subscriptions are intentionally **not** restored — the subscribing agent
+should re-subscribe after recovery if needed.
+
+### `unsubscribe`
+
+Remove a subscription by ID. Only the subscriber can remove its own
+subscriptions.
+
+```
+Parameters:
+  subscription_id: str  # UUID returned by subscribe.
+
+Returns:
+  {"status": "unsubscribed", "subscription_id": "uuid"}
+```
+
+All subscriptions involving an agent (as subscriber or target) are cleaned
+up automatically when that agent is terminated.
 
 ### `list_workspaces`
 
