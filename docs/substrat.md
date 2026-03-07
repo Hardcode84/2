@@ -28,7 +28,7 @@ Sessions are the lowest layer — the substrate that the agent hierarchy and mes
 * Agents can launch new subagents in teams, these can launch their subagents too, unlimited depth.
 * Each subagent can be given a name and custom instructions.
 * Strict one-hop routing: agents can communicate horizontally within team (siblings), up/down one level only (parent/children). No skipping levels.
-* Synchronous messages (agent is blocked until reply is received), asynchronous inbox/outbox, broadcast (ask multiple opinions in team).
+* Asynchronous inbox/outbox with auto-wake on delivery, broadcast (ask multiple opinions in team).
 * Upper agent can inspect what subordinates are doing.
 * Few "root" agents (maybe 1), communicate with user through CLI.
 * Agents self-organize into "Managers", "Workers". Manager can run 1 agent to write the code, multiple agents for review, etc. Roles are advisory labels, not enforced by routing.

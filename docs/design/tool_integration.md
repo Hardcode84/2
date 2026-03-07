@@ -23,32 +23,19 @@ special slot accounting.
 
 ### Why not block?
 
-If a tool call blocks (e.g. sync message waiting for reply), the agent process
-stays alive, holding a multiplexer slot. If the recipient also needs a slot
-and none are free → deadlock. Blocking also complicates lifecycle management
-(what if we need to suspend a blocked agent?).
+If a tool call blocks, the agent process stays alive, holding a multiplexer
+slot. If the recipient also needs a slot and none are free → deadlock.
+Blocking also complicates lifecycle management (what if we need to suspend a
+blocked agent?).
 
-### How "synchronous" messaging works without blocking
+### Message delivery is always async
 
-From the agent's perspective, a sync message is a two-turn pattern:
+All messages are delivered to the recipient's inbox. The recipient is woken
+automatically (auto-wake). When the recipient replies, the sender is woken
+too. No polling, no blocking, no special slot accounting.
 
-**Turn 1**: agent calls `send_message(recipient, text, sync=true)`.
-MCP tool returns immediately:
-```json
-{"status": "sent", "message_id": "uuid", "waiting_for_reply": true}
-```
-The agent process finishes its turn and exits. Slot is freed.
-
-**Turn 2**: when the recipient replies, the daemon delivers the reply to the
-original agent (via the provider's normal message injection mechanism):
-```
-Reply from <recipient> (to message <uuid>):
-<reply text>
-```
-The agent continues from there.
-
-The agent does not need to explicitly poll or manage this — the daemon
-orchestrates the two-turn flow.
+The agent's turn ends after `send_message` returns. The slot is freed. The
+reply arrives as a new turn triggered by auto-wake.
 
 ### Deferred execution
 
@@ -68,7 +55,6 @@ parent releases.
 
 Agents are told in their system prompt:
 - Tool calls return immediately with a status.
-- Replies to sync messages arrive as your next message.
 - Spawned agents start working after your current turn ends.
 - Messages from other agents wake you automatically — no need to poll.
 - Call `complete(result)` when your work is done.
@@ -80,17 +66,17 @@ All tools return JSON. All tools are non-blocking.
 ### `send_message`
 
 Send a message to another agent (parent, child, or sibling). Root agents
-can also send to `"USER"` to notify the human operator — USER messages are
-always async (sync is forced to false).
+can also send to `"USER"` to notify the human operator. All messages are
+async — the recipient is woken automatically, and the sender is woken when
+a reply arrives.
 
 ```
 Parameters:
   recipient: str       # Agent name, or "USER" for root agents.
   text: str            # Message body.
-  sync: bool = true    # If true, daemon will deliver reply as next message.
 
 Returns:
-  {"status": "sent", "message_id": "uuid", "waiting_for_reply": bool}
+  {"status": "sent", "message_id": "uuid"}
 ```
 
 ### `broadcast`
@@ -109,9 +95,9 @@ Replies arrive as separate messages, one per respondent.
 
 ### `check_inbox`
 
-Retrieve pending async messages (notifications, unsolicited messages).
-Optional filters narrow which messages are collected; unmatched messages
-remain in the inbox for later retrieval.
+Retrieve pending messages (notifications, replies, etc.). Mostly useful for
+inspecting what arrived without waiting for auto-wake. Optional filters narrow
+which messages are collected; unmatched messages remain in the inbox.
 
 ```
 Parameters:
@@ -149,13 +135,13 @@ The workspace must exist (or be created inline). See
 [workspace.md](workspace.md) for the full workspace tool catalog and the
 inline convenience form.
 
-Typical flow with sync messaging:
+Typical spawn-then-send flow:
 
-1. Parent calls `spawn_agent("analyst", ...)` + `send_message("analyst", "go",
-   sync=true)` in the same turn. Both return immediately.
+1. Parent calls `spawn_agent("analyst", ...)` + `send_message("analyst", "go")`
+   in the same turn. Both return immediately.
 2. Parent's turn ends → slot released.
 3. Daemon creates the analyst's provider session, delivers the queued message.
-4. Analyst works, replies → daemon delivers reply to parent as Turn 2.
+4. Analyst works, replies → auto-wake delivers reply to parent as a new turn.
 
 ### `inspect_agent`
 
@@ -471,8 +457,8 @@ identical to MCP dispatch — same `tool.call` RPC, same JSON payloads.
   No MCP server, no function-call schema registration, no output parsing.
 - **Discoverable.** `ls .substrat/bin/`, `substrat --help`. Self-documenting.
 - **Composable.** Agents can chain, pipe, script with standard shell idioms.
-- **Sync messaging is fine.** All sync messages are two-turn (tool returns
-  immediately, reply arrives as next wake). The CLI call never blocks long
+- **Messaging is fine.** All messages are async (tool returns immediately,
+  reply arrives via auto-wake as a new turn). The CLI call never blocks long
   enough to hit provider bash timeouts.
 
 ### Trade-offs

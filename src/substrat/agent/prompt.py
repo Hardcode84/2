@@ -40,11 +40,11 @@ parent and self-terminate.
 
 ### Messaging
 
-- **send_message**(recipient, text, sync=true): Send a message to an agent by
-  name. Sync messages block — the reply arrives as your next message. Async
-  messages (sync=false) go to the recipient's inbox for later pickup.
-  Root agents (no parent) can send to "USER" to notify the human operator.
-  USER messages are always async — the user is not an agent.
+- **send_message**(recipient, text): Send a message to an agent by name.
+  The message is delivered to the recipient's inbox and the recipient is
+  woken automatically. When it replies, you are woken too — no polling
+  needed, just end your turn. Root agents (no parent) can send to "USER"
+  to notify the human operator.
 - **broadcast**(text): Send a message to all siblings. Replies arrive
   asynchronously via check_inbox.
 - **check_inbox**(sender=null, kind=null): Retrieve pending async messages.

@@ -95,7 +95,7 @@ Design: [docs/design/wake.md — Wake Failure Handling](docs/design/wake.md)
 ## Design Gaps
 - [x] Stale provider blob — crash recovery design uses event log as source of truth, not provider_state blob
 - [ ] Broadcast completion signal: agent has no way to know all replies arrived
-- [ ] Sync message timeout: recipient crash leaves sender permanently stuck — partially addressed by wake failure → parent notification, but no timeout mechanism
+- [x] Sync message timeout — removed sync messages entirely; all delivery is async with auto-wake
 - [x] spawn_agent can't specify provider/model — children inherit parent's provider/model via closure
 
 ## Agent Runtime
@@ -182,6 +182,8 @@ Code bugs that prevent the full stack from working end-to-end.
 - [ ] .mdc rules bind-mount wiring — only matters for shared workspaces (multiple agents same workspace); single-agent-per-workspace works fine with current host-side writes
 - [x] Deferred spawn error recovery — do_spawn catches exceptions, removes orphaned child from tree/inbox/mapping
 - [x] CLI workspace scoping — CLI-created workspaces defaulted to random uuid4 scope, invisible to all agents; now defaults to USER scope, scope args accept agent names
+- [x] send_message sync=true caused sender to poll for reply indefinitely — removed sync messages entirely; all delivery is async with auto-wake
+- [ ] cursor-agent runs outside bwrap — workspace links are bwrap bind mounts, invisible to cursor-agent process; agent sees empty workspace root
 
 ## E2E — Missing Integration Tests
 - [x] Daemon + real cursor-agent (no bwrap) — daemon.start, agent.create, agent.send with CursorAgentProvider, verify real response
@@ -213,7 +215,7 @@ Gap analysis in docs/user_story.md. Prompt templates in templates/.
 - [x] Cross-workspace linking (G6) — link_from tool mounts content from any visible workspace into a mutable workspace
 - [ ] Workspace update tool (G7) — toggle network_access after creation
 - [ ] Broadcast completion signal (G8) — agent has no way to know all broadcast replies arrived
-- [ ] Sync message timeout (G9) — recipient crash leaves sender stuck
+- [x] Sync message timeout (G9) — removed sync messages; all delivery is async with auto-wake
 
 ## Review Findings (independent review, cross-referenced)
 Correctness — fix now:

@@ -9,9 +9,8 @@ that receives a message gets woken automatically — no external RPC needed.
 
 Without auto-wake, messages rot in inboxes. Agent A sends to agent B, B stays
 IDLE. Someone has to call `agent.send` via RPC to drive B's next turn. This
-breaks the sync-message flow described in [tool_integration.md](tool_integration.md)
-and makes the spawn-then-send pattern (parent spawns child, sends it work in
-the same turn) impossible without a second external push.
+makes the spawn-then-send pattern (parent spawns child, sends it work in the
+same turn) impossible without a second external push.
 
 ---
 
@@ -78,8 +77,8 @@ for child in self._tree.children(agent_id):
 ```
 
 This handles the common pattern: parent calls `spawn_agent("worker", ...)`
-and `send_message("worker", "go", sync=true)` in the same turn. The message
-queues before the child session exists. After spawn creates the session, the
+and `send_message("worker", "go")` in the same turn. The message queues
+before the child session exists. After spawn creates the session, the
 post-spawn scan finds the non-empty inbox and triggers a wake.
 
 ### 3. Recovery

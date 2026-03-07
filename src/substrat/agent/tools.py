@@ -35,13 +35,6 @@ AGENT_TOOLS: tuple[ToolDef, ...] = (
         (
             ToolParam("recipient", "string", "Agent name."),
             ToolParam("text", "string", "Message body."),
-            ToolParam(
-                "sync",
-                "boolean",
-                "Request synchronous reply delivery.",
-                required=False,
-                default=True,
-            ),
         ),
     ),
     ToolDef(
@@ -183,20 +176,17 @@ class ToolHandler:
         self,
         recipient: str,
         text: str,
-        *,
-        sync: bool = True,
     ) -> dict[str, Any]:
         """Send a message to a reachable agent by name.
 
         The special name "USER" addresses the human operator. Only root
-        agents (no parent) are allowed to send to USER. Sync is forced
-        to False for USER messages — the user is not an agent and cannot
-        reply within a turn.
+        agents (no parent) are allowed to send to USER.
+
+        Messages are always async. The recipient is woken automatically;
+        when it replies, the sender is woken too. No polling needed.
         """
         if recipient == "USER":
             target_id = USER
-            # USER messages are always async — no agent to reply.
-            sync = False
         else:
             try:
                 target = self._resolve_name(recipient)
@@ -212,13 +202,11 @@ class ToolHandler:
             recipient=target_id,
             kind=MessageKind.REQUEST,
             payload=text,
-            metadata={"sync": str(sync)},
         )
         self._deliver(target_id, envelope)
         return {
             "status": "sent",
             "message_id": str(envelope.id),
-            "waiting_for_reply": sync,
         }
 
     def broadcast(self, text: str) -> dict[str, Any]:

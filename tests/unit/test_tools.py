@@ -101,7 +101,6 @@ def test_send_sibling_to_sibling(fix: ToolFixture) -> None:
     result = fix.h_alice.send_message("bob", "hello")
     assert result["status"] == "sent"
     assert "message_id" in result
-    assert result["waiting_for_reply"] is True
     assert len(fix.inboxes[fix.bob.id]) == 1
 
 
@@ -142,11 +141,11 @@ def test_send_envelope_fields(fix: ToolFixture) -> None:
     assert envelope.payload == "check this"
 
 
-def test_send_async_metadata(fix: ToolFixture) -> None:
-    result = fix.h_alice.send_message("bob", "fire and forget", sync=False)
-    assert result["waiting_for_reply"] is False
-    envelope = fix.inboxes[fix.bob.id].peek()[0]
-    assert envelope.metadata["sync"] == "False"
+def test_send_no_sync_field(fix: ToolFixture) -> None:
+    """Messages have no sync metadata — all delivery is async."""
+    result = fix.h_alice.send_message("bob", "fire and forget")
+    assert "waiting_for_reply" not in result
+    assert result["status"] == "sent"
 
 
 # --- broadcast ---
@@ -1523,8 +1522,6 @@ def test_send_message_to_user_from_root(fix: ToolFixture) -> None:
     fix.inboxes[USER] = Inbox()
     result = fix.h_root.send_message("USER", "all done")
     assert result["status"] == "sent"
-    # USER messages are always async.
-    assert result["waiting_for_reply"] is False
     msgs = fix.inboxes[USER].collect()
     assert len(msgs) == 1
     assert msgs[0].payload == "all done"
@@ -1537,15 +1534,7 @@ def test_send_message_to_user_from_child_fails(fix: ToolFixture) -> None:
     result = fix.h_alice.send_message("USER", "sneaky")
     assert "error" in result
     assert "only root agents" in result["error"]
-    # No message should have been delivered.
     assert len(fix.inboxes[USER]) == 0
-
-
-def test_send_message_to_user_forces_async(fix: ToolFixture) -> None:
-    """Even if sync=True is passed, USER messages are forced to async."""
-    fix.inboxes[USER] = Inbox()
-    result = fix.h_root.send_message("USER", "hello human", sync=True)
-    assert result["waiting_for_reply"] is False
 
 
 # === link_from workspace tests ===

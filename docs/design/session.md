@@ -95,11 +95,12 @@ held when a new acquire arrives, `RuntimeError` — no async waiting for now.
 
 ### Slot interaction with tool calls
 
-The two-phase messaging pattern (`send_message` with `sync=true`) and deferred
-`spawn_agent` are both designed to minimize slot pressure:
+Messaging and deferred `spawn_agent` are both designed to minimize slot
+pressure:
 
-- **Sync messaging**: agent sends, turn ends, slot released. Reply delivered as
-  a new turn that re-acquires the slot. Between turns the session is evictable.
+- **Messaging**: agent sends, turn ends, slot released. Reply delivered via
+  auto-wake as a new turn that re-acquires the slot. Between turns the
+  session is evictable.
 - **Deferred spawn**: `spawn_agent` returns immediately during the parent's
   turn. The daemon creates the child's provider session after the parent
   releases its slot, avoiding concurrent held slots for parent + child.

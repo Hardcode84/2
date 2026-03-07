@@ -631,7 +631,7 @@ async def test_recover_message_envelope_fields(
     await orch.run_turn(root.id, "go")
 
     h_root = orch.get_handler(root.id)
-    result = h_root.send_message("child", "payload check", sync=False)
+    result = h_root.send_message("child", "payload check")
     original_mid = result["message_id"]
 
     # Grab original envelope for comparison.
