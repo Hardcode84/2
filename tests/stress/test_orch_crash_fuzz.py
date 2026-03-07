@@ -191,6 +191,7 @@ class AgentSnapshot:
     name_path: NamePath
     children: frozenset[NamePath]
     state: str
+    gated: bool
 
 
 def _snapshot(orch: Orchestrator) -> dict[NamePath, AgentSnapshot]:
@@ -214,6 +215,7 @@ def _snapshot_subtree(
         name_path=path,
         children=children_paths,
         state=node.state.value,
+        gated=node.gated,
     )
     for child in orch.tree.children(aid):
         _snapshot_subtree(orch, child.id, path, result)
@@ -605,6 +607,10 @@ class DualOrchCrashMachine(RuleBasedStateMachine):
             assert ref_agent.state == test_agent.state, (
                 f"state mismatch at {path}: ref={ref_agent.state}, "
                 f"test={test_agent.state}"
+            )
+            assert ref_agent.gated == test_agent.gated, (
+                f"gated mismatch at {path}: ref={ref_agent.gated}, "
+                f"test={test_agent.gated}"
             )
             # Compare children excluding pending.
             ref_children = ref_agent.children - self.pending_paths

@@ -301,15 +301,16 @@ class Orchestrator:
         try:
             node.begin_turn()
         except AgentStateError:
+            # begin_turn failed — don't consume permit_once.
             return
-        # If permit_once, consume the permit and re-gate immediately.
-        if node.gated and node.permit_once:
-            node.permit_once = False
         prompt = self._format_wake_prompt(agent_id)
         if not prompt:
-            # Inbox drained by a concurrent check_inbox.
+            # Inbox drained by a concurrent check_inbox — don't waste permit.
             node.end_turn()
             return
+        # Consume permit_once only after confirming a turn will actually run.
+        if node.gated and node.permit_once:
+            node.permit_once = False
         try:
             await self._execute_turn(node, prompt)
         except Exception as exc:
@@ -456,10 +457,15 @@ class Orchestrator:
                 return
             if node.id not in self._handlers:
                 return
+            if node.gated and not node.permit_once:
+                return
             try:
                 node.begin_turn()
             except AgentStateError:
                 return
+            # Consume permit_once after successful begin_turn.
+            if node.gated and node.permit_once:
+                node.permit_once = False
             try:
                 await self._execute_turn(
                     node,
@@ -862,8 +868,10 @@ class Orchestrator:
                 ws_tuple = (UUID(ws_raw[0]), ws_raw[1]) if ws_raw is not None else None
                 # Restore spawn-time metadata, then replay updates.
                 meta = dict(info["metadata"]) if info.get("metadata") else {}
+                gated = False
                 for entry in info.get("entries", []):
-                    if entry.get("event") == "metadata.updated":
+                    ev = entry.get("event")
+                    if ev == "metadata.updated":
                         d = entry.get("data", {})
                         k = d.get("key")
                         if k is not None:
@@ -872,6 +880,9 @@ class Orchestrator:
                                 meta.pop(k, None)
                             else:
                                 meta[k] = v
+                    elif ev == "tool.gate":
+                        action = entry.get("data", {}).get("action")
+                        gated = action == "gate"
                 node = AgentNode(
                     id=info["agent_id"],
                     session_id=info["session"].id,
@@ -879,6 +890,7 @@ class Orchestrator:
                     parent_id=parent_agent_id,
                     instructions=info["instructions"],
                     metadata=meta,
+                    gated=gated,
                 )
                 self._tree.add(node)
                 self._inboxes[node.id] = Inbox()

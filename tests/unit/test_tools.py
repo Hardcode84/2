@@ -1775,12 +1775,21 @@ def test_permit_turn_ungated_fails(fix: ToolFixture) -> None:
 
 
 def test_permit_turn_busy_fails(fix: ToolFixture) -> None:
-    """permit_turn() on a busy child returns error."""
+    """permit_turn() on a non-idle child returns error."""
     fix.alice.gated = True
     fix.alice.state = AgentState.BUSY
     result = fix.h_root.permit_turn("alice")
     assert "error" in result
-    assert "busy" in result["error"]
+    assert "not idle" in result["error"]
+
+
+def test_permit_turn_waiting_fails(fix: ToolFixture) -> None:
+    """permit_turn() on a waiting child returns error."""
+    fix.alice.gated = True
+    fix.alice.state = AgentState.WAITING
+    result = fix.h_root.permit_turn("alice")
+    assert "error" in result
+    assert "not idle" in result["error"]
 
 
 def test_gate_logs_event(fix: ToolFixture) -> None:

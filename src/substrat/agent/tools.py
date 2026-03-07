@@ -344,6 +344,7 @@ class ToolHandler:
         recent = inbox.peek() if inbox is not None else []
         return {
             "state": child.state.value,
+            "gated": child.gated,
             "metadata": dict(child.metadata),
             "recent_messages": [
                 {
@@ -435,6 +436,7 @@ class ToolHandler:
                     "name": child.name,
                     "agent_id": str(child.id),
                     "state": child.state.value,
+                    "gated": child.gated,
                     "metadata": dict(child.metadata),
                     "pending_messages": len(inbox) if inbox is not None else 0,
                 }
@@ -511,8 +513,8 @@ class ToolHandler:
             return tool_error(str(exc))
         if not child.gated:
             return tool_error("agent is not gated")
-        if child.state == AgentState.BUSY:
-            return tool_error("agent is busy")
+        if child.state != AgentState.IDLE:
+            return tool_error("agent is not idle")
         child.permit_once = True
         self._log_event(
             child.id,

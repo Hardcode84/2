@@ -1325,3 +1325,28 @@ async def test_ungate_allows_pending_wake(
         assert len(child_prompts) == 1
     finally:
         await orch.stop_wake_loop()
+
+
+async def test_gated_child_skips_first_turn_bootstrap(
+    provider: FakeProvider,
+    orch: Orchestrator,
+) -> None:
+    """A child gated immediately after spawn does not get first-turn bootstrap."""
+    orch.start_wake_loop()
+    try:
+        parent = await orch.create_root_agent("parent", "p")
+        handler = orch.get_handler(parent.id)
+        handler.spawn_agent("child", "ci")
+        handler.gate("child")
+        provider.prompts.clear()
+        await orch.run_turn(parent.id, "go")
+        await asyncio.sleep(0.05)
+
+        child = orch.tree.children(parent.id)[0]
+        # Child should NOT have been woken — gated before first turn.
+        boot_prompts = [p for p in provider.prompts if "spawned" in p.lower()]
+        assert len(boot_prompts) == 0
+        assert child.state == AgentState.IDLE
+        assert child.gated is True
+    finally:
+        await orch.stop_wake_loop()
