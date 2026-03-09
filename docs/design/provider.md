@@ -65,6 +65,8 @@ Provider-specific protocol details live in `providers/`. Current:
 
 - **cursor-agent** (`providers/cursor_agent.md`) — CLI subprocess, local
   session storage, MCP tool integration.
+- **scripted** (`providers/scripted.md`) — deterministic Python scripts in
+  bwrap. Stdin/stdout JSON protocol, no LLM. For pipelines and orchestrators.
 
 Planned:
 

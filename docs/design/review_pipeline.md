@@ -99,123 +99,18 @@ re-processes it on wake — same as any inbox message.
 
 ## Scripted provider
 
-New provider type. Same protocol as LLM providers (`create`, `send`,
-`suspend`, `stop`) but `send()` calls a Python function instead of
-querying a model.
+Deterministic Python scripts sandboxed in bwrap. Same isolation model as
+LLM agents — subprocess, no callback injection, tool calls over stdin/stdout
+JSON protocol bridged to the daemon via RPC.
 
-### Interface
-
-```python
-ScriptFn = Callable[[str, ToolHandler, Path | None], Awaitable[str]]
-
-
-class ScriptedProvider:
-    """Provider that runs deterministic Python functions."""
-
-    name = "scripted"
-
-    def __init__(self) -> None:
-        self._registry: dict[str, ScriptFn] = {}
-        self._handler_resolver: HandlerResolver | None = None
-
-    def register(self, name: str, fn: ScriptFn) -> None:
-        self._registry[name] = fn
-
-    def set_handler_resolver(self, resolver: HandlerResolver) -> None:
-        """Set by daemon after orchestrator is created."""
-        self._handler_resolver = resolver
-
-    async def create(
-        self,
-        model: str | None,
-        system_prompt: str,
-        log: EventLog | None = None,
-        *,
-        workspace: Path | None = None,
-        wrap_command: CommandWrapper | None = None,
-        agent_id: UUID | None = None,
-        daemon_socket: str | None = None,
-    ) -> ScriptedSession:
-        if model not in self._registry:
-            raise ValueError(f"unknown script: {model!r}")
-        fn = self._registry[model]
-        return ScriptedSession(
-            fn,
-            agent_id=agent_id,
-            workspace=workspace,
-            handler_resolver=self._handler_resolver,
-        )
-
-    def models(self) -> list[str]:
-        return list(self._registry)
-
-    async def restore(
-        self, state: bytes, log: EventLog | None = None, **kwargs: object
-    ) -> ScriptedSession:
-        raise NotImplementedError("scripted sessions are stateless")
-```
-
-### Handler injection
-
-The handler cannot be injected at `create()` time because the handler
-is created *after* the session (see `_make_handler` in orchestrator).
-Solution: lazy resolver.
-
-```python
-HandlerResolver = Callable[[UUID], tuple[ToolHandler, Path | None]]
-```
-
-The daemon wires the resolver at startup:
-
-```python
-scripted = ScriptedProvider()
-scripted.register("review-pipeline", review_pipeline_fn)
-scripted.set_handler_resolver(
-    lambda agent_id: (orch.get_handler(agent_id), orch.get_workspace_path(agent_id))
-)
-```
-
-`ScriptedSession.send()` resolves the handler lazily on first call:
-
-```python
-class ScriptedSession:
-    def __init__(
-        self,
-        fn: ScriptFn,
-        agent_id: UUID | None,
-        workspace: Path | None,
-        handler_resolver: HandlerResolver | None,
-    ) -> None:
-        self._fn = fn
-        self._agent_id = agent_id
-        self._workspace = workspace
-        self._handler_resolver = handler_resolver
-
-    async def send(self, message: str) -> AsyncGenerator[str, None]:
-        handler, ws = self._handler_resolver(self._agent_id)
-        result = await self._fn(message, handler, ws or self._workspace)
-        yield result
-
-    async def suspend(self) -> bytes:
-        return b""  # Stateless — state is in the WAL.
-
-    async def stop(self) -> None:
-        pass
-```
-
-### Registration
-
-```python
-provider = ScriptedProvider()
-provider.register("review-pipeline", review_pipeline_fn)
-```
+Full design: `providers/scripted.md`.
 
 CLI (requires Phase 5 `--parent` support):
 
 ```bash
 substrat agent create pipeline \
     --provider scripted \
-    --model review-pipeline \
+    --model /path/to/review_pipeline.py \
     --parent project-A \
     --workspace project-A-ws
 ```
