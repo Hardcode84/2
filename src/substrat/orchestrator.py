@@ -448,6 +448,26 @@ class Orchestrator:
         except KeyError:
             return str(sender_id)
 
+    def log_tool_call(
+        self,
+        agent_id: UUID,
+        tool: str,
+        arguments: dict[str, Any],
+        result: dict[str, Any],
+    ) -> None:
+        """Log a tool.call event to the caller's own session log.
+
+        Records tool name, arguments, and result (or error) so the
+        session's event log contains the full tool call history.
+        Prerequisite for scripted provider crash recovery.
+        """
+        data: dict[str, Any] = {"tool": tool, "args": arguments}
+        if "error" in result:
+            data["error"] = result["error"]
+        else:
+            data["result"] = result
+        self._log_lifecycle_for_agent(agent_id, "tool.call", data)
+
     def _log_lifecycle_for_agent(
         self,
         agent_id: UUID,

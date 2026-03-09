@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from substrat.daemon import Daemon
+from substrat.logging.event_log import read_log
 from substrat.rpc import async_call
 from tests.helpers import ScriptedProvider, poll_until
 
@@ -331,3 +332,70 @@ async def test_inspect_child_after_spawn(
         },
     )
     assert resp2["response"] == "inspected"
+
+
+# -- tool.call events logged to caller's session log -------------------------
+
+
+async def test_tool_call_events_logged_to_caller(
+    scripted_env: tuple[Daemon, ScriptedProvider],
+    tmp_path: Path,
+) -> None:
+    """tool.call RPC logs a tool.call event to the caller's own session log."""
+    daemon, provider = scripted_env
+
+    sock = str(daemon.socket_path)
+
+    async def turn_with_tools(
+        agent_id: str,
+        socket_path: str,
+        message: str,
+    ) -> AsyncGenerator[str, None]:
+        # Two tool calls in one turn.
+        await async_call(
+            socket_path,
+            "tool.call",
+            {"agent_id": agent_id, "tool": "check_inbox", "arguments": {}},
+        )
+        await async_call(
+            socket_path,
+            "tool.call",
+            {
+                "agent_id": agent_id,
+                "tool": "send_message",
+                "arguments": {"recipient": "nobody", "text": "hi"},
+            },
+        )
+        yield "done"
+
+    provider.add_agent_script([turn_with_tools])
+
+    created = await async_call(
+        sock,
+        "agent.create",
+        {"name": "logger-test", "instructions": "test logging"},
+    )
+    agent_id = created["agent_id"]
+    resp = await async_call(
+        sock,
+        "agent.send",
+        {"agent_id": agent_id, "message": "go"},
+    )
+    assert resp["response"] == "done"
+
+    # Read the event log for the agent's session.
+    node = daemon.orchestrator.tree.resolve("logger-test")
+    log_path = tmp_path / "agents" / node.session_id.hex / "events.jsonl"
+    events = read_log(log_path)
+
+    tool_calls = [e for e in events if e["event"] == "tool.call"]
+    assert len(tool_calls) == 2
+
+    # First: check_inbox (success).
+    assert tool_calls[0]["data"]["tool"] == "check_inbox"
+    assert tool_calls[0]["data"]["args"] == {}
+    assert "result" in tool_calls[0]["data"]
+
+    # Second: send_message to nonexistent agent (error).
+    assert tool_calls[1]["data"]["tool"] == "send_message"
+    assert "error" in tool_calls[1]["data"]

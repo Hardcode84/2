@@ -432,7 +432,9 @@ class Daemon:
         else:
             handler = self._orch.get_handler(agent_id)
             method = getattr(handler, tool_name)
-        return method(**arguments)  # type: ignore[no-any-return]
+        result: dict[str, Any] = method(**arguments)
+        self._orch.log_tool_call(agent_id, tool_name, arguments, result)
+        return result
 
     # -- Inbox RPC handler -----------------------------------------------------
 
