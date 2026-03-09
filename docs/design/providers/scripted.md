@@ -44,25 +44,25 @@ overhead on the normal path. The process IS the ephemeral state.
 
 ### State model
 
-The analogy with bare LLM providers (e.g. OpenRouter API) is direct: no
-server-side state, conversation history replayed on each restore. For the
-scripted provider, the "conversation" is the turn history — messages
-received plus tool calls made and results returned. Plain dicts and
-strings, nothing fancy.
-
-Three tiers:
+Three tiers, same as any provider:
 
 1. **Process alive** — state is in memory. Zero cost. Normal operation.
-2. **Suspend/restore** — turn history serialized as JSON in the session
-   state blob. On restore, spawn fresh process, feed cached turns through
-   the helper. Cost = O(N) CPU but no I/O beyond reading the blob.
-3. **Crash** — uses the last checkpoint blob. The scheduler checkpoints
-   after every completed turn, so the blob is always current. If the
-   blob is missing or corrupt, the session starts from scratch (empty
-   history).
+2. **Suspend/restore** (multiplexer eviction) — turn history serialized
+   as JSON in the `provider_state` blob from `suspend()`. On restore,
+   spawn fresh process, feed cached turns through the helper. Fast path.
+3. **Crash** (power loss, OOM, kill -9) — process dead, blob may be
+   stale. Reconstruct turn history from the event log. This is the
+   correctness path — the event log is the source of truth.
 
-The checkpoint blob is the single source of truth for the script's state.
-The event log is not used for the script's own recovery.
+This matches the principle in `crash_recovery.md`: *"The `provider_state`
+blob from `suspend()` is a fast-path optimization, not a correctness
+requirement."*
+
+**Prerequisite:** Phase 3 (sender-side event logging) must be implemented
+for crash recovery. The event log needs `tool.call` events with tool
+name, args, and result logged to the *caller's* session log. Without
+Phase 3, the event log lacks tool call data and crash recovery falls
+back to empty history (script restarts from scratch).
 
 See [State and Recovery](#state-and-recovery) for the mechanism.
 
@@ -328,48 +328,44 @@ feed it through the script to rebuild state.
 | | Bare LLM provider | Scripted provider |
 |---|---|---|
 | "Conversation" | Messages (user/assistant) | Turns (message + tool calls + results) |
-| State blob | Serialized messages | Serialized turn history |
-| Replay | Send history to API | Feed history through helper |
+| Crash recovery | Reconstruct from event log | Reconstruct from event log |
+| Eviction restore | Blob (fast path) | Blob (fast path) |
 | Data format | JSON (primitive types) | JSON (primitive types) |
 
-### Three tiers
+### Two recovery paths
 
-| | Normal operation | Suspend/restore | Crash recovery |
-|---|---|---|---|
-| Process | Long-lived | Dead (killed or new spawn) | Dead |
-| State source | Process memory | Turn history blob | Turn history blob (checkpoint) |
-| Replay cost | Zero | O(N) — feed history to helper | O(N) — same mechanism |
-| History in blob | Accumulating in memory | Complete | Last checkpoint |
+| | Suspend/restore (eviction) | Crash recovery (power loss) |
+|---|---|---|
+| Process | Dead (evicted) | Dead (crashed) |
+| State source | `provider_state` blob | Event log |
+| Reconstruction | Deserialize history from blob | Parse `turn.start` + `tool.call` + `turn.complete` events |
+| Cost | O(1) deserialize + O(N) replay | O(N) log scan + O(N) replay |
+| Correctness | Optimization — may be stale | Source of truth — always complete |
 
 ### Turn history format
 
-The state blob is JSON. The `history` field is a list of completed turns:
+The turn history is a list of completed turns, each with the message
+received, tool calls made (with results or errors), and the response:
 
 ```json
-{
-  "script": "/path/to/pipeline.py",
-  "workspace": "/path/to/workspace",
-  "agent_id": "deadbeef...",
-  "daemon_socket": "/run/substrat.sock",
-  "history": [
-    {
-      "message": "implement feature X",
-      "calls": [
-        {"tool": "gate", "args": {"agent_name": "worker"}, "result": {"status": "gated"}},
-        {"tool": "send_message", "args": {"recipient": "worker", "text": "..."}, "result": {"status": "delivered"}}
-      ],
-      "response": "task dispatched"
-    },
-    {
-      "message": "[state] worker: busy -> idle",
-      "calls": [
-        {"tool": "check_inbox", "args": {}, "result": {"messages": [...]}},
-        {"tool": "gate", "args": {"agent_name": "ghost"}, "error": "agent not found: ghost"}
-      ],
-      "response": "routing to critics"
-    }
-  ]
-}
+[
+  {
+    "message": "implement feature X",
+    "calls": [
+      {"tool": "gate", "args": {"agent_name": "worker"}, "result": {"status": "gated"}},
+      {"tool": "send_message", "args": {"recipient": "worker", "text": "..."}, "result": {"status": "delivered"}}
+    ],
+    "response": "task dispatched"
+  },
+  {
+    "message": "[state] worker: busy -> idle",
+    "calls": [
+      {"tool": "check_inbox", "args": {}, "result": {"messages": [...]}},
+      {"tool": "gate", "args": {"agent_name": "ghost"}, "error": "agent not found: ghost"}
+    ],
+    "response": "routing to critics"
+  }
+]
 ```
 
 Each call entry has exactly one of `"result"` or `"error"`. The helper
@@ -378,26 +374,54 @@ re-raises errors during replay so the script follows the same code path.
 Plain dicts, strings, numbers. No pickle, no custom types, no fragile
 serialization. `json.dumps` handles everything. Debuggable with `jq`.
 
-### Checkpointing
+This format is used in both the `provider_state` blob (for eviction) and
+reconstructed from the event log (for crash recovery). Same data, two
+sources.
 
-The scheduler calls `suspend()` on the scripted session after each
-completed turn and persists the blob via the existing `SessionStore`.
-This reuses the eviction persistence path — no new API needed. The
-scheduler already owns session lifecycle; it just needs to checkpoint
-scripted sessions more eagerly than LLM sessions (where `suspend()` is
-expensive).
+### Crash recovery: event log reconstruction
 
-Cost: a few KB of JSON per turn. Negligible for scripted sessions (tool
-calls and short messages, not LLM-sized responses). With per-turn
-checkpointing, the blob is always current. Even crash recovery (no
-explicit suspend) uses the blob.
+The event log is the source of truth. On crash recovery, the provider
+reconstructs the turn history by scanning the session's event log:
 
-**Invariant:** The scheduler must not call `suspend()` concurrently with
-`send()`. This holds today — the multiplexer serialises slot access.
+```
+turn.start    {"prompt": "implement feature X"}
+tool.call     {"tool": "gate", "args": {...}, "result": {...}}
+tool.call     {"tool": "send_message", "args": {...}, "result": {...}}
+turn.complete {"response": "task dispatched"}
+turn.start    {"prompt": "[state] worker: busy -> idle"}
+tool.call     {"tool": "check_inbox", "args": {}, "result": {...}}
+turn.complete {"response": "routing to critics"}
+```
 
-If checkpointing proves too frequent, reduce to every N turns. But for
-scripts with ~10 tool calls per turn and ~50 turns, the history is
-<100KB. Not worth optimising.
+Group by `turn.start`/`turn.complete` boundaries. Each group becomes one
+history entry: `turn.start.prompt` → `message`, `tool.call` events →
+`calls`, `turn.complete.response` → `response`.
+
+**Prerequisite:** `tool.call` events must be logged to the caller's own
+session log (Phase 3: sender-side event logging). Currently, tool effects
+are logged to other agents' logs (recipient for messages, child for
+gate). The caller's log has `turn.start` and `turn.complete` but no
+record of what tools were called in between.
+
+### Eviction restore: blob fast path
+
+On multiplexer eviction, `suspend()` serializes the in-memory turn
+history as the `provider_state` blob. On restore, deserialize and replay.
+No event log scan needed — the blob is a pre-built snapshot.
+
+The blob also includes `agent_id` and `daemon_socket` for reconnection:
+
+```json
+{
+  "script": "/path/to/pipeline.py",
+  "workspace": "/path/to/workspace",
+  "agent_id": "deadbeef...",
+  "daemon_socket": "/path/to/daemon.sock",
+  "history": [...]
+}
+```
+
+If the blob is stale or corrupt, fall back to event log reconstruction.
 
 ### How replay works
 
@@ -423,23 +447,22 @@ swaps the backing I/O source internally.
 During replay, the helper verifies that each `call_tool()` invocation
 matches the cached history (tool name). A mismatch means the script's
 logic diverged — this is a bug in the script (nondeterminism) or a
-corrupt blob. The helper aborts with a clear error rather than silently
-producing wrong state.
+corrupt history. The helper aborts with a clear error rather than
+silently producing wrong state.
 
-### Event log role
+### Event log events
 
-The event log is still written by the provider/orchestrator (tool calls,
-turn boundaries, message delivery). It serves:
+Events logged by the provider/orchestrator for each scripted turn:
 
-- **Debugging** — `cat events.jsonl | jq` shows the full history.
-- **Other agents' recovery** — gate state, subscriptions, etc. are
-  restored from the event log by the daemon, not by the script.
+| Event | Logged by | Data | Purpose |
+|-------|-----------|------|---------|
+| `turn.start` | Scheduler | `prompt` | Turn boundary, message received. |
+| `tool.call` | Provider (Phase 3) | `tool`, `args`, `result`/`error` | Caller-side tool record. |
+| `turn.complete` | Scheduler | `response` | Turn boundary, script response. |
 
-The event log is NOT used for the script's own state recovery. If the
-checkpoint blob is missing or corrupt, the session starts with empty
-history — the script runs from scratch. A future enhancement (Phase 3:
-sender-side event logging) could enable reconstructing the turn history
-from the event log, but this is not planned for v1.
+Plus the standard orchestrator events (`message.enqueued`,
+`message.delivered`, `tool.gate`, etc.) logged to other agents' logs for
+their own recovery.
 
 ## Sandbox
 

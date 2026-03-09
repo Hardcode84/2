@@ -221,8 +221,8 @@ Gap analysis in docs/user_story.md. Prompt templates in templates/.
 Design: [docs/design/review_pipeline.md](docs/design/review_pipeline.md)
 - [x] Phase 1: Gate / ungate / permit_turn tools — wake eligibility control, parent-only authority, gate check in _process_wake
 - [x] Phase 2: Subscribe / unsubscribe tools — state transition notifications, one-shot + persistent, crash recovery
-- [ ] Phase 3: Sender-side event logging — tool.send_message logged to caller's session for WAL recovery
-- [ ] Phase 4: Scripted provider — deterministic Python functions, same provider protocol, lazy handler resolver
+- [ ] Phase 3: Sender-side event logging — `tool.call` events logged to caller's session; prerequisite for scripted provider crash recovery (event log must contain tool name, args, result/error per call)
+- [ ] Phase 4: Scripted provider — bwrap-sandboxed Python subprocess, stdin/stdout JSON lines protocol, long-lived process across turns; design in docs/design/providers/scripted.md
 - [ ] Phase 5: CLI `--parent` flag — `substrat agent create` with `--parent` for non-root agents
 - [ ] Phase 6: Review pipeline script — state machine, routing rules, fan-out/fan-in, WAL recovery
 - [ ] Phase 7: Init scripts — init-pipeline.sh creates pipeline, worker, critics, sends task
