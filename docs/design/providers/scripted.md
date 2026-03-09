@@ -56,12 +56,13 @@ Three tiers:
 2. **Suspend/restore** — turn history serialized as JSON in the session
    state blob. On restore, spawn fresh process, feed cached turns through
    the helper. Cost = O(N) CPU but no I/O beyond reading the blob.
-3. **Crash** — blob may be stale (last checkpoint, not last turn). Fall
-   back to event log replay. Same mechanism, different data source.
+3. **Crash** — uses the last checkpoint blob. The scheduler checkpoints
+   after every completed turn, so the blob is always current. If the
+   blob is missing or corrupt, the session starts from scratch (empty
+   history).
 
-The session checkpoints the turn history blob after every turn (cheap —
-a few KB of JSON). If checkpointing is current, even crash recovery uses
-the blob and the event log is not needed for replay.
+The checkpoint blob is the single source of truth for the script's state.
+The event log is not used for the script's own recovery.
 
 See [State and Recovery](#state-and-recovery) for the mechanism.
 
@@ -70,10 +71,18 @@ See [State and Recovery](#state-and-recovery) for the mechanism.
 The multiplexer manages expensive LLM sessions (API connections, context
 windows). A Python script blocked on stdin costs ~30MB memory, zero CPU.
 Scripted sessions are exempt from LRU eviction — there's nothing to
-reclaim.
+reclaim. Implementation: the multiplexer checks `provider.name` and skips
+eviction candidates with `name == "scripted"`. Simple provider hint, no
+new protocol.
 
-If eviction is ever needed (many scripted agents), `suspend()` kills the
-process and `restore()` replays from the turn history blob.
+If eviction is ever needed (many scripted agents), `suspend()` returns the
+turn history blob and the scheduler kills the process. `restore()` spawns
+a fresh process and replays from the blob.
+
+Note: scripted sessions do not stream. `send()` yields a single response
+chunk at `done`. `agent attach` shows no incremental output during a
+scripted turn — the operator sees the final response only. This differs
+from LLM providers but is inherent to deterministic scripts.
 
 ## Wire Protocol
 
@@ -180,7 +189,9 @@ provider              script (bwrap)
 
 ```python
 class ScriptedProvider:
-    name = "scripted"
+    @property
+    def name(self) -> str:
+        return "scripted"
 
     async def create(
         self,
@@ -235,29 +246,18 @@ class ScriptedSession:
         #    - "call" → dispatch via daemon RPC, record call+result in
         #      current_turn["calls"], write result to stdin.
         #    - "done" → yield response. Append current_turn to history.
-        #      Checkpoint. Do NOT close stdin.
+        #      Do NOT close stdin. Scheduler checkpoints after turn.
         #    - "error" → raise, turn fails.
         ...
 
-    async def _checkpoint(self) -> None:
-        """Persist turn history after each completed turn.
-
-        Writes the state blob to the session store so crash recovery
-        can use it instead of parsing the event log.
-        """
-        blob = self.suspend_sync()
-        if self._log is not None:
-            self._log.log("session.checkpoint", {"size": len(blob)})
-        # SessionStore.save_state(self._session_id, blob)
-        ...
-
     def suspend_sync(self) -> bytes:
-        """Serialize state — script path, workspace, turn history."""
+        """Serialize state — script path, workspace, identity, turn history."""
         return json.dumps({
             "script": str(self._script_path),
             "workspace": str(self._workspace),
+            "agent_id": self._agent_id.hex if self._agent_id else None,
+            "daemon_socket": self._daemon_socket,
             "history": self._history,
-            "pid": self._proc.pid if self._proc else None,
         }).encode()
 
     async def suspend(self) -> bytes:
@@ -279,16 +279,22 @@ The session bridges tool calls to the daemon the same way cursor-agent's
 non-MCP path does — via `tool.call` RPC:
 
 ```python
+# Script sends: {"type": "call", "id": 1, "tool": "gate", "args": {"agent_name": "worker"}}
+# Provider maps wire "args" to daemon RPC "arguments":
 resp = await async_call(
     daemon_socket,
     "tool.call",
     {"agent_id": agent_id.hex, "tool": name, "arguments": args},
 )
+# Daemon returns result dict (or error via tool_error()).
+# Provider maps back to wire format:
+#   Success: {"type": "result", "id": 1, "data": resp}
+#   Error (resp has "error" key): {"type": "result", "id": 1, "error": resp["error"]}
 ```
 
 No `ToolHandler` reference, no `HandlerResolver`, no lazy callbacks. The
 session talks to the daemon over UDS like any other client. The daemon
-socket path is bind-mounted into the sandbox.
+socket is passed via `daemon_socket` (from `create()` or the state blob).
 
 ### Deadlock prevention
 
@@ -299,8 +305,16 @@ it reads stdout without blocking the event loop, then writes to stdin when
 a result is ready. No threads needed.
 
 The script side is synchronous: write call → flush → readline. Standard
-blocking I/O. The pipe buffers (64KB default on Linux) are more than
-sufficient for JSON tool calls.
+blocking I/O. The pipe buffers (64KB default on Linux) handle most tool
+results. For large payloads (`check_inbox` with many messages,
+`inspect_agent` with large output), the async read loop on the provider
+side prevents deadlock — it drains stdout before writing to stdin. If a
+single result line exceeds pipe capacity, the provider's async write +
+script's blocking read still works because the OS interleaves pipe I/O.
+
+Stderr must also be consumed concurrently. A verbose script can fill the
+stderr pipe buffer and block. The provider reads stderr in a background
+asyncio task, same as stdout.
 
 ## State and Recovery
 
@@ -335,6 +349,8 @@ The state blob is JSON. The `history` field is a list of completed turns:
 {
   "script": "/path/to/pipeline.py",
   "workspace": "/path/to/workspace",
+  "agent_id": "deadbeef...",
+  "daemon_socket": "/run/substrat.sock",
   "history": [
     {
       "message": "implement feature X",
@@ -347,7 +363,8 @@ The state blob is JSON. The `history` field is a list of completed turns:
     {
       "message": "[state] worker: busy -> idle",
       "calls": [
-        {"tool": "check_inbox", "args": {}, "result": {"messages": [...]}}
+        {"tool": "check_inbox", "args": {}, "result": {"messages": [...]}},
+        {"tool": "gate", "args": {"agent_name": "ghost"}, "error": "agent not found: ghost"}
       ],
       "response": "routing to critics"
     }
@@ -355,25 +372,32 @@ The state blob is JSON. The `history` field is a list of completed turns:
 }
 ```
 
+Each call entry has exactly one of `"result"` or `"error"`. The helper
+re-raises errors during replay so the script follows the same code path.
+
 Plain dicts, strings, numbers. No pickle, no custom types, no fragile
 serialization. `json.dumps` handles everything. Debuggable with `jq`.
 
 ### Checkpointing
 
-The session checkpoints the turn history blob after every completed turn.
-Cost: a few KB of JSON written to the session store. Negligible for
-scripted sessions (the turn history is small — tool calls and short
-messages, not LLM-sized responses).
+The scheduler calls `suspend()` on the scripted session after each
+completed turn and persists the blob via the existing `SessionStore`.
+This reuses the eviction persistence path — no new API needed. The
+scheduler already owns session lifecycle; it just needs to checkpoint
+scripted sessions more eagerly than LLM sessions (where `suspend()` is
+expensive).
 
-With per-turn checkpointing, the blob is always current. Even crash
-recovery (no explicit suspend) uses the blob. The event log is still
-written (by the provider/orchestrator) for debugging and auditing, but
-is not needed for the script's own state recovery.
+Cost: a few KB of JSON per turn. Negligible for scripted sessions (tool
+calls and short messages, not LLM-sized responses). With per-turn
+checkpointing, the blob is always current. Even crash recovery (no
+explicit suspend) uses the blob.
 
-If checkpointing proves too frequent, we can reduce to every N turns
-and fall back to the event log for the gap. But for scripts with ~10
-tool calls per turn and ~50 turns, the history is <100KB. Not worth
-optimizing.
+**Invariant:** The scheduler must not call `suspend()` concurrently with
+`send()`. This holds today — the multiplexer serialises slot access.
+
+If checkpointing proves too frequent, reduce to every N turns. But for
+scripts with ~10 tool calls per turn and ~50 turns, the history is
+<100KB. Not worth optimising.
 
 ### How replay works
 
@@ -410,9 +434,12 @@ turn boundaries, message delivery). It serves:
 - **Debugging** — `cat events.jsonl | jq` shows the full history.
 - **Other agents' recovery** — gate state, subscriptions, etc. are
   restored from the event log by the daemon, not by the script.
-- **Fallback** — if the checkpoint blob is missing or corrupt, the
-  event log can reconstruct the turn history. This path requires
-  sender-side event logging (Phase 3) but is not the primary mechanism.
+
+The event log is NOT used for the script's own state recovery. If the
+checkpoint blob is missing or corrupt, the session starts with empty
+history — the script runs from scratch. A future enhancement (Phase 3:
+sender-side event logging) could enable reconstructing the turn history
+from the event log, but this is not planned for v1.
 
 ## Sandbox
 
@@ -424,15 +451,17 @@ sandbox prefix. The scripted provider declares its own bind requirements
 
 | Host path | Mount path | Mode | Why |
 |-----------|-----------|------|-----|
-| Script file | `/script/<name>.py` | ro | The script to execute. |
-| Helper library | `/script/substrat_script.py` | ro | Optional but recommended. |
-| Workspace | `/workspace/` | ro/rw | Repo, views, workspace content. |
-| Daemon socket | `/run/substrat.sock` | ro | Tool call RPC. |
+| Script file | (workspace-relative or explicit) | ro | The script to execute. |
+| Helper library | (same dir as script) | ro | Optional but recommended. |
+| Workspace root | `workspace.root_path` | ro/rw | Repo, views, workspace content. bwrap `--chdir` sets cwd. |
 | Python interpreter | (system path) | ro | System binds cover this. |
 
-Note: the event log is NOT bound into the sandbox. Replay uses the turn
-history passed inline via stdin. The event log stays on the host for
-daemon-level recovery and debugging.
+Note: the daemon socket is NOT bound into the sandbox. The script does
+not call the daemon directly — it writes tool calls to stdout. The
+provider (running outside the sandbox) dispatches via daemon RPC.
+
+The event log is also not bound. Replay uses the turn history passed
+inline via stdin.
 
 ### What the script does NOT get
 
@@ -466,17 +495,19 @@ class _Runtime:
         self._replay_turn: int = 0
         self._replay_call: int = 0
         self._call_id: int = 0
-        self._live_message: str = ""
+        self._pending_live: str = ""
 
-    def init(self, msg: dict[str, Any]) -> str:
+    def init(self, msg: dict[str, Any]) -> None:
         """Process turn message. Load history for replay if present."""
-        self._live_message = msg["message"]
         history = msg.get("history", [])
         if history:
             self._history = history
             self._replay_turn = 0
             self._replay_call = 0
-        return self._live_message
+            # Buffer the live message for after replay finishes.
+            self._pending_live = msg["message"]
+        else:
+            self._pending_live = ""
 
     @property
     def replaying(self) -> bool:
@@ -493,6 +524,8 @@ class _Runtime:
             f"script called {tool}"
         )
         self._replay_call += 1
+        if "error" in expected:
+            raise RuntimeError(expected["error"])
         return expected["result"]
 
     def replay_done(self) -> None:
@@ -516,6 +549,12 @@ def read_turn() -> str:
     if _rt.replaying:
         return _rt.replay_message()
 
+    # Return the live message if replay just finished and we have it buffered.
+    if _rt._pending_live:
+        msg = _rt._pending_live
+        _rt._pending_live = ""
+        return msg
+
     line = sys.stdin.readline()
     if not line:
         raise SystemExit("stdin closed")
@@ -525,6 +564,7 @@ def read_turn() -> str:
     _rt.init(msg)
 
     # If history was provided, replay from the first cached turn.
+    # The live message is buffered in _pending_live for after replay.
     if _rt.replaying:
         return _rt.replay_message()
 
@@ -552,6 +592,8 @@ def call_tool(tool: str, **args: Any) -> dict[str, Any]:
     )
     if "error" in resp:
         raise RuntimeError(resp["error"])
+    if "data" not in resp:
+        raise RuntimeError(f"malformed result: missing 'data' and 'error'")
     return resp["data"]
 
 
@@ -604,6 +646,27 @@ Script stderr is forwarded to the agent's event log as diagnostic output.
 Same treatment as cursor-agent stderr — captured and logged on turn
 completion (or on failure, included in the error message).
 
+## Invariants
+
+**Single-flight turns.** The scheduler/multiplexer must not call `send()`
+concurrently on the same session. Two concurrent writes to the same stdin
+corrupt the protocol. This holds today — the multiplexer serialises slot
+access — but the scripted provider does not enforce it internally. The
+invariant must be maintained by the caller.
+
+**Mid-turn process death.** If the script dies during a turn (OOM,
+SIGKILL), the provider detects EOF on stdout and fails the turn. The
+in-progress turn is NOT recorded in the history — only completed turns
+(those that reached `done`) are checkpointed. Tool calls already
+dispatched before the death may have committed side effects (e.g.
+`send_message` delivered a message). These are orphaned — the script
+will not see their results on replay. For idempotent tools (`gate`,
+`inspect_agent`) this is harmless. For non-idempotent tools
+(`send_message`), the message may be delivered twice after recovery.
+This is acceptable for v1 — the pipeline's consumers (workers, critics)
+must tolerate duplicate messages. A future mitigation: deduplication by
+message ID at the inbox level.
+
 ## Error Handling
 
 | Scenario | Behavior |
@@ -642,6 +705,8 @@ async def restore(self, state: bytes, ...) -> ScriptedSession:
     session = ScriptedSession(
         script_path=Path(data["script"]),
         workspace=Path(data["workspace"]),
+        agent_id=UUID(data["agent_id"]) if data.get("agent_id") else None,
+        daemon_socket=data.get("daemon_socket"),
         ...
     )
     session._history = data.get("history", [])
@@ -672,7 +737,20 @@ Three cases:
 
 ## What This Replaces in review_pipeline.md
 
-The `ScriptFn` / `HandlerResolver` / callback-injection design in the
-Scripted Provider section of `review_pipeline.md` is superseded by this
-document. The pipeline state machine, routing rules, and WAL recovery
-sections remain valid — only the provider plumbing changes.
+The following sections of `review_pipeline.md` are superseded by this
+document:
+
+- **§Scripted provider** — replaced by the subprocess/JSON protocol
+  design here. The callback-injection model (`ScriptFn`, `HandlerResolver`)
+  is dead.
+- **§WAL-based crash recovery** — the `reconstruct_state(events)` function
+  and event-log-as-primary-state model are replaced by the turn history
+  blob. The pipeline script no longer parses the event log.
+
+The following sections remain valid and are not affected:
+
+- **§Pipeline state machine** — the states and transitions are unchanged.
+- **§Routing rules** — `route_critics()` logic is unchanged.
+- **§Critic agents** — lifecycle, context management, NOTES.md.
+- **§External setup** — CLI commands, init scripts.
+- **§Error handling** — scenario/behavior table (supplemented by this doc).
