@@ -42,22 +42,26 @@ spawn ──► turn 1 ──► block on stdin ──► turn 2 ──► block
 This is the key difference from the spawn-per-turn model: zero replay
 overhead on the normal path. The process IS the ephemeral state.
 
-### Why not pickle?
+### State model
 
-Stdlib `pickle` cannot serialize generators. `dill` can, but it's fragile
-— fails on generators that capture file handles, locks, or certain
-closures. Adding a third-party dependency for a core reliability mechanism
-is the kind of decision that haunts you at 3am. A living process achieves
-the same goal with zero serialization.
+The analogy with bare LLM providers (e.g. OpenRouter API) is direct: no
+server-side state, conversation history replayed on each restore. For the
+scripted provider, the "conversation" is the turn history — messages
+received plus tool calls made and results returned. Plain dicts and
+strings, nothing fancy.
 
-### Crash recovery
+Three tiers:
 
-On crash the process dies. The daemon restarts, replays its own event log
-to restore agent state, and re-wakes the scripted agent. The provider
-spawns a fresh subprocess. The helper library inside the sandbox reads the
-event log and replays previous turns' tool calls to fast-forward the
-script to the correct state — then switches to live I/O for the current
-turn. Slow, but only happens on crash.
+1. **Process alive** — state is in memory. Zero cost. Normal operation.
+2. **Suspend/restore** — turn history serialized as JSON in the session
+   state blob. On restore, spawn fresh process, feed cached turns through
+   the helper. Cost = O(N) CPU but no I/O beyond reading the blob.
+3. **Crash** — blob may be stale (last checkpoint, not last turn). Fall
+   back to event log replay. Same mechanism, different data source.
+
+The session checkpoints the turn history blob after every turn (cheap —
+a few KB of JSON). If checkpointing is current, even crash recovery uses
+the blob and the event log is not needed for replay.
 
 See [State and Recovery](#state-and-recovery) for the mechanism.
 
@@ -69,8 +73,7 @@ Scripted sessions are exempt from LRU eviction — there's nothing to
 reclaim.
 
 If eviction is ever needed (many scripted agents), `suspend()` kills the
-process and `restore()` replays the event log — same path as crash
-recovery. No pickle needed.
+process and `restore()` replays from the turn history blob.
 
 ## Wire Protocol
 
@@ -80,16 +83,29 @@ JSON lines on stdin/stdout. One JSON object per line, `\n`-terminated.
 
 **Turn start:**
 ```json
-{"type": "turn", "message": "implement feature X", "events_path": "/state/events.jsonl", "turn_seq": 3}
+{"type": "turn", "message": "implement feature X", "history": [...]}
 ```
 
-`events_path` points to the agent's event log inside the sandbox (RO bind).
-May be `null` if no log exists yet (first turn).
+`history` is the turn history — a JSON array of past turns, each
+containing the message, tool calls, and responses. Present when the
+process is fresh and needs to recover state (suspend/restore, crash).
+Empty array or absent on a long-lived process (normal operation).
 
-`turn_seq` is a zero-based turn counter. On a fresh process with
-`turn_seq > 0`, the helper replays turns 0..N-1 from the event log before
-processing turn N live. On a long-lived process (normal operation),
-`turn_seq` is informational — no replay needed.
+```json
+{"type": "turn", "message": "...", "history": [
+  {"message": "implement feature X",
+   "calls": [{"tool": "gate", "args": {"agent_name": "worker"}, "result": {"status": "gated"}},
+             {"tool": "send_message", "args": {"recipient": "worker", "text": "..."}, "result": {"status": "delivered"}}],
+   "response": "task dispatched"},
+  {"message": "[state] worker: busy -> idle",
+   "calls": [{"tool": "check_inbox", "args": {}, "result": {"messages": [...]}}],
+   "response": "routing to critics"}
+]}
+```
+
+On a long-lived process, `history` is omitted — no replay needed. The
+helper detects whether replay is required based on the presence and
+length of `history`.
 
 **Tool result:**
 ```json
@@ -136,7 +152,7 @@ Provider treats this as a turn failure. Logged, agent goes IDLE.
 provider              script (bwrap)
    │                      │
    │  ┌── turn 1 ─────────────────────────────┐
-   ├─ stdin: turn(seq=0)─►│                    │
+   ├─ stdin: turn(h=[]) ─►│                    │
    │                      ├── gate worker      │
    │◄── stdout: call ─────┤                    │
    ├─ stdin: result ─────►│                    │
@@ -148,7 +164,7 @@ provider              script (bwrap)
    │                      │  (blocked on stdin — process alive)
    │                      │
    │  ┌── turn 2 ─────────────────────────────┐
-   ├─ stdin: turn(seq=1)─►│                    │
+   ├─ stdin: turn(h=[]) ─►│                    │
    │                      ├── check inbox      │
    │◄── stdout: call ─────┤                    │
    ├─ stdin: result ─────►│                    │
@@ -201,35 +217,61 @@ typically ignore it — their behavior is in the code.
 class ScriptedSession:
     def __init__(self, ...):
         self._proc: asyncio.subprocess.Process | None = None
-        self._turn_seq: int = 0
+        self._history: list[dict] = []  # Completed turns.
+        self._current_turn: dict | None = None  # In-progress turn.
 
     async def send(self, message: str) -> AsyncGenerator[str, None]:
         # 1. If no live process, spawn one:
         #    argv = ["python", script_path]
         #    wrap_command() adds bwrap (same as cursor-agent).
         #    asyncio.create_subprocess_exec(stdin=PIPE, stdout=PIPE, stderr=PIPE).
-        # 2. Write {"type": "turn", "turn_seq": N, ...} to stdin.
-        # 3. Read loop on stdout:
-        #    - "call" → dispatch tool via daemon RPC, write result to stdin.
-        #    - "done" → yield response. Do NOT close stdin.
+        # 2. Build turn message:
+        #    - If process is fresh (just spawned) and history is non-empty,
+        #      include history for replay.
+        #    - Otherwise, omit history (process is live, no replay needed).
+        # 3. Write {"type": "turn", "message": ..., "history": ...} to stdin.
+        # 4. Track current turn: {"message": message, "calls": []}.
+        # 5. Read loop on stdout:
+        #    - "call" → dispatch via daemon RPC, record call+result in
+        #      current_turn["calls"], write result to stdin.
+        #    - "done" → yield response. Append current_turn to history.
+        #      Checkpoint. Do NOT close stdin.
         #    - "error" → raise, turn fails.
-        # 4. Increment turn_seq.
         ...
 
-    async def suspend(self) -> bytes:
-        # Process stays alive — return metadata for reconnection.
-        # If we must kill (eviction), replay on restore.
+    async def _checkpoint(self) -> None:
+        """Persist turn history after each completed turn.
+
+        Writes the state blob to the session store so crash recovery
+        can use it instead of parsing the event log.
+        """
+        blob = self.suspend_sync()
+        if self._log is not None:
+            self._log.log("session.checkpoint", {"size": len(blob)})
+        # SessionStore.save_state(self._session_id, blob)
+        ...
+
+    def suspend_sync(self) -> bytes:
+        """Serialize state — script path, workspace, turn history."""
         return json.dumps({
             "script": str(self._script_path),
             "workspace": str(self._workspace),
-            "turn_seq": self._turn_seq,
+            "history": self._history,
+            "pid": self._proc.pid if self._proc else None,
         }).encode()
+
+    async def suspend(self) -> bytes:
+        return self.suspend_sync()
 
     async def stop(self) -> None:
         # Close stdin → script sees EOF → exits.
         # Kill if it doesn't exit within timeout.
         ...
 ```
+
+The turn history is the session's "conversation context" — same role as
+conversation messages in a bare LLM provider. Primitive data only: nested
+dicts/lists with strings and numbers. `json.dumps` handles it. No pickle.
 
 ### Tool dispatch
 
@@ -262,116 +304,115 @@ sufficient for JSON tool calls.
 
 ## State and Recovery
 
-### Two paths, one script
+### The LLM analogy
 
-| | Normal operation | Crash recovery |
+A bare LLM API provider (no server-side state) stores the conversation
+history and replays it on each API call. The scripted provider does the
+same thing: the turn history IS the conversation context. On restore,
+feed it through the script to rebuild state.
+
+| | Bare LLM provider | Scripted provider |
 |---|---|---|
-| Process | Long-lived, stays alive | Fresh spawn |
-| State source | Process memory | Event log replay |
-| Replay cost | Zero | O(N) where N = past turns |
-| Who handles it | Nobody — it's in memory | Helper library |
+| "Conversation" | Messages (user/assistant) | Turns (message + tool calls + results) |
+| State blob | Serialized messages | Serialized turn history |
+| Replay | Send history to API | Feed history through helper |
+| Data format | JSON (primitive types) | JSON (primitive types) |
 
-The script author writes the same linear code for both paths. The helper
-library switches between live I/O and replay transparently.
+### Three tiers
+
+| | Normal operation | Suspend/restore | Crash recovery |
+|---|---|---|---|
+| Process | Long-lived | Dead (killed or new spawn) | Dead |
+| State source | Process memory | Turn history blob | Turn history blob (checkpoint) |
+| Replay cost | Zero | O(N) — feed history to helper | O(N) — same mechanism |
+| History in blob | Accumulating in memory | Complete | Last checkpoint |
+
+### Turn history format
+
+The state blob is JSON. The `history` field is a list of completed turns:
+
+```json
+{
+  "script": "/path/to/pipeline.py",
+  "workspace": "/path/to/workspace",
+  "history": [
+    {
+      "message": "implement feature X",
+      "calls": [
+        {"tool": "gate", "args": {"agent_name": "worker"}, "result": {"status": "gated"}},
+        {"tool": "send_message", "args": {"recipient": "worker", "text": "..."}, "result": {"status": "delivered"}}
+      ],
+      "response": "task dispatched"
+    },
+    {
+      "message": "[state] worker: busy -> idle",
+      "calls": [
+        {"tool": "check_inbox", "args": {}, "result": {"messages": [...]}}
+      ],
+      "response": "routing to critics"
+    }
+  ]
+}
+```
+
+Plain dicts, strings, numbers. No pickle, no custom types, no fragile
+serialization. `json.dumps` handles everything. Debuggable with `jq`.
+
+### Checkpointing
+
+The session checkpoints the turn history blob after every completed turn.
+Cost: a few KB of JSON written to the session store. Negligible for
+scripted sessions (the turn history is small — tool calls and short
+messages, not LLM-sized responses).
+
+With per-turn checkpointing, the blob is always current. Even crash
+recovery (no explicit suspend) uses the blob. The event log is still
+written (by the provider/orchestrator) for debugging and auditing, but
+is not needed for the script's own state recovery.
+
+If checkpointing proves too frequent, we can reduce to every N turns
+and fall back to the event log for the gap. But for scripts with ~10
+tool calls per turn and ~50 turns, the history is <100KB. Not worth
+optimizing.
 
 ### How replay works
 
-On process start, the helper checks `turn_seq` from the turn message. If
-`turn_seq > 0` and the process is fresh (no prior state), the helper
-reads the event log and replays previous turns:
+When `send()` spawns a fresh process (after restore or crash), it includes
+the turn history in the first turn message. The helper inside the sandbox
+detects the history and replays:
 
-1. Parse the event log at `events_path`.
-2. Extract tool call/result pairs grouped by turn (using `tool.*` events
-   and `turn.start`/`turn.end` markers).
-3. Build a replay queue: `list[list[tuple[call, result]]]` — one list
-   per past turn.
-4. For turns 0..N-1:
-   - `read_turn()` returns the cached message (from `message.delivered`
-     events in the log).
-   - `call_tool()` returns cached results from the replay queue instead
-     of writing to stdout. Verifies the call matches the log (tool name
-     + args) as a sanity check.
-   - `done()` is a no-op (the provider already knows this turn completed).
-5. Replay queue exhausted → switch to live mode.
-6. Turn N: `read_turn()` blocks on stdin for the real message.
-   `call_tool()` writes to stdout and reads results from stdin.
+1. `read_turn()` sees `history` is non-empty → enters replay mode.
+2. For each past turn in history:
+   - `read_turn()` returns the cached message.
+   - `call_tool()` returns cached results. Verifies tool name matches
+     as a sanity check (divergence = bug in script or corrupt history).
+   - `done()` is a no-op — advances to next cached turn.
+3. History exhausted → switch to live mode.
+4. `read_turn()` returns the real message from the current turn.
+5. `call_tool()` writes to stdout and reads from stdin (real dispatch).
 
 From the script's perspective, every call behaves identically. The helper
 swaps the backing I/O source internally.
 
-### Helper replay internals
-
-```python
-class _Runtime:
-    """Manages replay/live mode switching. Internal to the helper."""
-
-    def __init__(self) -> None:
-        self._replay_turns: list[_ReplayTurn] | None = None
-        self._replay_idx: int = 0
-        self._call_idx: int = 0
-
-    def _load_replay(self, events_path: str, turn_seq: int) -> None:
-        """Parse event log into replay turns if recovery is needed."""
-        if turn_seq == 0:
-            return
-        events = _parse_events(events_path)
-        self._replay_turns = _group_by_turn(events)
-        # Sanity: log should have entries for turns 0..turn_seq-1.
-        assert self._replay_turns is not None
-        assert len(self._replay_turns) >= turn_seq - 1
-
-    @property
-    def replaying(self) -> bool:
-        return (
-            self._replay_turns is not None
-            and self._replay_idx < len(self._replay_turns)
-        )
-
-    def next_turn_message(self) -> str:
-        """Return cached message for current replay turn."""
-        assert self._replay_turns is not None
-        turn = self._replay_turns[self._replay_idx]
-        return turn.message
-
-    def next_tool_result(self, tool: str, args: dict) -> dict:
-        """Return cached tool result, verify call matches log."""
-        assert self._replay_turns is not None
-        turn = self._replay_turns[self._replay_idx]
-        expected = turn.calls[self._call_idx]
-        assert expected.tool == tool, (
-            f"replay mismatch: expected {expected.tool}, got {tool}"
-        )
-        self._call_idx += 1
-        return expected.result
-
-    def finish_replay_turn(self) -> None:
-        """Advance to next replay turn."""
-        self._replay_idx += 1
-        self._call_idx = 0
-```
-
-### What the event log must contain
-
-For replay to work, the log needs sender-side events (Phase 3 of the
-review pipeline plan). Specifically:
-
-- `turn.start` / `turn.end` — turn boundaries for grouping.
-- `tool.send_message`, `tool.gate`, `tool.permit_turn`, etc. — the tool
-  calls the script made, with arguments and results.
-- `message.delivered` — the message that triggered each turn (so replay
-  can feed it back to `read_turn()`).
-
-These events are logged by the provider/orchestrator, not by the script.
-The script makes tool calls via stdout; the provider logs them after
-dispatching via daemon RPC.
-
 ### Replay sanity checks
 
 During replay, the helper verifies that each `call_tool()` invocation
-matches the logged event (tool name, arguments). A mismatch means the
-script's logic diverged from the log — this is a bug in the script (or
-the log is corrupt). The helper aborts with a clear error rather than
-silently producing wrong state.
+matches the cached history (tool name). A mismatch means the script's
+logic diverged — this is a bug in the script (nondeterminism) or a
+corrupt blob. The helper aborts with a clear error rather than silently
+producing wrong state.
+
+### Event log role
+
+The event log is still written by the provider/orchestrator (tool calls,
+turn boundaries, message delivery). It serves:
+
+- **Debugging** — `cat events.jsonl | jq` shows the full history.
+- **Other agents' recovery** — gate state, subscriptions, etc. are
+  restored from the event log by the daemon, not by the script.
+- **Fallback** — if the checkpoint blob is missing or corrupt, the
+  event log can reconstruct the turn history. This path requires
+  sender-side event logging (Phase 3) but is not the primary mechanism.
 
 ## Sandbox
 
@@ -385,10 +426,13 @@ sandbox prefix. The scripted provider declares its own bind requirements
 |-----------|-----------|------|-----|
 | Script file | `/script/<name>.py` | ro | The script to execute. |
 | Helper library | `/script/substrat_script.py` | ro | Optional but recommended. |
-| Event log | `/state/events.jsonl` | ro | Crash recovery replay. |
 | Workspace | `/workspace/` | ro/rw | Repo, views, workspace content. |
 | Daemon socket | `/run/substrat.sock` | ro | Tool call RPC. |
 | Python interpreter | (system path) | ro | System binds cover this. |
+
+Note: the event log is NOT bound into the sandbox. Replay uses the turn
+history passed inline via stdin. The event log stays on the host for
+daemon-level recovery and debugging.
 
 ### What the script does NOT get
 
@@ -407,63 +451,53 @@ and manages replay transparently. Bind-mounted into the sandbox at
 """Helper for scripts running under the scripted provider.
 
 Zero dependencies beyond stdlib. Handles the stdin/stdout JSON protocol
-and transparent crash recovery replay.
+and transparent state recovery via inline turn history.
 """
 import json
 import sys
 from typing import Any
 
 
-class _ReplayTurn:
-    """A single turn's worth of cached data for replay."""
-
-    __slots__ = ("message", "calls")
-
-    def __init__(self, message: str, calls: list[dict[str, Any]]) -> None:
-        self.message = message
-        self.calls = calls  # [{"tool": ..., "args": ..., "result": ...}, ...]
-
-
 class _Runtime:
-    """Manages replay/live mode. Singleton, created on first read_turn()."""
+    """Manages replay/live mode. Singleton."""
 
     def __init__(self) -> None:
-        self._replay_turns: list[_ReplayTurn] = []
-        self._replay_turn_idx: int = 0
-        self._replay_call_idx: int = 0
-        self._live: bool = True
+        self._history: list[dict[str, Any]] = []
+        self._replay_turn: int = 0
+        self._replay_call: int = 0
         self._call_id: int = 0
+        self._live_message: str = ""
 
-    def init_from_turn(self, turn_seq: int, events_path: str | None) -> None:
-        """Load replay data if this is a fresh process recovering state."""
-        if turn_seq == 0 or events_path is None:
-            return
-        self._replay_turns = _parse_replay_turns(events_path)
-        if self._replay_turns:
-            self._live = False
+    def init(self, msg: dict[str, Any]) -> str:
+        """Process turn message. Load history for replay if present."""
+        self._live_message = msg["message"]
+        history = msg.get("history", [])
+        if history:
+            self._history = history
+            self._replay_turn = 0
+            self._replay_call = 0
+        return self._live_message
 
     @property
     def replaying(self) -> bool:
-        return not self._live
+        return self._replay_turn < len(self._history)
 
     def replay_message(self) -> str:
-        turn = self._replay_turns[self._replay_turn_idx]
-        return turn.message
+        return self._history[self._replay_turn]["message"]
 
-    def replay_tool_result(self, tool: str, args: dict[str, Any]) -> dict[str, Any]:
-        turn = self._replay_turns[self._replay_turn_idx]
-        expected = turn.calls[self._replay_call_idx]
+    def replay_tool_result(self, tool: str) -> dict[str, Any]:
+        calls = self._history[self._replay_turn]["calls"]
+        expected = calls[self._replay_call]
         assert expected["tool"] == tool, (
-            f"replay divergence: log has {expected['tool']}, script called {tool}"
+            f"replay divergence: history has {expected['tool']}, "
+            f"script called {tool}"
         )
-        self._replay_call_idx += 1
+        self._replay_call += 1
         return expected["result"]
 
     def replay_done(self) -> None:
-        self._replay_turn_idx += 1
-        self._replay_call_idx = 0
-        if self._replay_turn_idx >= len(self._replay_turns):
-            self._live = True
+        self._replay_turn += 1
+        self._replay_call = 0
 
     def next_call_id(self) -> int:
         self._call_id += 1
@@ -473,21 +507,14 @@ class _Runtime:
 _rt = _Runtime()
 
 
-def _parse_replay_turns(events_path: str) -> list[_ReplayTurn]:
-    """Parse event log into per-turn replay data."""
-    # Implementation reads JSONL, groups tool.* events by turn boundaries.
-    # Returns list of _ReplayTurn with message and tool call/result pairs.
-    ...
-
-
-def read_turn() -> tuple[str, str | None]:
+def read_turn() -> str:
     """Read the next turn message. Blocks between turns.
 
-    On crash recovery, returns cached messages from the event log
-    until replay catches up, then switches to live stdin.
+    On recovery, returns cached messages from the inline history
+    until replay catches up, then returns the live message.
     """
     if _rt.replaying:
-        return _rt.replay_message(), None
+        return _rt.replay_message()
 
     line = sys.stdin.readline()
     if not line:
@@ -495,21 +522,22 @@ def read_turn() -> tuple[str, str | None]:
     msg = json.loads(line)
     assert msg["type"] == "turn", f"expected turn, got {msg['type']}"
 
-    # First call initialises replay if needed.
-    _rt.init_from_turn(msg.get("turn_seq", 0), msg.get("events_path"))
-    if _rt.replaying:
-        return _rt.replay_message(), None
+    _rt.init(msg)
 
-    return msg["message"], msg.get("events_path")
+    # If history was provided, replay from the first cached turn.
+    if _rt.replaying:
+        return _rt.replay_message()
+
+    return msg["message"]
 
 
 def call_tool(tool: str, **args: Any) -> dict[str, Any]:
     """Call a tool and block for the result.
 
-    During replay, returns cached results from the event log.
+    During replay, returns cached results from the turn history.
     """
     if _rt.replaying:
-        return _rt.replay_tool_result(tool, args)
+        return _rt.replay_tool_result(tool)
 
     call_id = _rt.next_call_id()
     req = {"type": "call", "id": call_id, "tool": tool, "args": args}
@@ -519,7 +547,9 @@ def call_tool(tool: str, **args: Any) -> dict[str, Any]:
     if not line:
         raise SystemExit("stdin closed while waiting for tool result")
     resp = json.loads(line)
-    assert resp["id"] == call_id, f"id mismatch: expected {call_id}, got {resp['id']}"
+    assert resp["id"] == call_id, (
+        f"id mismatch: expected {call_id}, got {resp['id']}"
+    )
     if "error" in resp:
         raise RuntimeError(resp["error"])
     return resp["data"]
@@ -528,7 +558,8 @@ def call_tool(tool: str, **args: Any) -> dict[str, Any]:
 def done(response: str) -> None:
     """Signal turn completion. Script should loop back to read_turn().
 
-    During replay, advances to the next cached turn.
+    During replay, advances to the next cached turn. When replay is
+    exhausted, the next read_turn() returns the live message.
     """
     if _rt.replaying:
         _rt.replay_done()
@@ -538,6 +569,9 @@ def done(response: str) -> None:
     sys.stdout.flush()
 ```
 
+No event log parsing. No file I/O. The history arrives inline via stdin
+as part of the turn message. The helper just indexes into a list.
+
 ### Usage
 
 ```python
@@ -546,22 +580,23 @@ def done(response: str) -> None:
 from substrat_script import read_turn, call_tool, done
 
 # Turn 1: receive task, dispatch to worker.
-task, _ = read_turn()
+task = read_turn()
 call_tool("gate", agent_name="worker")
 call_tool("send_message", recipient="worker", text=task)
 call_tool("permit_turn", agent_name="worker")
 done("task dispatched to worker")
 
 # Turn 2: worker finished, route to critics.
-msg, _ = read_turn()  # blocks until worker signals completion
+msg = read_turn()  # blocks until worker signals completion
 children = call_tool("list_children")
 # ... fan out to critics, collect feedback ...
 done("review complete")
 ```
 
 Linear code. No state machine, no `match state:` blocks. The execution
-position IS the state. On crash, the helper replays turns 1..N-1 silently,
-then turn N runs live.
+position IS the state. On recovery, the helper replays past turns from
+the inline history (cached tool results, no real dispatch), then the
+current turn runs live.
 
 ## Stderr
 
@@ -579,8 +614,9 @@ completion (or on failure, included in the error message).
 | Tool call returns error | Script receives `{"type": "result", "id": N, "error": "..."}`. Script decides whether to retry, skip, or abort. |
 | Stdin closed unexpectedly | Script gets empty readline, should exit. |
 | Script writes unknown type | Provider ignores it, logs warning. |
-| Replay divergence | Helper asserts tool name match. Abort with clear error. |
-| Process dies between turns | Next `send()` detects dead process, spawns fresh one. Replay kicks in. |
+| Replay divergence | Helper asserts tool name match against history. Abort with clear error. |
+| Process dies between turns | Next `send()` detects dead process, spawns fresh one with history. Replay kicks in. |
+| History blob missing/corrupt | Session starts with empty history. Script runs from scratch (first turn must handle this gracefully or fail). |
 
 ## Registration and CLI
 
@@ -597,30 +633,30 @@ be readable on the host (it gets bound RO into the sandbox).
 
 ## Suspend / Restore
 
-```python
-async def suspend(self) -> bytes:
-    # Process stays alive. Record enough to reconnect or replay.
-    return json.dumps({
-        "script": str(self._script_path),
-        "workspace": str(self._workspace),
-        "turn_seq": self._turn_seq,
-        "pid": self._proc.pid if self._proc else None,
-    }).encode()
+`suspend()` and `restore()` use the same turn history blob that
+checkpointing writes. The blob is the session's portable state.
 
+```python
 async def restore(self, state: bytes, ...) -> ScriptedSession:
     data = json.loads(state)
-    # Try to reconnect to living process (check PID).
-    # If dead, create session with turn_seq — next send() will
-    # spawn fresh process and helper will replay.
-    ...
+    session = ScriptedSession(
+        script_path=Path(data["script"]),
+        workspace=Path(data["workspace"]),
+        ...
+    )
+    session._history = data.get("history", [])
+    # Process is dead (restore always means fresh start).
+    # Next send() spawns a new process with history for replay.
+    return session
 ```
 
 Three cases:
-1. **Process alive** (normal suspend/restore): reconnect to existing
-   stdin/stdout. Zero cost.
-2. **Process dead** (crash or eviction kill): spawn fresh subprocess on
-   next `send()`. Helper replays from event log. Cost = O(past turns).
-3. **First create** (`turn_seq=0`): spawn subprocess, no replay needed.
+1. **Process alive** (normal operation): `send()` writes to existing
+   stdin. No history needed, no replay. Zero cost.
+2. **Process dead** (suspend, eviction, crash): `send()` spawns fresh
+   process, includes history in the turn message. Helper replays.
+   Cost = O(past turns) CPU, no disk I/O.
+3. **First create** (empty history): `send()` spawns process, no replay.
 
 ## Comparison with cursor-agent Provider
 
@@ -628,10 +664,10 @@ Three cases:
 |---|---|---|
 | Subprocess | cursor-agent CLI (per-turn) | python script.py (long-lived) |
 | Tool dispatch | MCP server or daemon RPC | Daemon RPC (stdin/stdout bridge) |
-| Sandbox binds | ~/.cursor, ~/.local, ~/.config/cursor | Script, helper, event log, daemon socket |
+| Sandbox binds | ~/.cursor, ~/.local, ~/.config/cursor | Script, helper, daemon socket |
 | Network | Required (API calls) | Forbidden |
 | State (normal) | SQLite session DB | Process memory |
-| State (crash) | SQLite survives (WAL mode) | Event log replay |
+| State (restore) | SQLite `--resume` | Turn history blob → replay |
 | System prompt | .cursor/rules/*.mdc | Ignored (behavior is in code) |
 
 ## What This Replaces in review_pipeline.md
