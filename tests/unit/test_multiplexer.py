@@ -92,7 +92,7 @@ def store(tmp_path: Path) -> SessionStore:
 
 @pytest.fixture()
 def mux(store: SessionStore) -> SessionMultiplexer:
-    return SessionMultiplexer(store, max_slots=2)
+    return SessionMultiplexer(store, pools={"default": 2})
 
 
 @pytest.fixture()
@@ -462,3 +462,41 @@ async def test_acquire_passes_log_to_restore(
     assert len(provider.restore_calls) == 1
     assert provider.restore_calls[0] == (b"saved-state", log, None)
     log.close()
+
+
+# -- multi-pool ---------------------------------------------------------------
+
+
+async def test_pools_evict_independently(store: SessionStore) -> None:
+    """Eviction in one pool does not affect another."""
+    mux = SessionMultiplexer(store, pools={"llm": 1, "scripted": 1})
+    # Fill LLM pool.
+    s_llm = _make_session()
+    store.save(s_llm)
+    s_llm.activate()
+    store.save(s_llm)
+    await mux.put(s_llm.id, FakeProviderSession(), pool="llm")
+    await mux.release(s_llm.id)
+    # Fill scripted pool.
+    s_scr = _make_session()
+    store.save(s_scr)
+    s_scr.activate()
+    store.save(s_scr)
+    await mux.put(s_scr.id, FakeProviderSession(), pool="scripted")
+    await mux.release(s_scr.id)
+    assert mux.active_count == 2
+    # Adding to LLM pool evicts s_llm, not s_scr.
+    await mux.put(_make_session().id, FakeProviderSession(), pool="llm")
+    assert not mux.contains(s_llm.id)
+    assert mux.contains(s_scr.id)
+    assert mux.active_count == 2
+
+
+async def test_pool_capacity_independent(store: SessionStore) -> None:
+    """Each pool enforces its own slot limit."""
+    mux = SessionMultiplexer(store, pools={"a": 1, "b": 2})
+    await mux.put(_make_session().id, FakeProviderSession(), pool="a")
+    await mux.put(_make_session().id, FakeProviderSession(), pool="b")
+    await mux.put(_make_session().id, FakeProviderSession(), pool="b")
+    # Pool a is full (1/1), pool b is full (2/2). Total = 3.
+    assert mux.active_count == 3

@@ -76,16 +76,20 @@ slots are full, the LRU session is suspended to free one.
 
 ```python
 class SessionMultiplexer:
-    def __init__(self, store: SessionStore, max_slots: int = 4) -> None:
-        self._slots: dict[UUID, ProviderSession] = {}
-        self._lru: list[UUID] = []      # Released sessions, head = next victim.
-        self._held: set[UUID] = set()   # Acquired, not evictable.
+    def __init__(self, store: SessionStore, pools: dict[str, int]) -> None:
+        # pools = {"default": 4, "scripted": 32}
+        # Each pool has its own slots, LRU queue, and held set.
+        ...
 
-    async def put(self, session_id: UUID, ps: ProviderSession) -> None: ...
-    async def acquire(self, session: Session, provider: AgentProvider) -> ProviderSession: ...
+    async def put(self, session_id: UUID, ps: ProviderSession, pool: str = "default") -> None: ...
+    async def acquire(self, session: Session, provider: AgentProvider, ..., pool: str = "default") -> ProviderSession: ...
     async def release(self, session_id: UUID) -> None: ...
     async def remove(self, session_id: UUID) -> None: ...
 ```
+
+Sessions are assigned to a pool at `put()` time. Subsequent calls (`acquire`,
+`release`, `remove`) look up the pool internally — callers don't need to track
+it. The daemon maps provider names to pool names at startup.
 
 `put()` slots a freshly-created provider session. `acquire()` returns a cached
 slot or restores from suspension (evicting LRU if full). Sessions mid-send are

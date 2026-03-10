@@ -83,7 +83,7 @@ def store(tmp_path: Path) -> SessionStore:
 
 @pytest.fixture()
 def mux(store: SessionStore) -> SessionMultiplexer:
-    return SessionMultiplexer(store, max_slots=4)
+    return SessionMultiplexer(store, pools={"default": 4})
 
 
 @pytest.fixture()
@@ -118,7 +118,7 @@ def orch(scheduler: TurnScheduler) -> Orchestrator:
 def _fresh_orch(tmp_path: Path, provider: FakeProvider) -> Orchestrator:
     """Build a brand-new orchestrator against the same store directory."""
     store = SessionStore(tmp_path / "sessions")
-    mux = SessionMultiplexer(store, max_slots=4)
+    mux = SessionMultiplexer(store, pools={"default": 4})
     sched = TurnScheduler(
         providers={"fake": provider},
         mux=mux,
@@ -134,7 +134,7 @@ def _fresh_orch_ws(
 ) -> tuple[Orchestrator, WorkspaceStore, WorkspaceMapping]:
     """Brand-new orchestrator with workspace deps against the same store dir."""
     store = SessionStore(tmp_path / "sessions")
-    mux = SessionMultiplexer(store, max_slots=4)
+    mux = SessionMultiplexer(store, pools={"default": 4})
     sched = TurnScheduler(
         providers={"fake": provider},
         mux=mux,
@@ -423,7 +423,7 @@ async def test_recover_orphan_cleaned(
 ) -> None:
     """Session with no agent.created event is terminated as orphan."""
     store = SessionStore(tmp_path / "sessions")
-    mux = SessionMultiplexer(store, max_slots=4)
+    mux = SessionMultiplexer(store, pools={"default": 4})
     sched = TurnScheduler(
         providers={"fake": provider},
         mux=mux,
@@ -520,7 +520,7 @@ async def test_recover_empty_store(
 def test_log_event_missing_session(tmp_path: Path) -> None:
     """log_event raises KeyError for unknown session_id."""
     store = SessionStore(tmp_path / "sessions")
-    mux = SessionMultiplexer(store, max_slots=4)
+    mux = SessionMultiplexer(store, pools={"default": 4})
     sched = TurnScheduler(
         providers={},
         mux=mux,

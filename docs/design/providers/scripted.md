@@ -68,12 +68,15 @@ See [State and Recovery](#state-and-recovery) for the mechanism.
 
 ### Multiplexer interaction
 
-The multiplexer manages expensive LLM sessions (API connections, context
-windows). A Python script blocked on stdin costs ~30MB memory, zero CPU.
-Scripted sessions are exempt from LRU eviction — there's nothing to
-reclaim. Implementation: the multiplexer checks `provider.name` and skips
-eviction candidates with `name == "scripted"`. Simple provider hint, no
-new protocol.
+The multiplexer manages named pools, each with its own slot limit and LRU
+queue. LLM providers share the `default` pool (expensive API connections).
+Scripted sessions live in a separate `scripted` pool with a higher slot
+limit — a Python process blocked on stdin costs ~30MB, zero CPU.
+
+The daemon configures the mapping at startup: `provider_pools = {"scripted":
+"scripted"}`. Providers not in the mapping fall into the `default` pool.
+Each pool evicts independently — filling the LLM pool never touches
+scripted sessions, and vice versa.
 
 If eviction is ever needed (many scripted agents), `suspend()` returns the
 turn history blob and the scheduler kills the process. `restore()` spawns

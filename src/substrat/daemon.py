@@ -74,15 +74,24 @@ class Daemon:
 
         # Build composition stack.
         store = SessionStore(root / "agents")
-        mux = SessionMultiplexer(store, max_slots=max_slots)
         if providers is None:
             providers = default_providers(tools=_ALL_TOOLS)
+        # Pool per provider. Default pool for LLM providers, separate
+        # pools for providers that declare one. Policy lives here.
+        provider_pools: dict[str, str] = {}
+        pools: dict[str, int] = {"default": max_slots}
+        for pname in providers:
+            if pname == "scripted":
+                pools.setdefault("scripted", max_slots * 8)
+                provider_pools[pname] = "scripted"
+        mux = SessionMultiplexer(store, pools=pools)
         scheduler = TurnScheduler(
             providers,
             mux,
             store,
             log_root=root / "agents",
             daemon_socket=str(self._sock_path),
+            provider_pools=provider_pools,
         )
         self._ws_store = WorkspaceStore(root / "workspaces")
         ws_mapping = WorkspaceMapping()

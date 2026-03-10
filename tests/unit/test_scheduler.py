@@ -88,7 +88,7 @@ def store(tmp_path: Path) -> SessionStore:
 
 @pytest.fixture()
 def mux(store: SessionStore) -> SessionMultiplexer:
-    return SessionMultiplexer(store, max_slots=4)
+    return SessionMultiplexer(store, pools={"default": 4})
 
 
 @pytest.fixture()
@@ -232,7 +232,7 @@ async def test_send_turn_on_suspended_session(
     store: SessionStore,
 ) -> None:
     """After mux eviction, send_turn transparently restores the session."""
-    mux = SessionMultiplexer(store, max_slots=1)
+    mux = SessionMultiplexer(store, pools={"default": 1})
     provider = FakeProvider()
     sched = TurnScheduler(
         providers={"fake": provider},
@@ -282,7 +282,7 @@ async def test_eviction_logs_suspend_result(
 ) -> None:
     """Evicting a session logs suspend.result with state_size."""
     log_root = tmp_path / "logs"
-    mux = SessionMultiplexer(store, max_slots=1)
+    mux = SessionMultiplexer(store, pools={"default": 1})
     provider = FakeProvider()
     sched = TurnScheduler(
         providers={"fake": provider},
@@ -309,7 +309,7 @@ async def test_restore_logs_session_restored(
 ) -> None:
     """send_turn on an evicted session logs session.restored."""
     log_root = tmp_path / "logs"
-    mux = SessionMultiplexer(store, max_slots=1)
+    mux = SessionMultiplexer(store, pools={"default": 1})
     provider = FakeProvider()
     sched = TurnScheduler(
         providers={"fake": provider},
@@ -405,7 +405,7 @@ async def test_no_restore_event_on_cache_hit(
 ) -> None:
     """send_turn on a cached session does not log session.restored."""
     log_root = tmp_path / "logs"
-    mux = SessionMultiplexer(store, max_slots=4)
+    mux = SessionMultiplexer(store, pools={"default": 4})
     provider = FakeProvider()
     sched = TurnScheduler(
         providers={"fake": provider},

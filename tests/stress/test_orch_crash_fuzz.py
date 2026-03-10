@@ -115,7 +115,7 @@ def _make_orch(vfs: VirtualFS) -> Orchestrator:
     """Build a fresh orchestrator stack against the VFS root."""
     root = Path(vfs.root) / "sessions"
     store = SessionStore(root)
-    mux = SessionMultiplexer(store, max_slots=2)
+    mux = SessionMultiplexer(store, pools={"default": 2})
     scheduler = TurnScheduler(
         providers={"fake": FakeProvider()},
         mux=mux,

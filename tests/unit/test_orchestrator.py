@@ -109,7 +109,7 @@ def store(tmp_path: Path) -> SessionStore:
 
 @pytest.fixture()
 def mux(store: SessionStore) -> SessionMultiplexer:
-    return SessionMultiplexer(store, max_slots=4)
+    return SessionMultiplexer(store, pools={"default": 4})
 
 
 @pytest.fixture()
@@ -217,7 +217,7 @@ async def test_create_root_agent_with_workspace(tmp_path: Path) -> None:
         return lambda cmd, binds, env: cmd
 
     store = SessionStore(tmp_path / "sessions")
-    mux = SessionMultiplexer(store, max_slots=4)
+    mux = SessionMultiplexer(store, pools={"default": 4})
     prov = FakeProvider()
     sched = TurnScheduler(providers={"fake": prov}, mux=mux, store=store)
     o = Orchestrator(
@@ -959,7 +959,7 @@ async def test_spawn_failure_cleans_up_child(tmp_path: Path) -> None:
 
     prov = FailOnSecondCreate()
     store = SessionStore(tmp_path / "agents")
-    mux = SessionMultiplexer(store, max_slots=4)
+    mux = SessionMultiplexer(store, pools={"default": 4})
     sched = TurnScheduler({"fake": prov}, mux, store, log_root=tmp_path / "agents")
     orch = Orchestrator(sched, default_provider="fake", default_model="m")
 

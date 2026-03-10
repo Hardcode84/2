@@ -13,7 +13,7 @@ from substrat.logging import EventLog
 from substrat.model import CommandWrapper
 from substrat.provider.base import AgentProvider
 from substrat.session.model import Session
-from substrat.session.multiplexer import SessionMultiplexer
+from substrat.session.multiplexer import DEFAULT_POOL, SessionMultiplexer
 from substrat.session.store import SessionStore
 
 
@@ -32,16 +32,22 @@ class TurnScheduler:
         store: SessionStore,
         log_root: Path | None = None,
         daemon_socket: str | None = None,
+        provider_pools: dict[str, str] | None = None,
     ) -> None:
         self._providers = providers
         self._mux = mux
         self._store = store
         self._log_root = log_root
         self._daemon_socket = daemon_socket
+        self._provider_pools = provider_pools or {}
         self._sessions: dict[UUID, Session] = {}
         self._logs: dict[UUID, EventLog] = {}
         self._wrap_commands: dict[UUID, CommandWrapper | None] = {}
         self._mux.on_evict = self._on_session_evicted
+
+    def _pool_for(self, provider_name: str) -> str:
+        """Resolve provider name to multiplexer pool name."""
+        return self._provider_pools.get(provider_name, DEFAULT_POOL)
 
     @property
     def store(self) -> SessionStore:
@@ -118,7 +124,8 @@ class TurnScheduler:
             agent_id=agent_id,
             daemon_socket=self._daemon_socket,
         )
-        await self._mux.put(session.id, ps)
+        pool = self._pool_for(provider_name)
+        await self._mux.put(session.id, ps, pool=pool)
         session.activate()
         self._store.save(session)
         await self._mux.release(session.id)
@@ -159,7 +166,14 @@ class TurnScheduler:
             self._sessions[session_id] = session
 
         wc = self._wrap_commands.get(session_id)
-        ps = await self._mux.acquire(session, provider, log=log, wrap_command=wc)
+        pool = self._pool_for(session.provider_name)
+        ps = await self._mux.acquire(
+            session,
+            provider,
+            log=log,
+            wrap_command=wc,
+            pool=pool,
+        )
 
         if was_suspended and log is not None:
             log.log(
@@ -196,7 +210,14 @@ class TurnScheduler:
             self._sessions[session_id] = session
 
         wc = self._wrap_commands.get(session_id)
-        ps = await self._mux.acquire(session, provider, log=log, wrap_command=wc)
+        pool = self._pool_for(session.provider_name)
+        ps = await self._mux.acquire(
+            session,
+            provider,
+            log=log,
+            wrap_command=wc,
+            pool=pool,
+        )
 
         if was_suspended and log is not None:
             log.log(

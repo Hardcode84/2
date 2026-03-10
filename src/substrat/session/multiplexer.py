@@ -2,10 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Session multiplexer — fixed-slot LRU scheduler for provider sessions."""
+"""Session multiplexer — pooled LRU scheduler for provider sessions."""
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from uuid import UUID
 
 from substrat.logging.event_log import EventLog
@@ -18,27 +19,56 @@ _log = logging.getLogger(__name__)
 
 EvictCallback = Callable[[UUID, int], None]
 
+DEFAULT_POOL = "default"
+
+
+@dataclass
+class _Pool:
+    """Per-pool state: slot limit, live sessions, LRU queue, held set."""
+
+    max_slots: int
+    slots: dict[UUID, ProviderSession] = field(default_factory=dict)
+    lru: list[UUID] = field(default_factory=list)
+    held: set[UUID] = field(default_factory=set)
+
 
 class SessionMultiplexer:
-    """Manages a fixed number of concurrent ProviderSession slots.
+    """Manages concurrent ProviderSession slots across named pools.
 
-    Sessions mid-send are held (non-evictable). Idle sessions sit in an LRU
-    queue and get suspended when slots run out.
+    Each pool has its own slot limit and LRU eviction queue. Sessions
+    mid-send are held (non-evictable). Idle sessions sit in their pool's
+    LRU and get suspended when that pool runs out of slots.
     """
 
-    def __init__(self, store: SessionStore, max_slots: int) -> None:
+    def __init__(
+        self,
+        store: SessionStore,
+        pools: dict[str, int],
+    ) -> None:
         self._store = store
-        self._max_slots = max_slots
-        self._slots: dict[UUID, ProviderSession] = {}
-        self._lru: list[UUID] = []  # Released sessions, head = next victim.
-        self._held: set[UUID] = set()  # Acquired, not evictable.
+        self._pools: dict[str, _Pool] = {
+            name: _Pool(max_slots=limit) for name, limit in pools.items()
+        }
+        self._session_pool: dict[UUID, str] = {}
         self.on_evict: EvictCallback | None = None
 
-    async def put(self, session_id: UUID, ps: ProviderSession) -> None:
+    def _get_pool(self, session_id: UUID) -> _Pool:
+        """Look up pool for a known session."""
+        name = self._session_pool[session_id]
+        return self._pools[name]
+
+    async def put(
+        self,
+        session_id: UUID,
+        ps: ProviderSession,
+        pool: str = DEFAULT_POOL,
+    ) -> None:
         """Slot a freshly-created ProviderSession. Evicts LRU if full."""
-        await self._ensure_slot()
-        self._slots[session_id] = ps
-        self._held.add(session_id)
+        p = self._pools[pool]
+        await self._ensure_slot(p)
+        p.slots[session_id] = ps
+        p.held.add(session_id)
+        self._session_pool[session_id] = pool
 
     async def acquire(
         self,
@@ -47,6 +77,7 @@ class SessionMultiplexer:
         log: EventLog | None = None,
         *,
         wrap_command: CommandWrapper | None = None,
+        pool: str = DEFAULT_POOL,
     ) -> ProviderSession:
         """Get a live ProviderSession. Restores from suspension if needed.
 
@@ -55,62 +86,70 @@ class SessionMultiplexer:
         Otherwise: raise ValueError (use put() for new sessions).
         """
         sid = session.id
-        if sid in self._slots:
-            self._touch(sid)
-            self._held.add(sid)
-            return self._slots[sid]
+        # Already slotted — find its pool via the lookup.
+        if sid in self._session_pool:
+            p = self._get_pool(sid)
+            if sid in p.slots:
+                self._touch(p, sid)
+                p.held.add(sid)
+                return p.slots[sid]
         if session.state != SessionState.SUSPENDED:
             raise ValueError(
                 f"session {sid} is {session.state.value}, not suspended"
                 " — use put() for new sessions"
             )
-        await self._ensure_slot()
+        p = self._pools[pool]
+        await self._ensure_slot(p)
         ps = await provider.restore(
             session.provider_state, log=log, wrap_command=wrap_command
         )
-        self._slots[sid] = ps
-        self._held.add(sid)
+        p.slots[sid] = ps
+        p.held.add(sid)
+        self._session_pool[sid] = pool
         session.activate()
         self._store.save(session)
         return ps
 
     async def release(self, session_id: UUID) -> None:
-        """Mark session as evictable. Appends to LRU tail."""
-        self._held.discard(session_id)
-        if session_id in self._slots and session_id not in self._lru:
-            self._lru.append(session_id)
+        """Mark session as evictable. Appends to pool's LRU tail."""
+        if session_id not in self._session_pool:
+            return
+        p = self._get_pool(session_id)
+        p.held.discard(session_id)
+        if session_id in p.slots and session_id not in p.lru:
+            p.lru.append(session_id)
 
     async def remove(self, session_id: UUID) -> None:
         """Remove from slots, call ps.stop(). No-op if not slotted."""
-        if session_id not in self._slots:
+        if session_id not in self._session_pool:
             return
-        ps = self._slots.pop(session_id)
-        self._held.discard(session_id)
-        if session_id in self._lru:
-            self._lru.remove(session_id)
+        p = self._get_pool(session_id)
+        if session_id not in p.slots:
+            return
+        ps = p.slots.pop(session_id)
+        p.held.discard(session_id)
+        if session_id in p.lru:
+            p.lru.remove(session_id)
+        del self._session_pool[session_id]
         await ps.stop()
 
-    async def _ensure_slot(self) -> None:
-        """Evict LRU if at capacity. Raises if all held."""
-        if len(self._slots) < self._max_slots:
+    async def _ensure_slot(self, pool: _Pool) -> None:
+        """Evict LRU from pool if at capacity. Raises if all held."""
+        if len(pool.slots) < pool.max_slots:
             return
-        if not self._lru:
-            raise RuntimeError(f"all {self._max_slots} slots held, cannot evict")
-        victim = self._lru[0]
-        await self._evict(victim)
+        if not pool.lru:
+            raise RuntimeError(f"all {pool.max_slots} slots held, cannot evict")
+        victim = pool.lru[0]
+        await self._evict(pool, victim)
 
-    async def _evict(self, session_id: UUID) -> None:
-        """Suspend provider, persist state via store, stop provider.
-
-        Suspends while the session is still tracked so a failure leaves
-        state consistent. stop() is best-effort — failures are logged,
-        not propagated.
-        """
-        ps = self._slots[session_id]
+    async def _evict(self, pool: _Pool, session_id: UUID) -> None:
+        """Suspend provider, persist state via store, stop provider."""
+        ps = pool.slots[session_id]
         state_blob = await ps.suspend()
-        del self._slots[session_id]
-        self._lru.remove(session_id)
-        self._held.discard(session_id)
+        del pool.slots[session_id]
+        pool.lru.remove(session_id)
+        pool.held.discard(session_id)
+        del self._session_pool[session_id]
         session = self._store.load(session_id)
         session.suspend(state_blob)
         self._store.save(session)
@@ -123,16 +162,16 @@ class SessionMultiplexer:
                 "stop() failed during eviction of %s", session_id, exc_info=True
             )
 
-    def _touch(self, session_id: UUID) -> None:
+    def _touch(self, pool: _Pool, session_id: UUID) -> None:
         """Remove from LRU (session is being held)."""
-        if session_id in self._lru:
-            self._lru.remove(session_id)
+        if session_id in pool.lru:
+            pool.lru.remove(session_id)
 
     @property
     def active_count(self) -> int:
-        """Number of sessions currently in slots."""
-        return len(self._slots)
+        """Total sessions currently in slots across all pools."""
+        return sum(len(p.slots) for p in self._pools.values())
 
     def contains(self, session_id: UUID) -> bool:
-        """Whether a session is currently slotted."""
-        return session_id in self._slots
+        """Whether a session is currently slotted in any pool."""
+        return session_id in self._session_pool

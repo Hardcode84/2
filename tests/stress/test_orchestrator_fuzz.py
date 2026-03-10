@@ -192,7 +192,7 @@ class OrchestratorStateMachine(RuleBasedStateMachine):
         self._tmp.mkdir(parents=True, exist_ok=True)
         self.chaos_provider = ChaosProvider()
         store = SessionStore(self._tmp / "sessions")
-        mux = SessionMultiplexer(store, max_slots=3)
+        mux = SessionMultiplexer(store, pools={"default": 3})
         scheduler = TurnScheduler(
             providers={"fake": FakeProvider(), "chaos": self.chaos_provider},
             mux=mux,
