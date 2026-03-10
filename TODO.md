@@ -223,9 +223,9 @@ Design: [docs/design/review_pipeline.md](docs/design/review_pipeline.md)
 - [x] Phase 2: Subscribe / unsubscribe tools — state transition notifications, one-shot + persistent, crash recovery
 - [x] Phase 3: Sender-side event logging — `tool.call` events logged to caller's session; prerequisite for scripted provider crash recovery (event log must contain tool name, args, result/error per call)
 - [ ] Phase 4: Scripted provider — bwrap-sandboxed Python subprocess, stdin/stdout JSON lines protocol, long-lived process across turns; design in docs/design/providers/scripted.md
-  - [ ] 4a: Helper library (`substrat_script.py`) — stdlib-only, read_turn/call_tool/done, replay from inline history, unit tests with fake stdin/stdout
-  - [ ] 4b: ScriptedSession + ScriptedProvider — subprocess lifecycle (lazy spawn on first send), stdin/stdout JSON bridge, tool dispatch via daemon RPC, suspend/restore via history blob, stderr drain
-  - [ ] 4c: Registration — add `"scripted"` to `default_providers()`
+  - [x] 4a: Helper library (`substrat_script.py`) — stdlib-only, read_turn/call_tool/done, replay from inline history, unit tests with fake stdin/stdout
+  - [x] 4b: ScriptedSession + ScriptedProvider — subprocess lifecycle (lazy spawn on first send), stdin/stdout JSON bridge, tool dispatch via daemon RPC, suspend/restore via history blob, stderr drain
+  - [x] 4c: Registration — add `"scripted"` to `default_providers()`
   - [x] 4d: Multiplexer pools — named pools with independent slot limits and LRU; provider→pool mapping at daemon config level
   - [ ] 4e: Integration test — daemon + scripted provider + real Python script, verify turn + event log + suspend/restore
   - [ ] 4f: Crash recovery — `reconstruct_history(events)` from event log, wire into `orchestrator.recover()` for scripted sessions

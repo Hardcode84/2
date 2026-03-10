@@ -28,5 +28,9 @@ def default_providers(
 ) -> dict[str, AgentProvider]:
     """Build the default provider dict for the daemon."""
     from substrat.provider.cursor_agent import CursorAgentProvider
+    from substrat.provider.scripted import ScriptedProvider
 
-    return {"cursor-agent": CursorAgentProvider(tools=tools, use_mcp=True)}
+    return {
+        "cursor-agent": CursorAgentProvider(tools=tools, use_mcp=True),
+        "scripted": ScriptedProvider(),
+    }
