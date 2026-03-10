@@ -15,7 +15,11 @@ from pathlib import Path
 
 import pytest
 
-from substrat.provider.scripted import ScriptedProvider, ScriptedSession
+from substrat.provider.scripted import (
+    ScriptedProvider,
+    ScriptedSession,
+    reconstruct_history,
+)
 
 # -- Helpers ----------------------------------------------------------------
 
@@ -229,3 +233,87 @@ async def test_stop_kills_hanging_process(tmp_path: Path) -> None:
     await session.stop()
     assert session._proc is not None
     assert session._proc.returncode is not None
+
+
+# -- reconstruct_history ---------------------------------------------------
+
+
+def test_reconstruct_empty() -> None:
+    """Empty entries produce empty history."""
+    assert reconstruct_history([]) == []
+
+
+def test_reconstruct_single_turn() -> None:
+    """Single complete turn with tool calls."""
+    entries = [
+        {"event": "turn.start", "data": {"prompt": "go"}},
+        {
+            "event": "tool.call",
+            "data": {"tool": "gate", "args": {"x": 1}, "result": {"ok": True}},
+        },
+        {
+            "event": "tool.call",
+            "data": {"tool": "fail", "args": {}, "error": "boom"},
+        },
+        {"event": "turn.complete", "data": {"response": "done"}},
+    ]
+    history = reconstruct_history(entries)
+    assert len(history) == 1
+    turn = history[0]
+    assert turn["message"] == "go"
+    assert turn["response"] == "done"
+    assert len(turn["calls"]) == 2
+    assert turn["calls"][0] == {
+        "tool": "gate",
+        "args": {"x": 1},
+        "result": {"ok": True},
+    }
+    assert turn["calls"][1] == {"tool": "fail", "args": {}, "error": "boom"}
+
+
+def test_reconstruct_multi_turn() -> None:
+    """Multiple complete turns."""
+    entries = [
+        {"event": "turn.start", "data": {"prompt": "first"}},
+        {"event": "turn.complete", "data": {"response": "r1"}},
+        {"event": "turn.start", "data": {"prompt": "second"}},
+        {
+            "event": "tool.call",
+            "data": {"tool": "check", "args": {}, "result": {"ok": True}},
+        },
+        {"event": "turn.complete", "data": {"response": "r2"}},
+    ]
+    history = reconstruct_history(entries)
+    assert len(history) == 2
+    assert history[0]["message"] == "first"
+    assert history[0]["calls"] == []
+    assert history[1]["message"] == "second"
+    assert len(history[1]["calls"]) == 1
+
+
+def test_reconstruct_drops_incomplete_turn() -> None:
+    """Incomplete turn (no turn.complete) is dropped."""
+    entries = [
+        {"event": "turn.start", "data": {"prompt": "complete"}},
+        {"event": "turn.complete", "data": {"response": "ok"}},
+        {"event": "turn.start", "data": {"prompt": "incomplete"}},
+        {"event": "tool.call", "data": {"tool": "x", "args": {}, "result": {}}},
+        # No turn.complete -- crash happened here.
+    ]
+    history = reconstruct_history(entries)
+    assert len(history) == 1
+    assert history[0]["message"] == "complete"
+
+
+def test_reconstruct_ignores_non_turn_events() -> None:
+    """Non-turn events (agent.created, message.enqueued, etc.) are skipped."""
+    entries = [
+        {"event": "agent.created", "data": {"agent_id": "abc", "name": "x"}},
+        {"event": "session.created", "data": {"provider": "scripted"}},
+        {"event": "turn.start", "data": {"prompt": "go"}},
+        {"event": "message.enqueued", "data": {"message_id": "123"}},
+        {"event": "turn.complete", "data": {"response": "done"}},
+    ]
+    history = reconstruct_history(entries)
+    assert len(history) == 1
+    assert history[0]["calls"] == []

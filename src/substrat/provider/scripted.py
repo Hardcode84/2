@@ -33,6 +33,46 @@ _READ_TIMEOUT = 60.0
 _HELPER = Path(__file__).parent / "substrat_script.py"
 
 
+def reconstruct_history(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Rebuild turn history from event log entries.
+
+    Groups turn.start / tool.call / turn.complete events into the same
+    history format that suspend() produces. Used for crash recovery when
+    the provider_state blob is empty or stale.
+
+    Incomplete turns (no turn.complete) are dropped -- mid-turn crashes
+    lose the in-flight turn, same as any provider.
+    """
+    history: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+
+    for entry in entries:
+        ev = entry.get("event")
+        data = entry.get("data", {})
+
+        if ev == "turn.start":
+            current = {
+                "message": data.get("prompt", ""),
+                "calls": [],
+            }
+        elif ev == "tool.call" and current is not None:
+            call: dict[str, Any] = {
+                "tool": data.get("tool", ""),
+                "args": data.get("args", {}),
+            }
+            if "error" in data:
+                call["error"] = data["error"]
+            else:
+                call["result"] = data.get("result", {})
+            current["calls"].append(call)
+        elif ev == "turn.complete" and current is not None:
+            current["response"] = data.get("response", "")
+            history.append(current)
+            current = None
+
+    return history
+
+
 class ScriptedSession:
     """A live conversation with a scripted agent subprocess.
 

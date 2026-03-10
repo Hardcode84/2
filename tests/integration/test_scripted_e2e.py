@@ -25,6 +25,7 @@ from substrat.daemon import Daemon
 from substrat.logging.event_log import read_log
 from substrat.provider.scripted import ScriptedProvider
 from substrat.rpc import async_call
+from substrat.session.model import SessionState
 
 # Path to the helper library that scripts import.
 _HELPER_DIR = (Path(__file__).parent / "../../src/substrat/provider").resolve()
@@ -269,3 +270,87 @@ async def test_eviction_and_restore(
     # Turn 2 should restore from blob and replay turn 1.
     r2 = await async_call(sock, "agent.send", {"agent_id": aid, "message": "b"})
     assert r2["response"] == "second: b"
+
+
+# -- Crash recovery --------------------------------------------------------
+
+
+async def test_crash_recovery_reconstructs_history(tmp_path: Path) -> None:
+    """After simulated crash, new daemon recovers history from event log.
+
+    1. Start daemon, create scripted agent, run turn 1.
+    2. Stop daemon (simulating crash -- provider_state blob is empty
+       because session was ACTIVE, never evicted).
+    3. Start fresh daemon from same root. Recovery reads event log,
+       reconstructs history, injects into provider_state blob.
+    4. Run turn 2 -- script replays turn 1 from history, then runs live.
+    """
+    script = _write_script(
+        tmp_path,
+        """
+        m1 = read_turn()
+        done(f"first: {m1}")
+        m2 = read_turn()
+        done(f"second: {m2}")
+        """,
+    )
+
+    # Phase 1: first daemon run.
+    provider1 = ScriptedProvider()
+    daemon1 = Daemon(
+        tmp_path,
+        default_provider="scripted",
+        default_model=None,
+        max_slots=2,
+        providers={"scripted": provider1},
+    )
+    await daemon1.start()
+    sock1 = str(daemon1.socket_path)
+
+    created = await async_call(
+        sock1,
+        "agent.create",
+        {"name": "survivor", "instructions": "survive", "model": str(script)},
+    )
+    aid = created["agent_id"]
+    r1 = await async_call(sock1, "agent.send", {"agent_id": aid, "message": "a"})
+    assert r1["response"] == "first: a"
+
+    # Simulate crash: stop daemon without clean shutdown of sessions.
+    # The session is ACTIVE with empty provider_state (never evicted).
+    node = daemon1.orchestrator.tree.resolve("survivor")
+    sid = node.session_id
+    session = daemon1.orchestrator._scheduler._store.load(sid)
+    assert session.state == SessionState.ACTIVE
+    assert session.provider_state == b""  # Never evicted.
+
+    await daemon1.stop()
+    gc.collect()
+    await asyncio.sleep(0)
+
+    # Phase 2: fresh daemon from same root -- recovery kicks in.
+    provider2 = ScriptedProvider()
+    daemon2 = Daemon(
+        tmp_path,
+        default_provider="scripted",
+        default_model=None,
+        max_slots=2,
+        providers={"scripted": provider2},
+    )
+    await daemon2.start()
+    sock2 = str(daemon2.socket_path)
+
+    # Verify the session's provider_state was reconstructed.
+    recovered_session = daemon2.orchestrator._scheduler._store.load(sid)
+    assert recovered_session.provider_state != b""
+    blob = json.loads(recovered_session.provider_state)
+    assert len(blob["history"]) == 1
+    assert blob["history"][0]["message"] == "a"
+
+    # Turn 2 should work -- script replays turn 1 from history.
+    r2 = await async_call(sock2, "agent.send", {"agent_id": aid, "message": "b"})
+    assert r2["response"] == "second: b"
+
+    await daemon2.stop()
+    gc.collect()
+    await asyncio.sleep(0)

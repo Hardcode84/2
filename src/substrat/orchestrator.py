@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field
@@ -1103,7 +1104,23 @@ class Orchestrator:
                 if ws_tuple is not None and self._ws_mapping is not None:
                     self._ws_mapping.assign(node.id, ws_tuple[0], ws_tuple[1])
                 _, wrap_cmd = self._resolve_workspace(ws_tuple)
-                self._scheduler.restore_session(info["session"], wrap_command=wrap_cmd)
+                # Scripted sessions that crashed while ACTIVE have no
+                # provider_state blob. Reconstruct from the event log.
+                session = info["session"]
+                if session.provider_name == "scripted" and not session.provider_state:
+                    from substrat.provider.scripted import reconstruct_history
+
+                    history = reconstruct_history(info.get("entries", []))
+                    if history:
+                        blob = json.dumps(
+                            {
+                                "script": session.model,
+                                "history": history,
+                            }
+                        ).encode()
+                        session.provider_state = blob
+                        store.save(session)
+                self._scheduler.restore_session(session, wrap_command=wrap_cmd)
                 placed.add(node.id)
                 del remaining[sid]
                 progress = True
