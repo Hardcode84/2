@@ -227,7 +227,7 @@ Design: [docs/design/review_pipeline.md](docs/design/review_pipeline.md)
   - [x] 4b: ScriptedSession + ScriptedProvider — subprocess lifecycle (lazy spawn on first send), stdin/stdout JSON bridge, tool dispatch via daemon RPC, suspend/restore via history blob, stderr drain
   - [x] 4c: Registration — add `"scripted"` to `default_providers()`
   - [x] 4d: Multiplexer pools — named pools with independent slot limits and LRU; provider→pool mapping at daemon config level
-  - [ ] 4e: Integration test — daemon + scripted provider + real Python script, verify turn + event log + suspend/restore
+  - [x] 4e: Integration test — daemon + scripted provider + real Python script, verify turn + event log + suspend/restore
   - [ ] 4f: Crash recovery — `reconstruct_history(events)` from event log, wire into `orchestrator.recover()` for scripted sessions
 - [ ] Phase 5: CLI `--parent` flag — `substrat agent create` with `--parent` for non-root agents
 - [ ] Phase 6: Review pipeline script — state machine, routing rules, fan-out/fan-in, WAL recovery
