@@ -224,3 +224,83 @@ async def test_recovery(tmp_path: Path) -> None:
         assert aid in agent_ids
     finally:
         await d2.stop()
+
+
+# -- CLI --parent flag --------------------------------------------------------
+
+
+async def test_create_child_via_parent_flag(daemon_sock: str) -> None:
+    """agent.create with parent creates a child agent."""
+    # Create root.
+    root = await async_call(
+        daemon_sock,
+        "agent.create",
+        {"name": "boss", "instructions": "manage"},
+    )
+    # Create child with --parent.
+    child = await async_call(
+        daemon_sock,
+        "agent.create",
+        {"name": "minion", "instructions": "obey", "parent": "boss"},
+    )
+    assert "agent_id" in child
+
+    # Inspect root -- child should appear.
+    info = await async_call(
+        daemon_sock,
+        "agent.inspect",
+        {"agent_id": root["agent_id"]},
+    )
+    child_names = [c["name"] for c in info["children"]]
+    assert "minion" in child_names
+
+    # Inspect child -- parent should be set.
+    child_info = await async_call(
+        daemon_sock,
+        "agent.inspect",
+        {"agent_id": child["agent_id"]},
+    )
+    assert child_info["parent"] == root["agent_id"]
+
+
+async def test_create_child_nonexistent_parent(daemon_sock: str) -> None:
+    """agent.create with nonexistent parent returns error."""
+    with pytest.raises(RpcError):
+        await async_call(
+            daemon_sock,
+            "agent.create",
+            {"name": "orphan", "instructions": "lost", "parent": "ghost"},
+        )
+
+
+async def test_create_grandchild(daemon_sock: str) -> None:
+    """Three-level hierarchy: root -> child -> grandchild."""
+    await async_call(
+        daemon_sock,
+        "agent.create",
+        {"name": "root", "instructions": "top"},
+    )
+    await async_call(
+        daemon_sock,
+        "agent.create",
+        {"name": "mid", "instructions": "middle", "parent": "root"},
+    )
+    gc = await async_call(
+        daemon_sock,
+        "agent.create",
+        {"name": "leaf", "instructions": "bottom", "parent": "mid"},
+    )
+
+    # Verify the chain.
+    leaf_info = await async_call(
+        daemon_sock,
+        "agent.inspect",
+        {"agent_id": gc["agent_id"]},
+    )
+    # leaf's parent should be mid.
+    mid_info = await async_call(
+        daemon_sock,
+        "agent.inspect",
+        {"agent_id": leaf_info["parent"]},
+    )
+    assert mid_info["name"] == "mid"

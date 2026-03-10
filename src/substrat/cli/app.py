@@ -330,9 +330,10 @@ def agent_create(
     provider: str | None = typer.Option(None, help="Provider override."),
     model: str | None = typer.Option(None, help="Model override."),
     workspace: str | None = typer.Option(None, help="Workspace name."),
+    parent: str | None = typer.Option(None, help="Parent agent (name, path, or UUID)."),
     root: Path = _ROOT_OPT,
 ) -> None:
-    """Create a root agent."""
+    """Create an agent. Root by default, child if --parent is given."""
     params: dict[str, Any] = {"name": name, "instructions": instructions}
     if provider is not None:
         params["provider"] = provider
@@ -340,6 +341,8 @@ def agent_create(
         params["model"] = model
     if workspace is not None:
         params["workspace"] = workspace
+    if parent is not None:
+        params["parent"] = parent
     result = _call(root, "agent.create", params)
     typer.echo(f"{result['agent_id']}  {result['name']}")
 

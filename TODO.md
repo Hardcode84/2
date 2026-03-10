@@ -229,7 +229,7 @@ Design: [docs/design/review_pipeline.md](docs/design/review_pipeline.md)
   - [x] 4d: Multiplexer pools — named pools with independent slot limits and LRU; provider→pool mapping at daemon config level
   - [x] 4e: Integration test — daemon + scripted provider + real Python script, verify turn + event log + suspend/restore
   - [x] 4f: Crash recovery — `reconstruct_history(events)` from event log, wire into `orchestrator.recover()` for scripted sessions
-- [ ] Phase 5: CLI `--parent` flag — `substrat agent create` with `--parent` for non-root agents
+- [x] Phase 5: CLI `--parent` flag — `substrat agent create` with `--parent` for non-root agents
 - [ ] Phase 6: Review pipeline script — state machine, routing rules, fan-out/fan-in, WAL recovery
 - [ ] Phase 7: Init scripts — init-pipeline.sh creates pipeline, worker, critics, sends task
 - [ ] Phase 8: Polish — configurable routing, critic timeout, synthesis agent, `substrat pipeline status`

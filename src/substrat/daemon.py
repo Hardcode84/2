@@ -361,12 +361,15 @@ class Daemon:
         provider = params.get("provider")
         model = params.get("model")
         ws_key = self._resolve_ws_param(params.get("workspace"))
+        parent_raw = params.get("parent")
+        parent_id = self._resolve_agent(parent_raw) if parent_raw else None
         node = await self._orch.create_root_agent(
             name,
             instructions,
             provider=provider,
             model=model,
             workspace=ws_key,
+            parent=parent_id,
         )
         return {"agent_id": node.id.hex, "name": node.name}
 
@@ -410,6 +413,7 @@ class Daemon:
             "session_id": node.session_id.hex,
             "name": node.name,
             "state": node.state.value,
+            "parent": node.parent_id.hex if node.parent_id else None,
             "children": [
                 {"agent_id": c.id.hex, "name": c.name, "state": c.state.value}
                 for c in children

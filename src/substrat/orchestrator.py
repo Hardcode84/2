@@ -132,8 +132,13 @@ class Orchestrator:
         model: str | None = None,
         workspace: tuple[UUID, str] | None = None,
         metadata: dict[str, str] | None = None,
+        parent: UUID | None = None,
     ) -> AgentNode:
-        """Create a root agent with a backing session.
+        """Create an agent with a backing session.
+
+        When *parent* is None, creates a root agent. When set, creates a
+        child under the given parent agent ID. Used by both the CLI and
+        daemon RPC -- the deferred spawn path (mid-turn) is separate.
 
         Creates the session first, then registers the node. If tree insertion
         fails (name collision), the session is terminated to avoid orphans.
@@ -141,12 +146,19 @@ class Orchestrator:
         prov = provider or self._default_provider
         mdl = model or self._default_model
 
-        # Resolve workspace → wrap_command + path.
+        # Validate parent exists before creating the session.
+        parent_session_id: str | None = None
+        if parent is not None:
+            parent_node = self._tree.get(parent)
+            parent_session_id = parent_node.session_id.hex
+
+        # Resolve workspace -> wrap_command + path.
         ws_path, wrap_cmd = self._resolve_workspace(workspace)
 
         node = AgentNode(
             session_id=uuid4(),
             name=name,
+            parent_id=parent,
             instructions=instructions,
             metadata=dict(metadata) if metadata else {},
         )
@@ -178,7 +190,7 @@ class Orchestrator:
             {
                 "agent_id": node.id.hex,
                 "name": node.name,
-                "parent_session_id": None,
+                "parent_session_id": parent_session_id,
                 "instructions": node.instructions,
                 "workspace": ws_data,
                 "metadata": node.metadata or None,
